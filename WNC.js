@@ -3668,12 +3668,10 @@ function collectTextNodes(
 // MATCHED PACKS
 // ============================================================
 
-function getMatchedPacks() {
-
+function getMatchedPacks(){
     return WNC.packs.getMatched(
-        location.hostname
+        location.href
     );
-
 }
 
 
