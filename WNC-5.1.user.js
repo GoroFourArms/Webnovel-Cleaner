@@ -101,48 +101,42 @@ function today() {
 function migrateRule(rule, index) {
 
     if (!rule || typeof rule !== "object") {
-
         rule = {};
-
     }
-
 
     if (rule.order === undefined)
         rule.order = index + 1;
 
-
     if (rule.find === undefined)
         rule.find = "";
-
 
     if (rule.replace === undefined)
         rule.replace = "";
 
-
     if (!rule.type)
         rule.type = "whole";
-
 
     if (rule.caseSensitive === undefined)
         rule.caseSensitive = false;
 
-
     if (rule.enabled === undefined)
         rule.enabled = true;
-
 
     if (rule.lastUsed === undefined)
         rule.lastUsed = null;
 
-
     if (rule.htmlMode === undefined)
         rule.htmlMode = "none";
 
+    // Scanner/editor fields
+    if (rule.template === undefined)
+        rule.template = "";
+
+    if (rule.generatedRegex === undefined)
+        rule.generatedRegex = "";
 
     return rule;
-
 }
-
 
 // ------------------------------------------------------------
 // Pack migration
