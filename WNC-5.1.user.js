@@ -4017,8 +4017,7 @@ GM_addStyle(`
 
 `);
 
-})();
-// ============================================================
+})();// ============================================================
 // WNC v5.1 - PART 6/7
 // SECTION: Scanner + Inspector + Diagnostics
 // ============================================================
@@ -4030,6 +4029,11 @@ GM_addStyle(`
 const WNC = unsafeWindow.WNC;
 
 let toolPanel = null;
+let scannerState = {
+    selectedPack: "",
+    template: "",
+    results: []
+};
 
 
 // ============================================================
@@ -4044,7 +4048,6 @@ function createToolPanel(title){
     }
 
     toolPanel = document.createElement("div");
-
     toolPanel.id = "wnc-tool-panel";
 
     toolPanel.innerHTML = `
@@ -4052,81 +4055,371 @@ function createToolPanel(title){
             <b>${title}</b>
             <button id="wnc-tool-close">X</button>
         </div>
-
         <div id="wnc-tool-content"></div>
     `;
 
     document.body.appendChild(toolPanel);
 
-    toolPanel.querySelector(
-        "#wnc-tool-close"
-    ).onclick = () => {
-
+    toolPanel.querySelector("#wnc-tool-close").onclick = () => {
         toolPanel.remove();
         toolPanel = null;
-
     };
 
-    return toolPanel.querySelector(
-        "#wnc-tool-content"
-    );
+    return toolPanel.querySelector("#wnc-tool-content");
+}
+
+
+// ============================================================
+// SCANNER HELPERS
+// ============================================================
+
+function scannerText(){
+
+    return document.body?.innerText || "";
+
+}
+
+
+function escapeScannerRegex(text){
+
+    return String(text)
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+}
+
+
+function getMatchCount(text, rule){
+
+    if(!rule || !rule.find)
+        return 0;
+
+    let regex;
+
+    try {
+
+        const flags =
+            rule.caseSensitive
+                ? "g"
+                : "gi";
+
+        if(rule.type === "regex"){
+
+            regex = new RegExp(
+                rule.find,
+                flags
+            );
+
+        }
+        else if(rule.type === "text"){
+
+            regex = new RegExp(
+                escapeScannerRegex(rule.find),
+                flags
+            );
+
+        }
+        else{
+
+            regex = new RegExp(
+                "(?<![\\w-])" +
+                escapeScannerRegex(rule.find) +
+                "(?![\\w-])",
+                flags
+            );
+
+        }
+
+    }
+    catch(error){
+
+        return 0;
+
+    }
+
+    let count = 0;
+
+    for(const match of String(text).matchAll(regex)){
+
+        count++;
+
+        if(match[0] === "")
+            regex.lastIndex++;
+
+    }
+
+    return count;
 
 }
 
 
 // ============================================================
-// SCANNER
+// FIND EXISTING RULES
 // ============================================================
 
-function scanPage(){
+function getScannerRules(){
+
+    const rules = [];
+
+    WNC.packs
+        .getMatched(location.hostname)
+        .forEach(pack => {
+
+            if(pack.enabled === false)
+                return;
+
+            pack.rules
+                .filter(rule =>
+                    rule.enabled !== false &&
+                    rule.find
+                )
+                .sort((a,b) =>
+                    a.order - b.order
+                )
+                .forEach(rule => {
+
+                    rules.push({
+                        ruled: true,
+                        pack: pack.name,
+                        order: rule.order,
+                        find: rule.find,
+                        replace: rule.replace,
+                        type: rule.type || "whole",
+                        caseSensitive:
+                            rule.caseSensitive === true,
+                        rule
+                    });
+
+                });
+
+        });
+
+    return rules;
+
+}
+
+
+// ============================================================
+// DISCOVER UNRULED PHRASES
+// ============================================================
+
+function discoverUnruled(text, rules){
+
+    const ruledKeys = new Set();
+
+    rules.forEach(item => {
+
+        ruledKeys.add(
+            item.find
+                .trim()
+                .toLocaleLowerCase()
+        );
+
+    });
+
+
+    const counts = new Map();
+
+
+    function addPhrase(value){
+
+        value =
+            String(value || "")
+            .trim()
+            .replace(/\s+/g, " ");
+
+        if(!value)
+            return;
+
+        if(value.length < 2)
+            return;
+
+        const key =
+            value.toLocaleLowerCase();
+
+        if(ruledKeys.has(key))
+            return;
+
+        counts.set(
+            key,
+            {
+                text: value,
+                count:
+                    (counts.get(key)?.count || 0) + 1
+            }
+        );
+
+    }
+
+
+    // --------------------------------------------------------
+    // Korean / CJK runs
+    // --------------------------------------------------------
+
+    const cjkRuns =
+        text.match(
+            /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]{2,}/g
+        ) || [];
+
+    cjkRuns.forEach(addPhrase);
+
+
+    // --------------------------------------------------------
+    // Capitalized / proper-name word groups
+    // --------------------------------------------------------
+
+    const words =
+        text.match(
+            /\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'-]*(?:\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'-]*){1,3}\b/g
+        ) || [];
+
+    words.forEach(addPhrase);
+
+
+    // --------------------------------------------------------
+    // Hyphenated / apostrophe names
+    // --------------------------------------------------------
+
+    const names =
+        text.match(
+            /\b[A-Za-zÀ-ÖØ-öø-ÿ]+(?:[-'][A-Za-zÀ-ÖØ-öø-ÿ]+)+\b/g
+        ) || [];
+
+    names.forEach(addPhrase);
+
+
+    return [...counts.values()]
+        .sort((a,b) =>
+            b.count - a.count
+        );
+
+}
+
+
+// ============================================================
+// SCAN
+// ============================================================
+
+function scanPage(options = {}){
 
     const text =
-        document.body?.innerText || "";
+        scannerText();
+
+    const rules =
+        getScannerRules();
 
     const results = [];
 
 
-    WNC.replace
-        .getRules()
-        .forEach(item => {
+    // --------------------------------------------------------
+    // Existing rules
+    // --------------------------------------------------------
 
-            const rule = item.rule;
+    rules.forEach(item => {
 
-            if(!rule.find)
-                return;
+        const count =
+            getMatchCount(
+                text,
+                item.rule
+            );
 
+        if(count <= 0)
+            return;
 
-            const before = text;
+        results.push({
 
-            const after =
-                WNC.replace.replaceValue(
-                    before,
-                    rule
-                );
+            ruled: true,
 
+            pack:
+                item.pack,
 
-            if(after !== before){
+            order:
+                item.order,
 
-                results.push({
+            find:
+                item.find,
 
-                    pack: item.pack.name,
+            replace:
+                item.replace,
 
-                    order: rule.order,
+            type:
+                item.type,
 
-                    find: rule.find,
+            caseSensitive:
+                item.caseSensitive,
 
-                    replace: rule.replace,
+            count,
 
-                    type: rule.type,
+            total:
+                count,
 
-                    caseSensitive:
-                        rule.caseSensitive
-
-                });
-
-            }
+            rule:
+                item.rule
 
         });
+
+    });
+
+
+    // --------------------------------------------------------
+    // Unruled discoveries
+    // --------------------------------------------------------
+
+    const discovered =
+        discoverUnruled(
+            text,
+            rules
+        );
+
+
+    discovered.forEach(item => {
+
+        results.push({
+
+            ruled: false,
+
+            pack: "",
+
+            order: null,
+
+            find:
+                item.text,
+
+            replace: "",
+
+            type: "whole",
+
+            caseSensitive: false,
+
+            count:
+                item.count,
+
+            total:
+                item.count,
+
+            rule: null
+
+        });
+
+    });
+
+
+    // --------------------------------------------------------
+    // Highest count first
+    // --------------------------------------------------------
+
+    results.sort((a,b) => {
+
+        if(b.count !== a.count)
+            return b.count - a.count;
+
+        if(a.ruled !== b.ruled)
+            return a.ruled ? -1 : 1;
+
+        return a.find.localeCompare(
+            b.find
+        );
+
+    });
 
 
     return results;
@@ -4135,7 +4428,1002 @@ function scanPage(){
 
 
 // ============================================================
-// SCANNER UI
+// PACK SEARCH
+// ============================================================
+
+function createPackSearch(){
+
+    const wrap =
+        document.createElement("div");
+
+    wrap.className =
+        "wnc-pack-search";
+
+
+    const input =
+        document.createElement("input");
+
+    input.type = "text";
+    input.placeholder = "Pack";
+    input.value =
+        scannerState.selectedPack;
+
+
+    const list =
+        document.createElement("div");
+
+    list.className =
+        "wnc-pack-results";
+
+
+    function refresh(){
+
+        list.innerHTML = "";
+
+        const query =
+            input.value
+                .trim()
+                .toLocaleLowerCase();
+
+
+        WNC.packs
+            .getAll()
+            .filter(pack =>
+                !query ||
+                pack.name
+                    .toLocaleLowerCase()
+                    .includes(query)
+            )
+            .forEach(pack => {
+
+                const button =
+                    document.createElement("button");
+
+                button.type = "button";
+                button.textContent =
+                    pack.name;
+
+
+                button.onclick = () => {
+
+                    scannerState.selectedPack =
+                        pack.name;
+
+                    input.value =
+                        pack.name;
+
+                    list.innerHTML = "";
+
+                    renderScanner();
+
+                };
+
+
+                list.appendChild(button);
+
+            });
+
+
+        if(
+            query &&
+            !WNC.packs.get(query)
+        ){
+
+            const create =
+                document.createElement("button");
+
+            create.type = "button";
+
+            create.textContent =
+                "+ " + input.value;
+
+
+            create.onclick = () => {
+
+                const pack =
+                    WNC.packs.create(
+                        input.value.trim()
+                    );
+
+                if(!pack)
+                    return;
+
+                scannerState.selectedPack =
+                    pack.name;
+
+                input.value =
+                    pack.name;
+
+                list.innerHTML = "";
+
+                renderScanner();
+
+            };
+
+            list.appendChild(create);
+
+        }
+
+    }
+
+
+    input.onfocus = refresh;
+    input.oninput = refresh;
+
+
+    wrap.appendChild(input);
+    wrap.appendChild(list);
+
+
+    return wrap;
+
+}
+
+
+// ============================================================
+// TYPE SWITCH
+// ============================================================
+
+function createTypeSwitch(
+    value,
+    callback
+){
+
+    const button =
+        document.createElement("button");
+
+    button.type = "button";
+    button.className = "wnc-switch";
+
+    const types = [
+        "whole",
+        "text",
+        "regex"
+    ];
+
+    const labels = [
+        "W",
+        "T",
+        "R"
+    ];
+
+
+    function render(){
+
+        const index =
+            Math.max(
+                0,
+                types.indexOf(value)
+            );
+
+        button.textContent =
+            labels[index];
+
+        button.title =
+            types[index];
+
+    }
+
+
+    button.onclick = () => {
+
+        let index =
+            types.indexOf(value);
+
+        index =
+            (index + 1) %
+            types.length;
+
+        value =
+            types[index];
+
+        callback(value);
+
+        render();
+
+    };
+
+
+    render();
+
+    return button;
+
+}
+
+
+// ============================================================
+// CASE SWITCH
+// ============================================================
+
+function createCaseSwitch(
+    value,
+    callback
+){
+
+    const button =
+        document.createElement("button");
+
+    button.type = "button";
+    button.className = "wnc-switch";
+
+    function render(){
+
+        button.textContent =
+            "C";
+
+        button.dataset.on =
+            value ? "1" : "0";
+
+        button.title =
+            value
+                ? "Case sensitive"
+                : "Case insensitive";
+
+    }
+
+
+    button.onclick = () => {
+
+        value = !value;
+
+        callback(value);
+
+        render();
+
+    };
+
+
+    render();
+
+    return button;
+
+}
+
+
+// ============================================================
+// FIND COLLAPSE
+// ============================================================
+
+function createFindCell(
+    value
+){
+
+    const cell =
+        document.createElement("td");
+
+    const wrap =
+        document.createElement("div");
+
+    wrap.className =
+        "wnc-find";
+
+
+    const toggle =
+        document.createElement("button");
+
+    toggle.type = "button";
+    toggle.className =
+        "wnc-find-toggle";
+
+    toggle.textContent = "▶";
+
+
+    const text =
+        document.createElement("span");
+
+    text.textContent =
+        value;
+
+
+    toggle.onclick = () => {
+
+        const expanded =
+            wrap.classList.toggle(
+                "expanded"
+            );
+
+        toggle.textContent =
+            expanded
+                ? "▼"
+                : "▶";
+
+    };
+
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(text);
+
+    cell.appendChild(wrap);
+
+    return cell;
+
+}
+
+
+// ============================================================
+// TEMPLATE
+// ============================================================
+
+function createTemplateControl(){
+
+    const wrap =
+        document.createElement("div");
+
+    wrap.className =
+        "wnc-template-control";
+
+
+    const input =
+        document.createElement("input");
+
+    input.type = "text";
+    input.placeholder = "Te";
+
+
+    input.value =
+        scannerState.template;
+
+
+    input.oninput = () => {
+
+        scannerState.template =
+            input.value;
+
+    };
+
+
+    const generate =
+        document.createElement("button");
+
+    generate.type = "button";
+    generate.textContent = "G";
+    generate.title =
+        "Generate regex";
+
+
+    generate.onclick = () => {
+
+        const selected =
+            scannerState.results.find(
+                result =>
+                    result._selected
+            );
+
+
+        if(!selected)
+            return;
+
+
+        if(!scannerState.template)
+            return;
+
+
+        const phrase =
+            selected.find;
+
+
+        const escaped =
+            escapeScannerRegex(
+                phrase
+            );
+
+
+        selected.replace =
+            scannerState.template
+                .replace(
+                    /\{find\}/gi,
+                    escaped
+                )
+                .replace(
+                    /\{phrase\}/gi,
+                    escaped
+                );
+
+        selected.type =
+            "regex";
+
+        selected._generated = true;
+
+        renderScanner();
+
+    };
+
+
+    wrap.appendChild(input);
+    wrap.appendChild(generate);
+
+    return wrap;
+
+}
+
+
+// ============================================================
+// APPLY NEW RULE
+// ============================================================
+
+function applyScannerRule(result){
+
+    if(result.ruled)
+        return;
+
+    const packName =
+        scannerState.selectedPack;
+
+    if(!packName)
+        return;
+
+
+    if(!result.find)
+        return;
+
+
+    WNC.rules.add(
+        packName,
+        {
+            find:
+                result.find,
+
+            replace:
+                result.replace || "",
+
+            type:
+                result.type || "whole",
+
+            caseSensitive:
+                result.caseSensitive === true,
+
+            enabled:
+                true
+        }
+    );
+
+
+    result.ruled = true;
+    result.pack = packName;
+    result._applied = true;
+
+}
+
+
+// ============================================================
+// SCANNER RENDER
+// ============================================================
+
+function renderScanner(){
+
+    if(!toolPanel)
+        return;
+
+    const content =
+        toolPanel.querySelector(
+            "#wnc-tool-content"
+        );
+
+    if(!content)
+        return;
+
+
+    content.innerHTML = "";
+
+
+    // --------------------------------------------------------
+    // Toolbar
+    // --------------------------------------------------------
+
+    const toolbar =
+        document.createElement("div");
+
+    toolbar.className =
+        "wnc-scanner-toolbar";
+
+
+    toolbar.appendChild(
+        createPackSearch()
+    );
+
+
+    const template =
+        createTemplateControl();
+
+    toolbar.appendChild(
+        template
+    );
+
+
+    const scanButton =
+        document.createElement("button");
+
+    scanButton.textContent =
+        "Scan";
+
+
+    scanButton.onclick = () => {
+
+        scannerState.results =
+            scanPage();
+
+        renderScanner();
+
+    };
+
+
+    toolbar.appendChild(
+        scanButton
+    );
+
+
+    content.appendChild(toolbar);
+
+
+    // --------------------------------------------------------
+    // No results
+    // --------------------------------------------------------
+
+    if(!scannerState.results.length){
+
+        const empty =
+            document.createElement("div");
+
+        empty.textContent =
+            "No scan results.";
+
+        content.appendChild(empty);
+
+        return;
+
+    }
+
+
+    // --------------------------------------------------------
+    // Table
+    // --------------------------------------------------------
+
+    const table =
+        document.createElement("table");
+
+    table.className =
+        "wnc-scanner-table";
+
+
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Pack</th>
+                <th>Find</th>
+                <th>Result</th>
+                <th>Co</th>
+                <th>C</th>
+                <th>T</th>
+                <th>Te</th>
+                <th>A</th>
+                <th>Del</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    `;
+
+
+    const tbody =
+        table.querySelector("tbody");
+
+
+    scannerState.results
+        .forEach(result => {
+
+            const row =
+                document.createElement("tr");
+
+
+            if(!result.ruled)
+                row.classList.add(
+                    "wnc-unruled"
+                );
+
+
+            // ------------------------------------------------
+            // Pack
+            // ------------------------------------------------
+
+            const packCell =
+                document.createElement("td");
+
+            packCell.textContent =
+                result.pack ||
+                "—";
+
+
+            if(!result.ruled){
+
+                packCell.title =
+                    "New rules use the Pack selected in the top toolbar.";
+
+            }
+
+
+            row.appendChild(
+                packCell
+            );
+
+
+            // ------------------------------------------------
+            // Find
+            // ------------------------------------------------
+
+            row.appendChild(
+                createFindCell(
+                    result.find
+                )
+            );
+
+
+            // ------------------------------------------------
+            // Result
+            // ------------------------------------------------
+
+            const resultCell =
+                document.createElement("td");
+
+            const replaceInput =
+                document.createElement("input");
+
+            replaceInput.type =
+                "text";
+
+            replaceInput.value =
+                result.replace || "";
+
+            replaceInput.className =
+                "wnc-result-input";
+
+
+            replaceInput.oninput = () => {
+
+                result.replace =
+                    replaceInput.value;
+
+            };
+
+
+            resultCell.appendChild(
+                replaceInput
+            );
+
+            row.appendChild(
+                resultCell
+            );
+
+
+            // ------------------------------------------------
+            // Count
+            // ------------------------------------------------
+
+            const countCell =
+                document.createElement("td");
+
+            countCell.textContent =
+                `${result.count}/${result.total}`;
+
+            row.appendChild(
+                countCell
+            );
+
+
+            // ------------------------------------------------
+            // Case
+            // ------------------------------------------------
+
+            const caseCell =
+                document.createElement("td");
+
+            caseCell.appendChild(
+                createCaseSwitch(
+                    result.caseSensitive,
+                    value => {
+
+                        result.caseSensitive =
+                            value;
+
+                    }
+                )
+            );
+
+            row.appendChild(
+                caseCell
+            );
+
+
+            // ------------------------------------------------
+            // Type
+            // ------------------------------------------------
+
+            const typeCell =
+                document.createElement("td");
+
+            typeCell.appendChild(
+                createTypeSwitch(
+                    result.type,
+                    value => {
+
+                        result.type =
+                            value;
+
+                    }
+                )
+            );
+
+            row.appendChild(
+                typeCell
+            );
+
+
+            // ------------------------------------------------
+            // Template
+            // ------------------------------------------------
+
+            const templateCell =
+                document.createElement("td");
+
+            const templateButton =
+                document.createElement("button");
+
+            templateButton.type =
+                "button";
+
+            templateButton.textContent =
+                "Te";
+
+
+            templateButton.onclick = () => {
+
+                scannerState.template =
+                    scannerState.template ||
+                    "{find}";
+
+                scannerState.results
+                    .forEach(item => {
+
+                        item._selected =
+                            item === result;
+
+                    });
+
+                renderScanner();
+
+            };
+
+
+            templateCell.appendChild(
+                templateButton
+            );
+
+            row.appendChild(
+                templateCell
+            );
+
+
+            // ------------------------------------------------
+            // Apply
+            // ------------------------------------------------
+
+            const applyCell =
+                document.createElement("td");
+
+            const applyButton =
+                document.createElement("button");
+
+            applyButton.type =
+                "button";
+
+            applyButton.textContent =
+                "A";
+
+
+            applyButton.disabled =
+                result.ruled ||
+                !scannerState.selectedPack;
+
+
+            applyButton.title =
+                result.ruled
+                    ? "Existing rule"
+                    : scannerState.selectedPack
+                        ? `Add to ${scannerState.selectedPack}`
+                        : "Select a Pack first";
+
+
+            applyButton.onclick = () => {
+
+                applyScannerRule(
+                    result
+                );
+
+                scannerState.results =
+                    scanPage();
+
+                renderScanner();
+
+            };
+
+
+            applyCell.appendChild(
+                applyButton
+            );
+
+            row.appendChild(
+                applyCell
+            );
+
+
+            // ------------------------------------------------
+            // Delete
+            // ------------------------------------------------
+
+            const deleteCell =
+                document.createElement("td");
+
+
+            if(result.ruled){
+
+                const deleteButton =
+                    document.createElement("button");
+
+                deleteButton.type =
+                    "button";
+
+                deleteButton.textContent =
+                    "X";
+
+
+                deleteButton.onclick = () => {
+
+                    if(!result.pack)
+                        return;
+
+                    if(
+                        !confirm(
+                            `Delete rule "${result.find}"?`
+                        )
+                    )
+                        return;
+
+
+                    WNC.rules.remove(
+                        result.pack,
+                        result.order
+                    );
+
+
+                    scannerState.results =
+                        scanPage();
+
+                    renderScanner();
+
+                };
+
+
+                deleteCell.appendChild(
+                    deleteButton
+                );
+
+            }
+
+
+            row.appendChild(
+                deleteCell
+            );
+
+
+            tbody.appendChild(
+                row
+            );
+
+        });
+
+
+    content.appendChild(table);
+
+
+    // --------------------------------------------------------
+    // Selected template editor
+    // --------------------------------------------------------
+
+    const selected =
+        scannerState.results.find(
+            result =>
+                result._selected
+        );
+
+
+    if(selected){
+
+        const templateBar =
+            document.createElement("div");
+
+        templateBar.className =
+            "wnc-template-bar";
+
+
+        const label =
+            document.createElement("span");
+
+        label.textContent =
+            "Te";
+
+
+        const input =
+            document.createElement("input");
+
+        input.type = "text";
+
+        input.value =
+            scannerState.template ||
+            "{find}";
+
+
+        input.oninput = () => {
+
+            scannerState.template =
+                input.value;
+
+        };
+
+
+        const generate =
+            document.createElement("button");
+
+        generate.textContent =
+            "G";
+
+        generate.title =
+            "Generate regex";
+
+
+        generate.onclick = () => {
+
+            const escaped =
+                escapeScannerRegex(
+                    selected.find
+                );
+
+
+            selected.replace =
+                scannerState.template
+                    .replace(
+                        /\{find\}/gi,
+                        escaped
+                    )
+                    .replace(
+                        /\{phrase\}/gi,
+                        escaped
+                    );
+
+
+            selected.type =
+                "regex";
+
+            selected._generated =
+                true;
+
+            renderScanner();
+
+        };
+
+
+        templateBar.appendChild(label);
+        templateBar.appendChild(input);
+        templateBar.appendChild(generate);
+
+        content.appendChild(
+            templateBar
+        );
+
+    }
+
+}
+
+
+// ============================================================
+// OPEN SCANNER
 // ============================================================
 
 function openScanner(){
@@ -4146,122 +5434,11 @@ function openScanner(){
         );
 
 
-    const toolbar =
-        document.createElement("div");
-
-    toolbar.className =
-        "wnc-toolbar";
+    scannerState.results =
+        scanPage();
 
 
-    const scanButton =
-        document.createElement("button");
-
-    scanButton.textContent =
-        "Scan Page";
-
-
-    toolbar.appendChild(
-        scanButton
-    );
-
-
-    content.appendChild(
-        toolbar
-    );
-
-
-    const output =
-        document.createElement("div");
-
-    content.appendChild(
-        output
-    );
-
-
-    function render(){
-
-        output.innerHTML = "";
-
-
-        const results =
-            scanPage();
-
-
-        if(!results.length){
-
-            output.textContent =
-                "No active rules found on this page.";
-
-            return;
-
-        }
-
-
-        const table =
-            document.createElement("table");
-
-        table.innerHTML = `
-            <thead>
-                <tr>
-                    <th>Pack</th>
-                    <th>Find</th>
-                    <th>Replace</th>
-                    <th>Type</th>
-                    <th>Case</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        `;
-
-
-        const tbody =
-            table.querySelector("tbody");
-
-
-        results.forEach(result => {
-
-            const row =
-                document.createElement("tr");
-
-
-            row.innerHTML = `
-                <td></td>
-                <td></td>
-                <td></td>
-                <td></td>
-                <td></td>
-            `;
-
-
-            row.children[0].textContent =
-                result.pack;
-
-            row.children[1].textContent =
-                result.find;
-
-            row.children[2].textContent =
-                result.replace;
-
-            row.children[3].textContent =
-                result.type;
-
-            row.children[4].textContent =
-                result.caseSensitive
-                    ? "Sensitive"
-                    : "Insensitive";
-
-
-            tbody.appendChild(row);
-
-        });
-
-
-        output.appendChild(table);
-
-    }
-
-
-    scanButton.onclick = render;
+    renderScanner();
 
 }
 
@@ -4339,7 +5516,8 @@ function openInspector(){
                 const td =
                     document.createElement("td");
 
-                td.textContent = value;
+                td.textContent =
+                    value;
 
                 row.appendChild(td);
 
@@ -4404,11 +5582,8 @@ function checkDatabase(){
             ruleCount++;
 
 
-            if(!rule.find){
-
+            if(!rule.find)
                 emptyRules++;
-
-            }
 
 
             if(rule.type === "regex"){
@@ -4438,20 +5613,20 @@ function checkDatabase(){
 
 
     report.unshift(
-        `WNC Database Diagnostics`,
-        ``,
+        "WNC Database Diagnostics",
+        "",
         `Packs: ${packCount}`,
         `Rules: ${ruleCount}`,
         `Empty rules: ${emptyRules}`,
         `Bad regex: ${badRegex}`,
-        ``
+        ""
     );
 
 
     if(
-        report.length === 6 &&
         emptyRules === 0 &&
-        badRegex === 0
+        badRegex === 0 &&
+        report.length === 7
     ){
 
         report.push(
@@ -4488,6 +5663,7 @@ function openDiagnostics(){
     const output =
         document.createElement("pre");
 
+
     output.style.whiteSpace =
         "pre-wrap";
 
@@ -4501,7 +5677,6 @@ function openDiagnostics(){
 
 
     content.appendChild(button);
-
     content.appendChild(output);
 
 }
@@ -4513,25 +5688,30 @@ function openDiagnostics(){
 
 WNC.scanner = {
 
-    open: openScanner,
+    open:
+        openScanner,
 
-    scan: scanPage
+    scan:
+        scanPage
 
 };
 
 
 WNC.inspector = {
 
-    open: openInspector
+    open:
+        openInspector
 
 };
 
 
 WNC.diagnostics = {
 
-    open: openDiagnostics,
+    open:
+        openDiagnostics,
 
-    check: checkDatabase
+    check:
+        checkDatabase
 
 };
 
@@ -4551,8 +5731,11 @@ GM_addStyle(`
 
     transform:translateX(-50%);
 
-    width:900px;
-    max-width:calc(100vw - 40px);
+    width:max-content;
+
+    min-width:900px;
+
+    max-width:calc(100vw - 20px);
 
     max-height:80vh;
 
@@ -4566,9 +5749,9 @@ GM_addStyle(`
     border:1px solid #777;
     border-radius:6px;
 
-    padding:12px;
+    padding:4px;
 
-    font:13px Arial,sans-serif;
+    font:12px Arial,sans-serif;
 
     box-shadow:
         0 4px 20px rgba(0,0,0,.5);
@@ -4579,34 +5762,60 @@ GM_addStyle(`
 #wnc-tool-panel
 .wnc-panel-header {
 
+    position:sticky;
+
+    top:0;
+
+    z-index:10;
+
     display:flex;
 
     justify-content:space-between;
 
     align-items:center;
 
-    margin-bottom:10px;
+    background:#222;
+
+    margin:0;
+
+    padding:2px 0 4px;
 
 }
 
 
 #wnc-tool-panel
-.wnc-toolbar {
+.wnc-scanner-toolbar {
+
+    position:sticky;
+
+    top:24px;
+
+    z-index:9;
 
     display:flex;
 
-    gap:6px;
+    align-items:center;
 
-    margin-bottom:10px;
+    gap:3px;
+
+    margin:0 0 3px;
+
+    padding:2px 0;
+
+    background:#222;
 
 }
 
 
 #wnc-tool-panel table {
 
-    width:100%;
+    width:auto;
+
+    min-width:100%;
 
     border-collapse:collapse;
+
+    table-layout:auto;
 
 }
 
@@ -4614,7 +5823,7 @@ GM_addStyle(`
 #wnc-tool-panel th,
 #wnc-tool-panel td {
 
-    padding:6px;
+    padding:2px 3px;
 
     border:1px solid #555;
 
@@ -4622,23 +5831,234 @@ GM_addStyle(`
 
     vertical-align:middle;
 
+    white-space:nowrap;
+
+}
+
+
+#wnc-tool-panel th {
+
+    position:sticky;
+
+    top:50px;
+
+    z-index:8;
+
+    background:#222;
+
+}
+
+
+#wnc-tool-panel input,
+#wnc-tool-panel button {
+
+    box-sizing:border-box;
+
+    font:12px Arial,sans-serif;
+
+}
+
+
+#wnc-tool-panel input {
+
+    min-width:0;
+
+    padding:2px 3px;
+
 }
 
 
 #wnc-tool-panel button {
 
-    padding:5px 9px;
+    padding:2px 5px;
 
     cursor:pointer;
 
-    font:13px Arial,sans-serif;
+}
+
+
+.wnc-pack-search {
+
+    position:relative;
+
+    display:flex;
+
+}
+
+
+.wnc-pack-search > input {
+
+    width:180px;
+
+}
+
+
+.wnc-pack-results {
+
+    position:absolute;
+
+    top:100%;
+
+    left:0;
+
+    z-index:100;
+
+    display:flex;
+
+    flex-direction:column;
+
+    min-width:180px;
+
+    max-height:240px;
+
+    overflow:auto;
+
+    background:#222;
+
+    border:1px solid #777;
+
+}
+
+
+.wnc-pack-results button {
+
+    text-align:left;
+
+    border:0;
+
+    border-bottom:1px solid #444;
+
+}
+
+
+.wnc-result-input {
+
+    width:180px;
+
+}
+
+
+.wnc-find {
+
+    display:flex;
+
+    align-items:flex-start;
+
+    max-width:320px;
+
+    overflow:hidden;
+
+}
+
+
+.wnc-find-toggle {
+
+    flex:none;
+
+    margin-right:2px;
+
+    padding:0 2px !important;
+
+}
+
+
+.wnc-find span {
+
+    display:block;
+
+    max-width:280px;
+
+    overflow:hidden;
+
+    text-overflow:ellipsis;
+
+    white-space:nowrap;
+
+}
+
+
+.wnc-find.expanded {
+
+    max-width:600px;
+
+}
+
+
+.wnc-find.expanded span {
+
+    max-width:560px;
+
+    white-space:normal;
+
+    overflow-wrap:anywhere;
+
+}
+
+
+.wnc-switch {
+
+    min-width:20px;
+
+    padding:1px 3px !important;
+
+}
+
+
+.wnc-unruled {
+
+    opacity:.95;
+
+}
+
+
+.wnc-unruled td:first-child {
+
+    color:#aaa;
+
+}
+
+
+.wnc-template-control {
+
+    display:flex;
+
+    gap:2px;
+
+}
+
+
+.wnc-template-control input {
+
+    width:140px;
+
+}
+
+
+.wnc-template-bar {
+
+    display:flex;
+
+    gap:3px;
+
+    align-items:center;
+
+    margin-top:3px;
+
+    padding:3px 0;
+
+}
+
+
+.wnc-template-bar input {
+
+    width:260px;
 
 }
 
 
 #wnc-tool-panel pre {
 
-    margin-top:12px;
+    margin:8px 0 0;
 
 }
 
@@ -4648,8 +6068,7 @@ console.log(
     "[WNC] v5.1 Part 6 Scanner/Tools loaded"
 );
 
-})();
-// ============================================================
+})();// ============================================================
 // WNC v5.1 - PART 7/7
 // SECTION: Initialization + Menu + Tools
 // ============================================================
