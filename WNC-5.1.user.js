@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WebNovel Cleaner 5.1
 // @namespace    https://github.com/GoroFourArms
-// @version      5.1.0
+// @version      5.1.1
 // @description  WebNovel Cleaner - replacement engine, scanner, editor and FoxReplace-compatible database
 // @author       GoroFourArms
 // @match        *://*/*
@@ -11,6 +11,8 @@
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @grant        unsafeWindow
+// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC-5.1.user.js
+// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC-5.1.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -53,7 +55,7 @@ const WNC = {
 
 // Make the API available to the other WNC sections.
 
-unsafeWindow.WNC = WNC;
+unsaeWindow.WNC = WNC;
 window.WNC = WNC;
 
 
@@ -61,7 +63,7 @@ window.WNC = WNC;
 // DATABASE
 // ============================================================
 
-const DEFAULT_DATABASE = {
+const DEAULT_DATABASE = {
 
     version: WNC_VERSION,
 
