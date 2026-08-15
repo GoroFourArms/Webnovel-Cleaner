@@ -894,6 +894,9 @@ WNC.packs = {
     remove:
         removePack,
 
+    setOrder:
+        setPackOrder,
+
     getMatched:
         getMatchedPacks
 
@@ -911,11 +914,76 @@ WNC.rules = {
     remove:
         removeRule,
 
+    setOrder:
+        setRuleOrder,
+
     touch:
         touchRule
 
 };
+function setPackOrder(
+    oldOrder,
+    newOrder
+) {
 
+    const db =
+        loadDatabase();
+
+    const packs =
+        [...db.packs]
+        .sort(
+            (a, b) =>
+                a.order - b.order
+        );
+
+    const pack =
+        packs.find(
+            p =>
+                Number(p.order) ===
+                Number(oldOrder)
+        );
+
+    if (!pack)
+        return false;
+
+    let target =
+        Number(newOrder);
+
+    if (!Number.isFinite(target))
+        return false;
+
+    target =
+        Math.max(
+            1,
+            Math.min(
+                target,
+                packs.length
+            )
+        );
+
+    const oldIndex =
+        packs.indexOf(pack);
+
+    packs.splice(oldIndex, 1);
+
+    packs.splice(
+        target - 1,
+        0,
+        pack
+    );
+
+    packs.forEach(
+        (p, index) => {
+            p.order = index + 1;
+        }
+    );
+
+    db.packs = packs;
+
+    saveDatabase(db);
+
+    return true;
+}
 
 console.log(
     `[WNC] ${WNC_VERSION} Part 1 loaded`
@@ -1688,7 +1756,34 @@ WNC.replace = {
 
 };
 
+function generateRegex(rule) {
 
+    if (!rule)
+        return "";
+
+    const find =
+        String(rule.find || "");
+
+    if (!find)
+        return "";
+
+    if (rule.type === "regex")
+        return find;
+
+    const escaped =
+        escapeRegex(find);
+
+    if (rule.type === "text")
+        return escaped;
+
+    return (
+        "(?<![\\w-])" +
+        escaped +
+        "(?![\\w-])"
+    );
+}
+    WNC.replace.generateRegex =
+    generateRegex;
 // ============================================================
 // DIAGNOSTIC MESSAGE
 // ============================================================
@@ -3496,7 +3591,68 @@ function renderPacks(content){
 
 
     const table = document.createElement("table");
+const packLabel =
+    document.createElement("span");
 
+packLabel.textContent =
+    "Pack:";
+
+
+const packSearch =
+    document.createElement("input");
+
+packSearch.type = "search";
+packSearch.placeholder =
+    "search / select pack";
+
+packSearch.style.width =
+    "150px";
+
+
+const templateInput =
+    document.createElement("input");
+
+templateInput.type = "text";
+templateInput.placeholder =
+    "Te template";
+
+templateInput.style.width =
+    "160px";
+
+
+const generateButton =
+    document.createElement("button");
+
+generateButton.textContent =
+    "G Generate Regex";
+
+
+const newPackButton =
+    document.createElement("button");
+
+newPackButton.textContent =
+    "+ Pack";
+
+
+toolbar.appendChild(
+    packLabel
+);
+
+toolbar.appendChild(
+    packSearch
+);
+
+toolbar.appendChild(
+    templateInput
+);
+
+toolbar.appendChild(
+    generateButton
+);
+
+toolbar.appendChild(
+    newPackButton
+);
     table.innerHTML = `
         <thead>
             <tr>
@@ -4370,133 +4526,129 @@ function discoverUnruled(text, rules){
 // SCAN
 // ============================================================
 
-function scanPage(options = {}){
+function scanPage() {
 
     const text =
-        scannerText();
-
-    const rules =
-        getScannerRules();
+        document.body?.innerText || "";
 
     const results = [];
 
-
-    // --------------------------------------------------------
-    // Existing rules
-    // --------------------------------------------------------
-
-    rules.forEach(item => {
-
-        const count =
-            getMatchCount(
-                text,
-                item.rule
-            );
-
-        if(count <= 0)
-            return;
-
-        results.push({
-
-            ruled: true,
-
-            pack:
-                item.pack,
-
-            order:
-                item.order,
-
-            find:
-                item.find,
-
-            replace:
-                item.replace,
-
-            type:
-                item.type,
-
-            caseSensitive:
-                item.caseSensitive,
-
-            count,
-
-            total:
-                count,
-
-            rule:
-                item.rule
-
-        });
-
-    });
-
-
-    // --------------------------------------------------------
-    // Unruled discoveries
-    // --------------------------------------------------------
-
-    const discovered =
-        discoverUnruled(
-            text,
-            rules
+    const packs =
+        WNC.packs.getMatched(
+            location.hostname
         );
 
+    packs.forEach(pack => {
 
-    discovered.forEach(item => {
+        pack.rules
+            .slice()
+            .sort(
+                (a, b) =>
+                    a.order - b.order
+            )
+            .forEach(rule => {
 
-        results.push({
+                if (!rule.find)
+                    return;
 
-            ruled: false,
+                const before =
+                    text;
 
-            pack: "",
+                const after =
+                    WNC.replace.replaceValue(
+                        before,
+                        rule
+                    );
 
-            order: null,
+                if (after === before)
+                    return;
 
-            find:
-                item.text,
+                const count =
+                    countRuleMatches(
+                        text,
+                        rule
+                    );
 
-            replace: "",
+                results.push({
 
-            type: "whole",
+                    pack:
+                        pack.name,
 
-            caseSensitive: false,
+                    order:
+                        rule.order,
 
-            count:
-                item.count,
+                    find:
+                        rule.find,
 
-            total:
-                item.count,
+                    replace:
+                        rule.replace,
 
-            rule: null
+                    result:
+                        after,
 
-        });
+                    count,
+
+                    type:
+                        rule.type,
+
+                    caseSensitive:
+                        rule.caseSensitive,
+
+                    template:
+                        rule.template || "",
+
+                    generatedRegex:
+                        rule.generatedRegex || ""
+
+                });
+
+            });
 
     });
-
-
-    // --------------------------------------------------------
-    // Highest count first
-    // --------------------------------------------------------
-
-    results.sort((a,b) => {
-
-        if(b.count !== a.count)
-            return b.count - a.count;
-
-        if(a.ruled !== b.ruled)
-            return a.ruled ? -1 : 1;
-
-        return a.find.localeCompare(
-            b.find
-        );
-
-    });
-
 
     return results;
-
 }
+function countRuleMatches(
+    text,
+    rule
+) {
 
+    if (!text || !rule || !rule.find)
+        return 0;
+
+    const pattern =
+        WNC.replace.generateRegex(
+            rule
+        );
+
+    if (!pattern)
+        return 0;
+
+    try {
+
+        const flags =
+            rule.caseSensitive
+                ? "g"
+                : "gi";
+
+        const regex =
+            new RegExp(
+                pattern,
+                flags
+            );
+
+        return (
+            text.match(regex) || []
+        ).length;
+
+    }
+
+    catch (error) {
+
+        return 0;
+
+    }
+}
 
 // ============================================================
 // PACK SEARCH
@@ -5056,23 +5208,79 @@ function renderScanner(){
         "wnc-scanner-table";
 
 
-    table.innerHTML = `
-        <thead>
-            <tr>
-                <th>Pack</th>
-                <th>Find</th>
-                <th>Result</th>
-                <th>Co</th>
-                <th>C</th>
-                <th>T</th>
-                <th>Te</th>
-                <th>A</th>
-                <th>Del</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    `;
+table.innerHTML = `
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Pack</th>
+            <th>Find</th>
+            <th>Result</th>
+            <th>Co</th>
+            <th>C</th>
+            <th>T</th>
+            <th>Te</th>
+            <th>Rx</th>
+            <th>G</th>
+            <th>A</th>
+            <th>Del</th>
+        </tr>
+    </thead>
+    <tbody></tbody>
+`;
+function createTypeSwitch(
+    rule,
+    onChange
+) {
 
+    const button =
+        document.createElement("button");
+
+    const types = [
+        "whole",
+        "text",
+        "regex"
+    ];
+
+    function render() {
+
+        const index =
+            types.indexOf(rule.type);
+
+        button.textContent =
+            rule.type === "whole"
+                ? "W"
+                : rule.type === "text"
+                    ? "T"
+                    : "Rx";
+
+        button.title =
+            rule.type;
+
+    }
+
+    button.onclick = () => {
+
+        const index =
+            types.indexOf(rule.type);
+
+        rule.type =
+            types[
+                (index + 1) %
+                types.length
+            ];
+
+        onChange(
+            rule.type
+        );
+
+        render();
+
+    };
+
+    render();
+
+    return button;
+}
 
     const tbody =
         table.querySelector("tbody");
@@ -5183,24 +5391,45 @@ function renderScanner(){
             // Case
             // ------------------------------------------------
 
-            const caseCell =
-                document.createElement("td");
+            function createCaseSwitch(
+    rule,
+    onChange
+) {
 
-            caseCell.appendChild(
-                createCaseSwitch(
-                    result.caseSensitive,
-                    value => {
+    const button =
+        document.createElement("button");
 
-                        result.caseSensitive =
-                            value;
+    function render() {
 
-                    }
-                )
-            );
+        button.textContent =
+            rule.caseSensitive
+                ? "C"
+                : "c";
 
-            row.appendChild(
-                caseCell
-            );
+        button.title =
+            rule.caseSensitive
+                ? "Case sensitive"
+                : "Case insensitive";
+
+    }
+
+    button.onclick = () => {
+
+        rule.caseSensitive =
+            !rule.caseSensitive;
+
+        onChange(
+            rule.caseSensitive
+        );
+
+        render();
+
+    };
+
+    render();
+
+    return button;
+}
 
 
             // ------------------------------------------------
@@ -5226,7 +5455,60 @@ function renderScanner(){
                 typeCell
             );
 
+function createTypeSwitch(
+    rule,
+    onChange
+) {
 
+    const button =
+        document.createElement("button");
+
+    const types = [
+        "whole",
+        "text",
+        "regex"
+    ];
+
+    function render() {
+
+        const index =
+            types.indexOf(rule.type);
+
+        button.textContent =
+            rule.type === "whole"
+                ? "W"
+                : rule.type === "text"
+                    ? "T"
+                    : "Rx";
+
+        button.title =
+            rule.type;
+
+    }
+
+    button.onclick = () => {
+
+        const index =
+            types.indexOf(rule.type);
+
+        rule.type =
+            types[
+                (index + 1) %
+                types.length
+            ];
+
+        onChange(
+            rule.type
+        );
+
+        render();
+
+    };
+
+    render();
+
+    return button;
+}
             // ------------------------------------------------
             // Template
             // ------------------------------------------------
@@ -6909,17 +7191,19 @@ function openTools(){
 
 GM_addStyle(`
 
-#wnc-tools-panel {
+#wnc-tool-panel {
 
     position:fixed;
 
-    top:60px;
+    top:40px;
     left:50%;
 
     transform:translateX(-50%);
 
-    width:420px;
-    max-width:calc(100vw - 40px);
+    width:min(1400px, 98vw);
+    max-height:90vh;
+
+    overflow:auto;
 
     z-index:999999;
 
@@ -6927,20 +7211,19 @@ GM_addStyle(`
     color:#fff;
 
     border:1px solid #777;
-    border-radius:6px;
 
-    padding:12px;
+    padding:4px;
 
-    font:13px Arial,sans-serif;
-
-    box-shadow:
-        0 4px 20px rgba(0,0,0,.5);
+    font:12px Arial,sans-serif;
 
 }
 
+#wnc-tool-panel .wnc-panel-header {
 
-#wnc-tools-panel
-.wnc-tools-header {
+    position:sticky;
+    top:0;
+
+    z-index:5;
 
     display:flex;
 
@@ -6948,48 +7231,91 @@ GM_addStyle(`
 
     align-items:center;
 
-    margin-bottom:12px;
+    background:#222;
+
+    padding:2px 0;
 
 }
 
+#wnc-tool-panel .wnc-toolbar {
 
-#wnc-tools-panel
-.wnc-tools-body {
+    position:sticky;
+    top:24px;
+
+    z-index:4;
 
     display:flex;
 
-    flex-direction:column;
+    gap:3px;
 
-    gap:7px;
+    align-items:center;
+
+    padding:2px 0;
+
+    background:#222;
 
 }
 
+#wnc-tool-panel table {
 
-#wnc-tools-panel button {
+    width:max-content;
 
-    padding:7px 10px;
+    min-width:100%;
+
+    border-collapse:collapse;
+
+    table-layout:auto;
+
+}
+
+#wnc-tool-panel th,
+#wnc-tool-panel td {
+
+    padding:2px 4px;
+
+    border:1px solid #555;
+
+    white-space:nowrap;
+
+    vertical-align:middle;
+
+}
+
+#wnc-tool-panel th {
+
+    position:sticky;
+
+    top:50px;
+
+    z-index:3;
+
+    background:#222;
+
+}
+
+#wnc-tool-panel input,
+#wnc-tool-panel select,
+#wnc-tool-panel button {
+
+    box-sizing:border-box;
+
+    font:12px Arial,sans-serif;
+
+}
+
+#wnc-tool-panel input {
+
+    padding:2px 3px;
+
+}
+
+#wnc-tool-panel button {
+
+    padding:2px 5px;
 
     cursor:pointer;
 
-    text-align:left;
-
-    font:13px Arial,sans-serif;
-
 }
-
-
-#wnc-tools-panel hr {
-
-    width:100%;
-
-    border:0;
-
-    border-top:1px solid #555;
-
-    margin:5px 0;
-
-}
-
 `);
 
 
