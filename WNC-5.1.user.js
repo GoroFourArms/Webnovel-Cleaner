@@ -530,69 +530,61 @@ function addRule(packName, data = {}) {
     const db =
         loadDatabase();
 
-
     const pack =
         db.packs.find(
             p =>
                 p.name === packName
         );
 
-
     if (!pack)
         return null;
 
+    const rule = {
 
-const rule = {
+        order:
+            nextRuleOrder(pack),
 
-    order:
-        nextRuleOrder(pack),
+        find:
+            String(
+                data.find || ""
+            ),
 
-    find:
-        String(
-            data.find || ""
-        ),
+        replace:
+            String(
+                data.replace || ""
+            ),
 
-    replace:
-        String(
-            data.replace || ""
-        ),
+        type:
+            data.type || "whole",
 
-    type:
-        data.type || "whole",
+        caseSensitive:
+            data.caseSensitive === true,
 
-    caseSensitive:
-        data.caseSensitive === true,
+        enabled:
+            data.enabled !== false,
 
-    enabled:
-        data.enabled !== false,
+        template:
+            String(
+                data.template || ""
+            ),
 
-    template:
-        String(
-            data.template || ""
-        ),
+        generatedRegex:
+            String(
+                data.generatedRegex || ""
+            ),
 
-    generatedRegex:
-        String(
-            data.generatedRegex || ""
-        ),
+        htmlMode:
+            data.htmlMode || "none",
 
-    htmlMode:
-        data.htmlMode || "none",
-
-    lastUsed:
-        null
-
-};
-
+        lastUsed:
+            null
+    };
 
     pack.rules.push(rule);
 
-
     saveDatabase(db);
 
-
     return rule;
-
 }
 
 
@@ -681,7 +673,82 @@ function removeRule(
     );
 
 }
+function setRuleOrder(
+    packName,
+    oldOrder,
+    newOrder
+) {
 
+    const db =
+        loadDatabase();
+
+    const pack =
+        db.packs.find(
+            p =>
+                p.name === packName
+        );
+
+    if (!pack)
+        return false;
+
+    const rules =
+        [...pack.rules]
+        .sort(
+            (a, b) =>
+                a.order - b.order
+        );
+
+    const rule =
+        rules.find(
+            r =>
+                Number(r.order) ===
+                Number(oldOrder)
+        );
+
+    if (!rule)
+        return false;
+
+    let target =
+        Number(newOrder);
+
+    if (!Number.isFinite(target))
+        return false;
+
+    target =
+        Math.max(
+            1,
+            Math.min(
+                target,
+                rules.length
+            )
+        );
+
+    const oldIndex =
+        rules.indexOf(rule);
+
+    const newIndex =
+        target - 1;
+
+    rules.splice(oldIndex, 1);
+
+    rules.splice(
+        newIndex,
+        0,
+        rule
+    );
+
+    rules.forEach(
+        (r, index) => {
+            r.order = index + 1;
+        }
+    );
+
+    pack.rules = rules;
+
+    saveDatabase(db);
+
+    return true;
+}
 
 function touchRule(
     packName,
