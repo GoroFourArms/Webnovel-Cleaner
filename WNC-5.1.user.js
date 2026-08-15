@@ -542,37 +542,47 @@ function addRule(packName, data = {}) {
         return null;
 
 
-    const rule = {
+const rule = {
 
-        order:
-            nextRuleOrder(pack),
+    order:
+        nextRuleOrder(pack),
 
-        find:
-            String(
-                data.find || ""
-            ),
+    find:
+        String(
+            data.find || ""
+        ),
 
-        replace:
-            String(
-                data.replace || ""
-            ),
+    replace:
+        String(
+            data.replace || ""
+        ),
 
-        type:
-            data.type || "whole",
+    type:
+        data.type || "whole",
 
-        caseSensitive:
-            data.caseSensitive === true,
+    caseSensitive:
+        data.caseSensitive === true,
 
-        enabled:
-            data.enabled !== false,
+    enabled:
+        data.enabled !== false,
 
-        htmlMode:
-            data.htmlMode || "none",
+    template:
+        String(
+            data.template || ""
+        ),
 
-        lastUsed:
-            null
+    generatedRegex:
+        String(
+            data.generatedRegex || ""
+        ),
 
-    };
+    htmlMode:
+        data.htmlMode || "none",
+
+    lastUsed:
+        null
+
+};
 
 
     pack.rules.push(rule);
