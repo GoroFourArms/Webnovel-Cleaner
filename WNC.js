@@ -512,14 +512,9 @@ function loadDatabase() {
 
     if (!raw) {
 
-        const db =
-            clone(
-                DEFAULT_DATABASE
-            );
-
-        saveDatabase(db);
-
-        return db;
+        return clone(
+            DEFAULT_DATABASE
+        );
 
     }
 
@@ -552,10 +547,7 @@ function loadDatabase() {
 
 
     db =
-        migrateDatabase(db);
-
-
-    saveDatabase(db);
+        normalizeFoxReplaceDatabase(db);
 
 
     return db;
