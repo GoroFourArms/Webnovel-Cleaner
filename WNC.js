@@ -569,8 +569,8 @@ function loadDatabase() {
 
 function saveDatabase(db) {
 
-    db =
-        migrateDatabase(
+    const normalizedDatabase =
+        normalizeFoxReplaceDatabase(
             clone(db)
         );
 
@@ -578,14 +578,14 @@ function saveDatabase(db) {
     GM_setValue(
         FOXREPLACE_DB_KEY,
         JSON.stringify(
-            db,
+            normalizedDatabase,
             null,
             2
         )
     );
 
 
-    return db;
+    return normalizedDatabase;
 
 }
 
