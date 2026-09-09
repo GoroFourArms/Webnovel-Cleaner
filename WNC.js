@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WebNovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      5.2
-// @description  WebNovel Cleaner - replacement engine, scanner, editor and FoxReplace-compatible database
+// @version      5.2.1
+// @description  WebNovel Cleaner - FoxReplace-compatible replacement engine, scanner, editor and database
 // @author       GoroFourArms
 // @match        *://*/*
 // @grant        GM_getValue
@@ -18,10 +18,17 @@
 (() => {
     "use strict";
 
-    const WNC_VERSION = "5.2.0";
+    // ============================================================
+    // PART 1 - CORE / DATABASE
+    // ============================================================
 
-    const FOXREPLACE_DB_KEY = "WNC_FOXREPLACE_DATABASE_V1";
-    const LEGACY_DB_KEY = "WNC_DATABASE_V5";
+    const WNC_VERSION = "5.2.1";
+
+    const FOXREPLACE_DB_KEY =
+        "WNC_FOXREPLACE_DATABASE_V1";
+
+    const LEGACY_DB_KEY =
+        "WNC_DATABASE_V5";
 
     const WNC = {
         version: WNC_VERSION,
@@ -40,21 +47,39 @@
         ui: {}
     };
 
-    // ============================================================
-    // PART 1 - DATABASE / FOXREPLACE DATA MODEL
-    // ============================================================
-
     const DEFAULT_DATABASE = {
         groups: []
     };
 
+    const RUNTIME = {
+        initialized: false,
+        cleanerInitialized: false,
+        observer: null,
+        observerPaused: false,
+        uiCreated: false
+    };
+
     function clone(value) {
-        return JSON.parse(JSON.stringify(value));
+        if (value === undefined) {
+            return undefined;
+        }
+
+        return JSON.parse(
+            JSON.stringify(value)
+        );
+    }
+
+    function isObject(value) {
+        return (
+            value !== null &&
+            typeof value === "object" &&
+            !Array.isArray(value)
+        );
     }
 
     function normalizeFoxReplaceDatabase(db) {
         const source =
-            db && typeof db === "object"
+            isObject(db)
                 ? clone(db)
                 : clone(DEFAULT_DATABASE);
 
@@ -62,105 +87,430 @@
             source.groups = [];
         }
 
-        source.groups = source.groups.map(group => {
-            const normalizedGroup =
-                group && typeof group === "object"
-                    ? group
-                    : {};
+        source.groups = source.groups.map(
+            group => {
+                const normalized =
+                    isObject(group)
+                        ? group
+                        : {};
 
-            if (typeof normalizedGroup.name !== "string") {
-                normalizedGroup.name = "Unnamed Group";
+                if (
+                    typeof normalized.name !==
+                    "string"
+                ) {
+                    normalized.name =
+                        "Unnamed Group";
+                }
+
+                normalized.name =
+                    normalized.name.trim() ||
+                    "Unnamed Group";
+
+                if (
+                    !Array.isArray(
+                        normalized.urls
+                    )
+                ) {
+                    normalized.urls = [];
+                }
+
+                normalized.urls =
+                    normalized.urls.filter(
+                        url =>
+                            typeof url ===
+                            "string"
+                    );
+
+                if (
+                    typeof normalized.enabled !==
+                    "boolean"
+                ) {
+                    normalized.enabled =
+                        true;
+                }
+
+                if (
+                    typeof normalized.pageLoad !==
+                    "boolean"
+                ) {
+                    normalized.pageLoad =
+                        true;
+                }
+
+                if (
+                    typeof normalized.auto !==
+                    "boolean"
+                ) {
+                    normalized.auto =
+                        true;
+                }
+
+                if (
+                    !Array.isArray(
+                        normalized.substitutions
+                    )
+                ) {
+                    normalized.substitutions =
+                        [];
+                }
+
+                normalized.substitutions =
+                    normalized.substitutions.map(
+                        substitution => {
+                            const rule =
+                                isObject(
+                                    substitution
+                                )
+                                    ? substitution
+                                    : {};
+
+                            if (
+                                typeof rule.input !==
+                                "string"
+                            ) {
+                                rule.input = "";
+                            }
+
+                            if (
+                                typeof rule.output !==
+                                "string"
+                            ) {
+                                rule.output = "";
+                            }
+
+                            if (
+                                ![
+                                    "text",
+                                    "whole",
+                                    "regexp"
+                                ].includes(
+                                    rule.inputType
+                                )
+                            ) {
+                                rule.inputType =
+                                    "text";
+                            }
+
+                            if (
+                                typeof rule.caseSensitive !==
+                                "boolean"
+                            ) {
+                                rule.caseSensitive =
+                                    false;
+                            }
+
+                            if (
+                                typeof rule.enabled !==
+                                "boolean"
+                            ) {
+                                rule.enabled =
+                                    true;
+                            }
+
+                            if (
+                                ![
+                                    "none",
+                                    "html",
+                                    "all"
+                                ].includes(
+                                    rule.html
+                                )
+                            ) {
+                                rule.html =
+                                    "none";
+                            }
+
+                            return rule;
+                        }
+                    );
+
+                return normalized;
             }
-
-            if (!Array.isArray(normalizedGroup.urls)) {
-                normalizedGroup.urls = [];
-            }
-
-            normalizedGroup.urls = normalizedGroup.urls
-                .filter(url => typeof url === "string");
-
-            if (typeof normalizedGroup.enabled !== "boolean") {
-                normalizedGroup.enabled = true;
-            }
-
-            if (typeof normalizedGroup.pageLoad !== "boolean") {
-                normalizedGroup.pageLoad = true;
-            }
-
-            if (typeof normalizedGroup.auto !== "boolean") {
-                normalizedGroup.auto = true;
-            }
-
-            if (!Array.isArray(normalizedGroup.substitutions)) {
-                normalizedGroup.substitutions = [];
-            }
-
-            normalizedGroup.substitutions =
-                normalizedGroup.substitutions.map(substitution => {
-                    const normalizedSubstitution =
-                        substitution &&
-                        typeof substitution === "object"
-                            ? substitution
-                            : {};
-
-                    if (typeof normalizedSubstitution.input !== "string") {
-                        normalizedSubstitution.input = "";
-                    }
-
-                    if (typeof normalizedSubstitution.output !== "string") {
-                        normalizedSubstitution.output = "";
-                    }
-
-                    if (
-                        normalizedSubstitution.inputType !== "text" &&
-                        normalizedSubstitution.inputType !== "whole" &&
-                        normalizedSubstitution.inputType !== "regexp"
-                    ) {
-                        normalizedSubstitution.inputType = "text";
-                    }
-
-                    if (
-                        typeof normalizedSubstitution.caseSensitive !==
-                        "boolean"
-                    ) {
-                        normalizedSubstitution.caseSensitive = false;
-                    }
-
-                    if (
-                        typeof normalizedSubstitution.enabled !== "boolean"
-                    ) {
-                        normalizedSubstitution.enabled = true;
-                    }
-
-                    if (
-                        normalizedSubstitution.html !== "none" &&
-                        normalizedSubstitution.html !== "html" &&
-                        normalizedSubstitution.html !== "all"
-                    ) {
-                        normalizedSubstitution.html = "none";
-                    }
-
-                    return normalizedSubstitution;
-                });
-
-            return normalizedGroup;
-        });
+        );
 
         return source;
     }
 
-    function migrateLegacyDatabase() {
-        const currentValue = GM_getValue(FOXREPLACE_DB_KEY, null);
+    function validateFoxReplaceDatabase(
+        value
+    ) {
+        if (
+            !isObject(value) ||
+            !Array.isArray(value.groups)
+        ) {
+            return {
+                valid: false,
+                error:
+                    "Database must contain a groups array."
+            };
+        }
 
+        const names = new Set();
+
+        for (
+            let groupIndex = 0;
+            groupIndex <
+            value.groups.length;
+            groupIndex++
+        ) {
+            const group =
+                value.groups[groupIndex];
+
+            if (!isObject(group)) {
+                return {
+                    valid: false,
+                    error:
+                        `Group ${groupIndex + 1} is not an object.`
+                };
+            }
+
+            if (
+                group.name !== undefined &&
+                typeof group.name !==
+                    "string"
+            ) {
+                return {
+                    valid: false,
+                    error:
+                        `Group ${groupIndex + 1} has an invalid name.`
+                };
+            }
+
+            const name =
+                typeof group.name === "string"
+                    ? group.name.trim()
+                    : "";
+
+            if (name) {
+                if (names.has(name)) {
+                    return {
+                        valid: false,
+                        error:
+                            `Duplicate group name: ${name}`
+                    };
+                }
+
+                names.add(name);
+            }
+
+            if (
+                group.urls !== undefined &&
+                !Array.isArray(group.urls)
+            ) {
+                return {
+                    valid: false,
+                    error:
+                        `Group ${groupIndex + 1} has invalid urls.`
+                };
+            }
+
+            if (
+                Array.isArray(group.urls) &&
+                group.urls.some(
+                    url =>
+                        typeof url !==
+                        "string"
+                )
+            ) {
+                return {
+                    valid: false,
+                    error:
+                        `Group ${groupIndex + 1} contains an invalid URL pattern.`
+                };
+            }
+
+            for (
+                const field of [
+                    "enabled",
+                    "pageLoad",
+                    "auto"
+                ]
+            ) {
+                if (
+                    group[field] !== undefined &&
+                    typeof group[field] !==
+                        "boolean"
+                ) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1} has an invalid ${field} value.`
+                    };
+                }
+            }
+
+            if (
+                group.substitutions !==
+                    undefined &&
+                !Array.isArray(
+                    group.substitutions
+                )
+            ) {
+                return {
+                    valid: false,
+                    error:
+                        `Group ${groupIndex + 1} has invalid substitutions.`
+                };
+            }
+
+            for (
+                let ruleIndex = 0;
+                ruleIndex <
+                (
+                    group.substitutions ||
+                    []
+                ).length;
+                ruleIndex++
+            ) {
+                const rule =
+                    group.substitutions[
+                        ruleIndex
+                    ];
+
+                if (!isObject(rule)) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} is invalid.`
+                    };
+                }
+
+                if (
+                    rule.input !== undefined &&
+                    typeof rule.input !==
+                        "string"
+                ) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid input.`
+                    };
+                }
+
+                if (
+                    rule.output !== undefined &&
+                    typeof rule.output !==
+                        "string"
+                ) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid output.`
+                    };
+                }
+
+                if (
+                    rule.inputType !== undefined &&
+                    ![
+                        "text",
+                        "whole",
+                        "regexp"
+                    ].includes(
+                        rule.inputType
+                    )
+                ) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid inputType.`
+                    };
+                }
+
+                if (
+                    rule.caseSensitive !==
+                        undefined &&
+                    typeof rule.caseSensitive !==
+                        "boolean"
+                ) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid caseSensitive value.`
+                    };
+                }
+
+                if (
+                    rule.enabled !== undefined &&
+                    typeof rule.enabled !==
+                        "boolean"
+                ) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid enabled value.`
+                    };
+                }
+
+                if (
+                    rule.html !== undefined &&
+                    ![
+                        "none",
+                        "html",
+                        "all"
+                    ].includes(rule.html)
+                ) {
+                    return {
+                        valid: false,
+                        error:
+                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid html value.`
+                    };
+                }
+            }
+        }
+
+        return {
+            valid: true,
+            error: null
+        };
+    }
+
+    function migrateLegacyDatabase() {
+        const currentValue =
+            GM_getValue(
+                FOXREPLACE_DB_KEY,
+                null
+            );
+
+        /*
+         * If a usable current database exists,
+         * never overwrite it with legacy data.
+         */
         if (
             currentValue !== null &&
             currentValue !== undefined &&
             currentValue !== ""
         ) {
-            return null;
+            try {
+                const current =
+                    typeof currentValue ===
+                    "string"
+                        ? JSON.parse(
+                              currentValue
+                          )
+                        : currentValue;
+
+                const validation =
+                    validateFoxReplaceDatabase(
+                        current
+                    );
+
+                if (validation.valid) {
+                    return null;
+                }
+            } catch {
+                /*
+                 * Invalid current data is allowed
+                 * to fall through to legacy
+                 * migration.
+                 */
+            }
         }
 
-        const legacyValue = GM_getValue(LEGACY_DB_KEY, null);
+        const legacyValue =
+            GM_getValue(
+                LEGACY_DB_KEY,
+                null
+            );
 
         if (
             legacyValue === null ||
@@ -174,128 +524,190 @@
 
         try {
             legacy =
-                typeof legacyValue === "string"
-                    ? JSON.parse(legacyValue)
+                typeof legacyValue ===
+                "string"
+                    ? JSON.parse(
+                          legacyValue
+                      )
                     : clone(legacyValue);
         } catch (error) {
             console.warn(
-                "[WNC] Legacy database could not be parsed:",
+                "[WNC] Legacy database parse failed:",
                 error
             );
+
             return null;
         }
 
-        if (!legacy || !Array.isArray(legacy.packs)) {
+        if (
+            !isObject(legacy) ||
+            !Array.isArray(legacy.packs)
+        ) {
             return null;
         }
 
-        const groups = legacy.packs
-            .slice()
-            .sort((a, b) => {
-                return (
-                    Number(a?.order ?? 0) -
-                    Number(b?.order ?? 0)
-                );
-            })
-            .map(pack => {
-                const oldRules = Array.isArray(pack?.rules)
-                    ? pack.rules
-                    : [];
+        const groups =
+            legacy.packs
+                .slice()
+                .sort(
+                    (a, b) =>
+                        Number(
+                            a?.order ?? 0
+                        ) -
+                        Number(
+                            b?.order ?? 0
+                        )
+                )
+                .map(pack => {
+                    const oldRules =
+                        Array.isArray(
+                            pack?.rules
+                        )
+                            ? pack.rules
+                            : [];
 
-                const substitutions = oldRules
-                    .slice()
-                    .sort((a, b) => {
-                        return (
-                            Number(a?.order ?? 0) -
-                            Number(b?.order ?? 0)
-                        );
-                    })
-                    .map(rule => {
-                        let inputType = rule?.type;
+                    const substitutions =
+                        oldRules
+                            .slice()
+                            .sort(
+                                (a, b) =>
+                                    Number(
+                                        a?.order ??
+                                            0
+                                    ) -
+                                    Number(
+                                        b?.order ??
+                                            0
+                                    )
+                            )
+                            .map(rule => {
+                                let inputType =
+                                    rule?.type;
 
-                        if (inputType === "regex") {
-                            inputType = "regexp";
-                        }
+                                if (
+                                    inputType ===
+                                    "regex"
+                                ) {
+                                    inputType =
+                                        "regexp";
+                                }
 
-                        if (
-                            inputType !== "text" &&
-                            inputType !== "whole" &&
-                            inputType !== "regexp"
-                        ) {
-                            inputType = "text";
-                        }
+                                if (
+                                    ![
+                                        "text",
+                                        "whole",
+                                        "regexp"
+                                    ].includes(
+                                        inputType
+                                    )
+                                ) {
+                                    inputType =
+                                        "text";
+                                }
 
-                        let html = rule?.htmlMode;
+                                let html =
+                                    rule?.htmlMode;
 
-                        if (
-                            html !== "none" &&
-                            html !== "html" &&
-                            html !== "all"
-                        ) {
-                            html = "none";
-                        }
+                                if (
+                                    ![
+                                        "none",
+                                        "html",
+                                        "all"
+                                    ].includes(html)
+                                ) {
+                                    html =
+                                        "none";
+                                }
 
-                        return {
-                            input:
-                                typeof rule?.find === "string"
-                                    ? rule.find
-                                    : "",
+                                return {
+                                    input:
+                                        typeof rule?.find ===
+                                        "string"
+                                            ? rule.find
+                                            : "",
 
-                            output:
-                                typeof rule?.replace === "string"
-                                    ? rule.replace
-                                    : "",
+                                    output:
+                                        typeof rule?.replace ===
+                                        "string"
+                                            ? rule.replace
+                                            : "",
 
-                            inputType,
+                                    inputType,
 
-                            caseSensitive:
-                                typeof rule?.caseSensitive === "boolean"
-                                    ? rule.caseSensitive
-                                    : false,
+                                    caseSensitive:
+                                        typeof rule?.caseSensitive ===
+                                        "boolean"
+                                            ? rule.caseSensitive
+                                            : false,
 
-                            enabled:
-                                typeof rule?.enabled === "boolean"
-                                    ? rule.enabled
-                                    : true,
+                                    enabled:
+                                        typeof rule?.enabled ===
+                                        "boolean"
+                                            ? rule.enabled
+                                            : true,
 
-                            html
-                        };
-                    });
+                                    html
+                                };
+                            });
 
-                return {
-                    name:
-                        typeof pack?.name === "string"
-                            ? pack.name
-                            : "Unnamed Group",
+                    return {
+                        name:
+                            typeof pack?.name ===
+                            "string"
+                                ? pack.name.trim() ||
+                                  "Unnamed Group"
+                                : "Unnamed Group",
 
-                    urls: Array.isArray(pack?.urls)
-                        ? pack.urls.filter(
-                              url => typeof url === "string"
-                          )
-                        : [],
+                        urls:
+                            Array.isArray(
+                                pack?.urls
+                            )
+                                ? pack.urls.filter(
+                                      url =>
+                                          typeof url ===
+                                          "string"
+                                  )
+                                : [],
 
-                    enabled:
-                        typeof pack?.enabled === "boolean"
-                            ? pack.enabled
-                            : true,
+                        enabled:
+                            typeof pack?.enabled ===
+                            "boolean"
+                                ? pack.enabled
+                                : true,
 
-                    pageLoad:
-                        typeof pack?.pageLoad === "boolean"
-                            ? pack.pageLoad
-                            : true,
+                        pageLoad:
+                            typeof pack?.pageLoad ===
+                            "boolean"
+                                ? pack.pageLoad
+                                : true,
 
-                    auto:
-                        typeof pack?.auto === "boolean"
-                            ? pack.auto
-                            : true,
+                        auto:
+                            typeof pack?.auto ===
+                            "boolean"
+                                ? pack.auto
+                                : true,
 
-                    substitutions
-                };
+                        substitutions
+                    };
+                });
+
+        const migrated =
+            normalizeFoxReplaceDatabase({
+                groups
             });
 
-        const migrated = normalizeFoxReplaceDatabase({
-            groups
-        });
+        const validation =
+            validateFoxReplaceDatabase(
+                migrated
+            );
+
+        if (!validation.valid) {
+            console.warn(
+                "[WNC] Legacy migration produced invalid data."
+            );
+
+            return null;
+        }
 
         GM_setValue(
             FOXREPLACE_DB_KEY,
@@ -303,167 +715,109 @@
         );
 
         console.info(
-            "[WNC] Legacy database migrated to FoxReplace format."
+            "[WNC] Legacy database migrated."
         );
 
         return migrated;
     }
 
-    function migrateDatabase(db) {
-        return normalizeFoxReplaceDatabase(db);
-    }
-
     function loadDatabase() {
         migrateLegacyDatabase();
 
-        const stored = GM_getValue(
-            FOXREPLACE_DB_KEY,
-            null
-        );
+        const stored =
+            GM_getValue(
+                FOXREPLACE_DB_KEY,
+                null
+            );
 
         if (
             stored === null ||
             stored === undefined ||
             stored === ""
         ) {
-            return clone(DEFAULT_DATABASE);
+            return clone(
+                DEFAULT_DATABASE
+            );
         }
 
         try {
             const parsed =
-                typeof stored === "string"
+                typeof stored ===
+                "string"
                     ? JSON.parse(stored)
                     : clone(stored);
 
-            return migrateDatabase(parsed);
+            const validation =
+                validateFoxReplaceDatabase(
+                    parsed
+                );
+
+            if (!validation.valid) {
+                console.warn(
+                    "[WNC] Stored database is invalid:",
+                    validation.error
+                );
+
+                return clone(
+                    DEFAULT_DATABASE
+                );
+            }
+
+            return normalizeFoxReplaceDatabase(
+                parsed
+            );
         } catch (error) {
             console.warn(
-                "[WNC] Database could not be loaded:",
+                "[WNC] Database load failed:",
                 error
             );
 
-            return clone(DEFAULT_DATABASE);
+            return clone(
+                DEFAULT_DATABASE
+            );
         }
     }
 
     function saveDatabase(db) {
         const normalized =
-            normalizeFoxReplaceDatabase(db);
+            normalizeFoxReplaceDatabase(
+                db
+            );
+
+        const validation =
+            validateFoxReplaceDatabase(
+                normalized
+            );
+
+        if (!validation.valid) {
+            throw new Error(
+                validation.error
+            );
+        }
 
         GM_setValue(
             FOXREPLACE_DB_KEY,
             JSON.stringify(normalized)
         );
 
-        WNC.database.current = normalized;
+        WNC.database.current =
+            clone(normalized);
 
         return clone(normalized);
     }
 
-    WNC.database.current = loadDatabase();
+    WNC.database.current =
+        loadDatabase();
 
     function getDatabase() {
-        WNC.database.current = loadDatabase();
-        return clone(WNC.database.current);
-    }
-
-    function setPackOrder(packName, requestedOrder) {
-        const db = getDatabase();
-
-        const currentIndex = db.groups.findIndex(
-            group => group.name === packName
+        return clone(
+            WNC.database.current
         );
-
-        if (currentIndex < 0) {
-            return false;
-        }
-
-        let targetIndex = Number(requestedOrder);
-
-        if (!Number.isFinite(targetIndex)) {
-            return false;
-        }
-
-        targetIndex = Math.max(
-            0,
-            Math.min(targetIndex, db.groups.length - 1)
-        );
-
-        const [group] = db.groups.splice(
-            currentIndex,
-            1
-        );
-
-        db.groups.splice(
-            targetIndex,
-            0,
-            group
-        );
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function setRuleOrder(
-        packName,
-        oldOrder,
-        requestedOrder
-    ) {
-        const db = getDatabase();
-
-        const group = db.groups.find(
-            item => item.name === packName
-        );
-
-        if (!group) {
-            return false;
-        }
-
-        let currentIndex = Number(oldOrder);
-        let targetIndex = Number(requestedOrder);
-
-        if (
-            !Number.isFinite(currentIndex) ||
-            !Number.isFinite(targetIndex)
-        ) {
-            return false;
-        }
-
-        if (
-            currentIndex < 0 ||
-            currentIndex >= group.substitutions.length
-        ) {
-            return false;
-        }
-
-        targetIndex = Math.max(
-            0,
-            Math.min(
-                targetIndex,
-                group.substitutions.length - 1
-            )
-        );
-
-        const [substitution] =
-            group.substitutions.splice(
-                currentIndex,
-                1
-            );
-
-        group.substitutions.splice(
-            targetIndex,
-            0,
-            substitution
-        );
-
-        saveDatabase(db);
-
-        return true;
     }
 
     function createPack(name) {
-        const db = getDatabase();
+        const db =
+            getDatabase();
 
         const groupName =
             String(name || "").trim();
@@ -476,7 +830,9 @@
 
         if (
             db.groups.some(
-                group => group.name === groupName
+                group =>
+                    group.name ===
+                    groupName
             )
         ) {
             throw new Error(
@@ -503,41 +859,58 @@
     }
 
     function getPack(name) {
-        const db = getDatabase();
-
         return (
-            db.groups.find(
-                group => group.name === name
+            getDatabase().groups.find(
+                group =>
+                    group.name === name
             ) || null
         );
     }
 
-    function updatePack(name, data) {
-        const db = getDatabase();
+    function updatePack(
+        name,
+        data
+    ) {
+        const db =
+            getDatabase();
 
-        const group = db.groups.find(
-            item => item.name === name
-        );
+        const group =
+            db.groups.find(
+                item =>
+                    item.name ===
+                    name
+            );
 
         if (!group) {
             return false;
         }
 
         const source =
-            data && typeof data === "object"
+            isObject(data)
                 ? data
                 : {};
 
-        if (typeof source.name === "string") {
-            const newName = source.name.trim();
+        if (
+            typeof source.name ===
+            "string"
+        ) {
+            const newName =
+                source.name.trim();
+
+            if (!newName) {
+                throw new Error(
+                    "Group name cannot be empty."
+                );
+            }
 
             if (
-                newName &&
-                newName !== group.name &&
+                newName !==
+                    group.name &&
                 db.groups.some(
                     item =>
                         item !== group &&
-                        item.name === newName
+                        item.name ===
+                            newName
                 )
             ) {
                 throw new Error(
@@ -545,34 +918,43 @@
                 );
             }
 
-            if (newName) {
-                group.name = newName;
-            }
+            group.name =
+                newName;
         }
 
-        if (Array.isArray(source.urls)) {
-            group.urls = source.urls
-                .filter(
-                    url => typeof url === "string"
+        if (
+            Array.isArray(source.urls)
+        ) {
+            group.urls =
+                source.urls.filter(
+                    url =>
+                        typeof url ===
+                        "string"
                 );
         }
 
         if (
-            typeof source.enabled === "boolean"
+            typeof source.enabled ===
+            "boolean"
         ) {
-            group.enabled = source.enabled;
+            group.enabled =
+                source.enabled;
         }
 
         if (
-            typeof source.pageLoad === "boolean"
+            typeof source.pageLoad ===
+            "boolean"
         ) {
-            group.pageLoad = source.pageLoad;
+            group.pageLoad =
+                source.pageLoad;
         }
 
         if (
-            typeof source.auto === "boolean"
+            typeof source.auto ===
+            "boolean"
         ) {
-            group.auto = source.auto;
+            group.auto =
+                source.auto;
         }
 
         saveDatabase(db);
@@ -581,17 +963,21 @@
     }
 
     function removePack(name) {
-        const db = getDatabase();
+        const db =
+            getDatabase();
 
         const originalLength =
             db.groups.length;
 
-        db.groups = db.groups.filter(
-            group => group.name !== name
-        );
+        db.groups =
+            db.groups.filter(
+                group =>
+                    group.name !== name
+            );
 
         if (
-            db.groups.length === originalLength
+            db.groups.length ===
+            originalLength
         ) {
             return false;
         }
@@ -601,49 +987,79 @@
         return true;
     }
 
-    function addRule(packName, rule) {
-        const db = getDatabase();
+    function addRule(
+        packName,
+        rule
+    ) {
+        const db =
+            getDatabase();
 
-        const group = db.groups.find(
-            item => item.name === packName
-        );
+        const group =
+            db.groups.find(
+                item =>
+                    item.name ===
+                    packName
+            );
 
         if (!group) {
             return false;
         }
 
+        const source =
+            isObject(rule)
+                ? rule
+                : {};
+
+        const inputType =
+            [
+                "text",
+                "whole",
+                "regexp"
+            ].includes(
+                source.inputType
+            )
+                ? source.inputType
+                : "text";
+
+        const html =
+            [
+                "none",
+                "html",
+                "all"
+            ].includes(
+                source.html
+            )
+                ? source.html
+                : "none";
+
         group.substitutions.push({
             input:
-                typeof rule?.input === "string"
-                    ? rule.input
+                typeof source.input ===
+                "string"
+                    ? source.input
                     : "",
 
             output:
-                typeof rule?.output === "string"
-                    ? rule.output
+                typeof source.output ===
+                "string"
+                    ? source.output
                     : "",
 
-            inputType:
-                rule?.inputType === "whole" ||
-                rule?.inputType === "regexp"
-                    ? rule.inputType
-                    : "text",
+            inputType,
 
             caseSensitive:
-                typeof rule?.caseSensitive === "boolean"
-                    ? rule.caseSensitive
+                typeof source.caseSensitive ===
+                "boolean"
+                    ? source.caseSensitive
                     : false,
 
             enabled:
-                typeof rule?.enabled === "boolean"
-                    ? rule.enabled
+                typeof source.enabled ===
+                "boolean"
+                    ? source.enabled
                     : true,
 
-            html:
-                rule?.html === "html" ||
-                rule?.html === "all"
-                    ? rule.html
-                    : "none"
+            html
         });
 
         saveDatabase(db);
@@ -656,54 +1072,66 @@
         ruleIndex,
         data
     ) {
-        const db = getDatabase();
+        const db =
+            getDatabase();
 
-        const group = db.groups.find(
-            item => item.name === packName
-        );
+        const group =
+            db.groups.find(
+                item =>
+                    item.name ===
+                    packName
+            );
 
         if (!group) {
             return false;
         }
 
-        const index = Number(ruleIndex);
+        const index =
+            Number(ruleIndex);
 
         if (
             !Number.isInteger(index) ||
             index < 0 ||
-            index >= group.substitutions.length
+            index >=
+                group.substitutions.length
         ) {
             return false;
         }
 
-        const substitution =
+        const rule =
             group.substitutions[index];
 
         const source =
-            data && typeof data === "object"
+            isObject(data)
                 ? data
                 : {};
 
         if (
-            typeof source.input === "string"
+            typeof source.input ===
+            "string"
         ) {
-            substitution.input =
+            rule.input =
                 source.input;
         }
 
         if (
-            typeof source.output === "string"
+            typeof source.output ===
+            "string"
         ) {
-            substitution.output =
+            rule.output =
                 source.output;
         }
 
         if (
-            source.inputType === "text" ||
-            source.inputType === "whole" ||
-            source.inputType === "regexp"
+            [
+                "text",
+                "whole",
+                "regexp"
+            ].includes(
+                source.inputType
+            )
         ) {
-            substitution.inputType =
+            rule.inputType =
                 source.inputType;
         }
 
@@ -711,23 +1139,26 @@
             typeof source.caseSensitive ===
             "boolean"
         ) {
-            substitution.caseSensitive =
+            rule.caseSensitive =
                 source.caseSensitive;
         }
 
         if (
-            typeof source.enabled === "boolean"
+            typeof source.enabled ===
+            "boolean"
         ) {
-            substitution.enabled =
+            rule.enabled =
                 source.enabled;
         }
 
         if (
-            source.html === "none" ||
-            source.html === "html" ||
-            source.html === "all"
+            [
+                "none",
+                "html",
+                "all"
+            ].includes(source.html)
         ) {
-            substitution.html =
+            rule.html =
                 source.html;
         }
 
@@ -740,22 +1171,28 @@
         packName,
         ruleIndex
     ) {
-        const db = getDatabase();
+        const db =
+            getDatabase();
 
-        const group = db.groups.find(
-            item => item.name === packName
-        );
+        const group =
+            db.groups.find(
+                item =>
+                    item.name ===
+                    packName
+            );
 
         if (!group) {
             return false;
         }
 
-        const index = Number(ruleIndex);
+        const index =
+            Number(ruleIndex);
 
         if (
             !Number.isInteger(index) ||
             index < 0 ||
-            index >= group.substitutions.length
+            index >=
+                group.substitutions.length
         ) {
             return false;
         }
@@ -770,17 +1207,145 @@
         return true;
     }
 
-    function matchSite(pattern, url) {
-        if (!pattern) {
+    function setPackOrder(
+        packName,
+        requestedOrder
+    ) {
+        const db =
+            getDatabase();
+
+        const currentIndex =
+            db.groups.findIndex(
+                group =>
+                    group.name ===
+                    packName
+            );
+
+        if (currentIndex < 0) {
+            return false;
+        }
+
+        let targetIndex =
+            Number(requestedOrder);
+
+        if (
+            !Number.isInteger(
+                targetIndex
+            )
+        ) {
+            return false;
+        }
+
+        targetIndex =
+            Math.max(
+                0,
+                Math.min(
+                    targetIndex,
+                    db.groups.length - 1
+                )
+            );
+
+        const [group] =
+            db.groups.splice(
+                currentIndex,
+                1
+            );
+
+        db.groups.splice(
+            targetIndex,
+            0,
+            group
+        );
+
+        saveDatabase(db);
+
+        return true;
+    }
+
+    function setRuleOrder(
+        packName,
+        oldOrder,
+        requestedOrder
+    ) {
+        const db =
+            getDatabase();
+
+        const group =
+            db.groups.find(
+                item =>
+                    item.name ===
+                    packName
+            );
+
+        if (!group) {
+            return false;
+        }
+
+        const currentIndex =
+            Number(oldOrder);
+
+        let targetIndex =
+            Number(requestedOrder);
+
+        if (
+            !Number.isInteger(
+                currentIndex
+            ) ||
+            !Number.isInteger(
+                targetIndex
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            currentIndex < 0 ||
+            currentIndex >=
+                group.substitutions.length
+        ) {
+            return false;
+        }
+
+        targetIndex =
+            Math.max(
+                0,
+                Math.min(
+                    targetIndex,
+                    group.substitutions.length - 1
+                )
+            );
+
+        const [rule] =
+            group.substitutions.splice(
+                currentIndex,
+                1
+            );
+
+        group.substitutions.splice(
+            targetIndex,
+            0,
+            rule
+        );
+
+        saveDatabase(db);
+
+        return true;
+    }
+
+    function matchSite(
+        pattern,
+        url
+    ) {
+        if (
+            typeof pattern !==
+                "string" ||
+            !pattern.trim()
+        ) {
             return false;
         }
 
         const source =
-            String(pattern).trim();
-
-        if (!source) {
-            return false;
-        }
+            pattern.trim();
 
         const target =
             String(url || "");
@@ -792,9 +1357,16 @@
             return true;
         }
 
-        const escaped = source
-            .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-            .replace(/\*/g, ".*");
+        const escaped =
+            source
+                .replace(
+                    /[.+?^${}()|[\]\\]/g,
+                    "\\$&"
+                )
+                .replace(
+                    /\*/g,
+                    ".*"
+                );
 
         try {
             return new RegExp(
@@ -810,27 +1382,35 @@
         }
     }
 
-    function getMatchedPacks(url) {
-        const db = getDatabase();
+    function getMatchedPacks(
+        url = location.href
+    ) {
+        return getDatabase().groups.filter(
+            group => {
+                if (
+                    group.enabled ===
+                    false
+                ) {
+                    return false;
+                }
 
-        return db.groups.filter(group => {
-            if (!group.enabled) {
-                return false;
+                if (
+                    !group.urls ||
+                    group.urls.length ===
+                        0
+                ) {
+                    return true;
+                }
+
+                return group.urls.some(
+                    pattern =>
+                        matchSite(
+                            pattern,
+                            url
+                        )
+                );
             }
-
-            if (!Array.isArray(group.urls)) {
-                return true;
-            }
-
-            if (group.urls.length === 0) {
-                return true;
-            }
-
-            return group.urls.some(
-                pattern =>
-                    matchSite(pattern, url)
-            );
-        });
+        );
     }
 
     WNC.database.get =
@@ -842,8 +1422,8 @@
     WNC.database.normalize =
         normalizeFoxReplaceDatabase;
 
-    WNC.database.migrate =
-        migrateDatabase;
+    WNC.database.validate =
+        validateFoxReplaceDatabase;
 
     WNC.packs.get =
         getPacks;
@@ -878,10 +1458,6 @@
     WNC.rules.getMatched =
         getMatchedPacks;
 
-    console.info(
-        `[WNC] Part 1 loaded - database ${WNC_VERSION}`
-    );
-
     // ============================================================
     // PART 2 - REPLACEMENT ENGINE
     // ============================================================
@@ -893,10 +1469,13 @@
         );
     }
 
-    function buildRuleRegex(rule) {
+    function buildRuleRegex(
+        rule
+    ) {
         if (
             !rule ||
-            typeof rule.input !== "string" ||
+            typeof rule.input !==
+                "string" ||
             !rule.input
         ) {
             return null;
@@ -904,9 +1483,12 @@
 
         let source;
 
-        switch (rule.inputType) {
+        switch (
+            rule.inputType
+        ) {
             case "regexp":
-                source = rule.input;
+                source =
+                    rule.input;
                 break;
 
             case "whole":
@@ -927,7 +1509,10 @@
 
         let flags = "g";
 
-        if (!rule.caseSensitive) {
+        if (
+            rule.caseSensitive !==
+            true
+        ) {
             flags += "i";
         }
 
@@ -938,7 +1523,7 @@
             );
         } catch (error) {
             console.warn(
-                "[WNC] Invalid regular expression:",
+                "[WNC] Invalid rule regex:",
                 rule.input,
                 error
             );
@@ -952,7 +1537,8 @@
         rule
     ) {
         if (
-            typeof text !== "string" ||
+            typeof text !==
+                "string" ||
             !rule ||
             rule.enabled === false
         ) {
@@ -974,13 +1560,77 @@
 
         let replacements = 0;
 
-        const result = text.replace(
-            regex,
-            () => {
-                replacements++;
-                return rule.output;
-            }
-        );
+        const result =
+            text.replace(
+                regex,
+                (...args) => {
+                    replacements++;
+
+                    /*
+                     * Preserve native JavaScript
+                     * replacement semantics for
+                     * regexp substitutions.
+                     */
+                    return String(
+                        rule.output ?? ""
+                    ).replace(
+                        /\$(\$|&|`|'|\d{1,2})/g,
+                        token => {
+                            const key =
+                                token.slice(
+                                    1
+                                );
+
+                            if (
+                                key === "$"
+                            ) {
+                                return "$";
+                            }
+
+                            if (
+                                key === "&"
+                            ) {
+                                return args[0];
+                            }
+
+                            if (
+                                key === "`"
+                            ) {
+                                return args[
+                                    args.length -
+                                        2
+                                ];
+                            }
+
+                            if (
+                                key === "'"
+                            ) {
+                                return args[
+                                    args.length -
+                                        1
+                                ];
+                            }
+
+                            const index =
+                                Number(
+                                    key
+                                );
+
+                            return Number.isInteger(
+                                index
+                            ) &&
+                            index > 0 &&
+                            index <
+                                args.length - 2
+                                ? args[
+                                      index
+                                  ] ??
+                                      ""
+                                : token;
+                        }
+                    );
+                }
+            );
 
         return {
             text: result,
@@ -988,11 +1638,13 @@
         };
     }
 
-    function applyGroup(text, group) {
+    function applyGroup(
+        text,
+        group
+    ) {
         if (
             !group ||
-            group.enabled === false ||
-            !Array.isArray(group.substitutions)
+            group.enabled === false
         ) {
             return {
                 text,
@@ -1004,7 +1656,8 @@
         let replacements = 0;
 
         for (
-            const rule of group.substitutions
+            const rule of
+            group.substitutions || []
         ) {
             const applied =
                 applySubstitution(
@@ -1012,7 +1665,9 @@
                     rule
                 );
 
-            result = applied.text;
+            result =
+                applied.text;
+
             replacements +=
                 applied.replacements;
         }
@@ -1044,7 +1699,9 @@
                     group
                 );
 
-            result = applied.text;
+            result =
+                applied.text;
+
             replacements +=
                 applied.replacements;
         }
@@ -1074,7 +1731,9 @@
                     group
                 );
 
-            result = applied.text;
+            result =
+                applied.text;
+
             replacements +=
                 applied.replacements;
         }
@@ -1085,35 +1744,68 @@
         };
     }
 
-    function applyHtmlSubstitution(
-        element,
+    function shouldProcessTextNode(
+        node
+    ) {
+        if (
+            !node ||
+            node.nodeType !==
+                Node.TEXT_NODE
+        ) {
+            return false;
+        }
+
+        const parent =
+            node.parentElement;
+
+        if (!parent) {
+            return false;
+        }
+
+        const tag =
+            parent.tagName;
+
+        if (
+            [
+                "SCRIPT",
+                "STYLE",
+                "NOSCRIPT",
+                "TEXTAREA",
+                "INPUT",
+                "SELECT",
+                "OPTION"
+            ].includes(tag)
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function applyRuleToTextNode(
+        node,
         rule
     ) {
         if (
-            !element ||
-            !rule ||
-            rule.enabled === false
-        ) {
-            return 0;
-        }
-
-        if (
-            rule.html !== "all" &&
-            rule.html !== "html"
+            !shouldProcessTextNode(
+                node
+            )
         ) {
             return 0;
         }
 
         const applied =
             applySubstitution(
-                element.innerHTML,
+                node.nodeValue,
                 rule
             );
 
         if (
-            applied.replacements > 0
+            applied.replacements > 0 &&
+            applied.text !==
+                node.nodeValue
         ) {
-            element.innerHTML =
+            node.nodeValue =
                 applied.text;
         }
 
@@ -1132,16 +1824,31 @@
             return 0;
         }
 
+        /*
+         * HTML mode is deliberately handled
+         * separately. Normal text rules never
+         * rewrite innerHTML.
+         */
+        if (
+            rule.html === "html" ||
+            rule.html === "all"
+        ) {
+            return applyHtmlSubstitution(
+                root,
+                rule
+            );
+        }
+
         let replacements = 0;
 
         if (
-            root.nodeType === Node.ELEMENT_NODE
+            root.nodeType ===
+            Node.TEXT_NODE
         ) {
-            replacements +=
-                applyHtmlSubstitution(
-                    root,
-                    rule
-                );
+            return applyRuleToTextNode(
+                root,
+                rule
+            );
         }
 
         const walker =
@@ -1150,27 +1857,11 @@
                 NodeFilter.SHOW_TEXT,
                 {
                     acceptNode(node) {
-                        const parent =
-                            node.parentElement;
-
-                        if (!parent) {
-                            return NodeFilter.FILTER_REJECT;
-                        }
-
-                        const tag =
-                            parent.tagName;
-
-                        if (
-                            tag === "SCRIPT" ||
-                            tag === "STYLE" ||
-                            tag === "NOSCRIPT" ||
-                            tag === "TEXTAREA" ||
-                            tag === "INPUT"
-                        ) {
-                            return NodeFilter.FILTER_REJECT;
-                        }
-
-                        return NodeFilter.FILTER_ACCEPT;
+                        return shouldProcessTextNode(
+                            node
+                        )
+                            ? NodeFilter.FILTER_ACCEPT
+                            : NodeFilter.FILTER_REJECT;
                     }
                 }
             );
@@ -1180,7 +1871,8 @@
         let node;
 
         while (
-            (node = walker.nextNode())
+            (node =
+                walker.nextNode())
         ) {
             nodes.push(node);
         }
@@ -1188,20 +1880,131 @@
         for (
             const textNode of nodes
         ) {
-            const applied =
-                applySubstitution(
-                    textNode.nodeValue,
+            replacements +=
+                applyRuleToTextNode(
+                    textNode,
                     rule
                 );
+        }
+
+        return replacements;
+    }
+
+    function applyHtmlSubstitution(
+        root,
+        rule
+    ) {
+        if (
+            !root ||
+            !rule ||
+            rule.enabled === false
+        ) {
+            return 0;
+        }
+
+        const elements = [];
+
+        if (
+            root.nodeType ===
+            Node.ELEMENT_NODE
+        ) {
+            elements.push(root);
+        }
+
+        if (
+            root.querySelectorAll
+        ) {
+            elements.push(
+                ...root.querySelectorAll(
+                    "*"
+                )
+            );
+        }
+
+        let replacements = 0;
+
+        for (
+            const element of elements
+        ) {
+            if (
+                [
+                    "SCRIPT",
+                    "STYLE",
+                    "NOSCRIPT",
+                    "TEXTAREA",
+                    "INPUT",
+                    "SELECT",
+                    "OPTION"
+                ].includes(
+                    element.tagName
+                )
+            ) {
+                continue;
+            }
 
             if (
-                applied.replacements > 0
+                rule.html === "html"
             ) {
-                textNode.nodeValue =
-                    applied.text;
+                const applied =
+                    applySubstitution(
+                        element.innerHTML,
+                        rule
+                    );
 
-                replacements +=
-                    applied.replacements;
+                if (
+                    applied.replacements >
+                    0
+                ) {
+                    element.innerHTML =
+                        applied.text;
+
+                    replacements +=
+                        applied.replacements;
+                }
+            } else if (
+                rule.html === "all"
+            ) {
+                const applied =
+                    applySubstitution(
+                        element.outerHTML,
+                        rule
+                    );
+
+                if (
+                    applied.replacements >
+                    0
+                ) {
+                    /*
+                     * Avoid replacing document
+                     * root itself.
+                     */
+                    if (
+                        element.parentNode
+                    ) {
+                        const template =
+                            document.createElement(
+                                "template"
+                            );
+
+                        template.innerHTML =
+                            applied.text;
+
+                        const replacement =
+                            template.content
+                                .firstElementChild;
+
+                        if (
+                            replacement
+                        ) {
+                            element.replaceWith(
+                                replacement
+                            );
+
+                            replacements +=
+                                applied.replacements;
+                        }
+                    }
+                }
             }
         }
 
@@ -1223,7 +2026,8 @@
         let replacements = 0;
 
         for (
-            const rule of group.substitutions || []
+            const rule of
+            group.substitutions || []
         ) {
             replacements +=
                 applySubstitutionToDocument(
@@ -1284,10 +2088,6 @@
     WNC.replace.applyMatchedToDocument =
         applyMatchedGroupsToDocument;
 
-    console.info(
-        "[WNC] Part 2 loaded - replacement engine"
-    );
-
     // ============================================================
     // PART 3 - SCANNER
     // ============================================================
@@ -1304,7 +2104,8 @@
         rule
     ) {
         if (
-            typeof text !== "string" ||
+            typeof text !==
+                "string" ||
             !rule ||
             rule.enabled === false
         ) {
@@ -1345,7 +2146,8 @@
         let matches = 0;
 
         for (
-            const rule of group.substitutions || []
+            const rule of
+            group.substitutions || []
         ) {
             matches +=
                 scanSubstitution(
@@ -1357,81 +2159,69 @@
         return matches;
     }
 
-    function scanDatabase(
-        text,
-        database
-    ) {
-        const db =
-            normalizeFoxReplaceDatabase(
-                database
-            );
-
-        let matches = 0;
-
-        for (
-            const group of db.groups
-        ) {
-            matches +=
-                scanGroup(
-                    text,
-                    group
-                );
-        }
-
-        return matches;
-    }
-
     function scanPage(
         root = document.body,
         url = location.href
     ) {
-        scannerState.running = true;
-        scannerState.scanned++;
-        scannerState.lastRun =
-            new Date().toISOString();
-
-        if (!root) {
-            scannerState.running = false;
+        if (
+            scannerState.running
+        ) {
             return {
                 scanned: 0,
-                matches: 0
+                matches: 0,
+                busy: true
             };
         }
 
-        const groups =
-            getMatchedPacks(url);
+        scannerState.running =
+            true;
 
-        let text = "";
+        scannerState.scanned++;
 
-        if (
-            root.innerText !== undefined
-        ) {
-            text = root.innerText;
-        } else {
-            text = root.textContent || "";
+        scannerState.lastRun =
+            new Date().toISOString();
+
+        try {
+            if (!root) {
+                return {
+                    scanned: 0,
+                    matches: 0,
+                    busy: false
+                };
+            }
+
+            const groups =
+                getMatchedPacks(url);
+
+            const text =
+                root.innerText ??
+                root.textContent ??
+                "";
+
+            let matches = 0;
+
+            for (
+                const group of groups
+            ) {
+                matches +=
+                    scanGroup(
+                        text,
+                        group
+                    );
+            }
+
+            scannerState.matches =
+                matches;
+
+            return {
+                scanned: 1,
+                matches,
+                busy: false
+            };
+        } finally {
+            scannerState.running =
+                false;
         }
-
-        let matches = 0;
-
-        for (
-            const group of groups
-        ) {
-            matches +=
-                scanGroup(
-                    text,
-                    group
-                );
-        }
-
-        scannerState.matches =
-            matches;
-
-        scannerState.running = false;
-
-        return {
-            scanned: 1,
-            matches
-        };
     }
 
     function findMatches(
@@ -1446,7 +2236,9 @@
         }
 
         return [
-            ...String(text).matchAll(regex)
+            ...String(text).matchAll(
+                regex
+            )
         ];
     }
 
@@ -1454,12 +2246,16 @@
         root = document.body,
         url = location.href
     ) {
+        if (!root) {
+            return [];
+        }
+
         const groups =
             getMatchedPacks(url);
 
         const text =
-            root?.innerText ??
-            root?.textContent ??
+            root.innerText ??
+            root.textContent ??
             "";
 
         const results = [];
@@ -1477,10 +2273,13 @@
                         rule
                     );
 
-                if (matches.length) {
+                if (
+                    matches.length
+                ) {
                     results.push({
-                        group: group.name,
-                        rule,
+                        group:
+                            group.name,
+                        rule: clone(rule),
                         matches
                     });
                 }
@@ -1507,10 +2306,6 @@
 
     WNC.scanner.status =
         getScannerStatus;
-
-    console.info(
-        "[WNC] Part 3 loaded - scanner"
-    );
 
     // ============================================================
     // PART 4 - EDITOR
@@ -1552,7 +2347,8 @@
         return updatePack(
             packName,
             {
-                enabled: Boolean(enabled)
+                enabled:
+                    Boolean(enabled)
             }
         );
     }
@@ -1564,7 +2360,8 @@
         return updatePack(
             packName,
             {
-                pageLoad: Boolean(pageLoad)
+                pageLoad:
+                    Boolean(pageLoad)
             }
         );
     }
@@ -1576,7 +2373,8 @@
         return updatePack(
             packName,
             {
-                auto: Boolean(auto)
+                auto:
+                    Boolean(auto)
             }
         );
     }
@@ -1587,16 +2385,19 @@
         field,
         value
     ) {
-        const allowedFields = new Set([
-            "input",
-            "output",
-            "inputType",
-            "caseSensitive",
-            "enabled",
-            "html"
-        ]);
+        const allowed =
+            new Set([
+                "input",
+                "output",
+                "inputType",
+                "caseSensitive",
+                "enabled",
+                "html"
+            ]);
 
-        if (!allowedFields.has(field)) {
+        if (
+            !allowed.has(field)
+        ) {
             return false;
         }
 
@@ -1609,88 +2410,12 @@
         );
     }
 
-    function setRuleInput(
-        packName,
-        ruleIndex,
-        input
-    ) {
-        return setRuleField(
-            packName,
-            ruleIndex,
-            "input",
-            input
-        );
-    }
-
-    function setRuleOutput(
-        packName,
-        ruleIndex,
-        output
-    ) {
-        return setRuleField(
-            packName,
-            ruleIndex,
-            "output",
-            output
-        );
-    }
-
-    function setRuleInputType(
-        packName,
-        ruleIndex,
-        inputType
-    ) {
-        return setRuleField(
-            packName,
-            ruleIndex,
-            "inputType",
-            inputType
-        );
-    }
-
-    function setRuleCaseSensitive(
-        packName,
-        ruleIndex,
-        caseSensitive
-    ) {
-        return setRuleField(
-            packName,
-            ruleIndex,
-            "caseSensitive",
-            Boolean(caseSensitive)
-        );
-    }
-
-    function setRuleEnabled(
-        packName,
-        ruleIndex,
-        enabled
-    ) {
-        return setRuleField(
-            packName,
-            ruleIndex,
-            "enabled",
-            Boolean(enabled)
-        );
-    }
-
-    function setRuleHtml(
-        packName,
-        ruleIndex,
-        html
-    ) {
-        return setRuleField(
-            packName,
-            ruleIndex,
-            "html",
-            html
-        );
-    }
-
     function getEditablePack(
         packName
     ) {
-        return getPack(packName);
+        return getPack(
+            packName
+        );
     }
 
     function getEditableRule(
@@ -1707,20 +2432,31 @@
         const index =
             Number(ruleIndex);
 
+        if (
+            !Number.isInteger(index)
+        ) {
+            return null;
+        }
+
         return (
-            group.substitutions?.[index] ||
-            null
+            group.substitutions?.[
+                index
+            ] || null
         );
     }
 
-    function selectGroup(name) {
+    function selectGroup(
+        name
+    ) {
         editorState.selectedGroup =
             name;
 
         editorState.selectedRule =
             null;
 
-        return getEditablePack(name);
+        return getEditablePack(
+            name
+        );
     }
 
     function selectRule(
@@ -1737,12 +2473,6 @@
             packName,
             ruleIndex
         );
-    }
-
-    function getEditorState() {
-        return {
-            ...editorState
-        };
     }
 
     WNC.editor.renamePack =
@@ -1763,24 +2493,6 @@
     WNC.editor.setRuleField =
         setRuleField;
 
-    WNC.editor.setRuleInput =
-        setRuleInput;
-
-    WNC.editor.setRuleOutput =
-        setRuleOutput;
-
-    WNC.editor.setRuleInputType =
-        setRuleInputType;
-
-    WNC.editor.setRuleCaseSensitive =
-        setRuleCaseSensitive;
-
-    WNC.editor.setRuleEnabled =
-        setRuleEnabled;
-
-    WNC.editor.setRuleHtml =
-        setRuleHtml;
-
     WNC.editor.getPack =
         getEditablePack;
 
@@ -1794,151 +2506,20 @@
         selectRule;
 
     WNC.editor.state =
-        getEditorState;
-
-    console.info(
-        "[WNC] Part 4 loaded - editor"
-    );
+        () => ({
+            ...editorState
+        });
 
     // ============================================================
-    // PART 5 - FOXREPLACE IMPORT / EXPORT TOOLS
+    // PART 5 - FOXREPLACE IMPORT / EXPORT
     // ============================================================
 
     function isFoxReplaceDatabase(
         value
     ) {
-        if (
-            !value ||
-            typeof value !== "object" ||
-            !Array.isArray(value.groups)
-        ) {
-            return false;
-        }
-
-        for (
-            const group of value.groups
-        ) {
-            if (
-                !group ||
-                typeof group !== "object"
-            ) {
-                return false;
-            }
-
-            if (
-                group.name !== undefined &&
-                typeof group.name !== "string"
-            ) {
-                return false;
-            }
-
-            if (
-                group.urls !== undefined &&
-                !Array.isArray(group.urls)
-            ) {
-                return false;
-            }
-
-            if (
-                group.enabled !== undefined &&
-                typeof group.enabled !== "boolean"
-            ) {
-                return false;
-            }
-
-            if (
-                group.pageLoad !== undefined &&
-                typeof group.pageLoad !== "boolean"
-            ) {
-                return false;
-            }
-
-            if (
-                group.auto !== undefined &&
-                typeof group.auto !== "boolean"
-            ) {
-                return false;
-            }
-
-            if (
-                group.substitutions !== undefined &&
-                !Array.isArray(
-                    group.substitutions
-                )
-            ) {
-                return false;
-            }
-
-            for (
-                const substitution of
-                group.substitutions || []
-            ) {
-                if (
-                    !substitution ||
-                    typeof substitution !== "object"
-                ) {
-                    return false;
-                }
-
-                if (
-                    substitution.input !== undefined &&
-                    typeof substitution.input !== "string"
-                ) {
-                    return false;
-                }
-
-                if (
-                    substitution.output !== undefined &&
-                    typeof substitution.output !== "string"
-                ) {
-                    return false;
-                }
-
-                if (
-                    substitution.inputType !== undefined &&
-                    ![
-                        "text",
-                        "whole",
-                        "regexp"
-                    ].includes(
-                        substitution.inputType
-                    )
-                ) {
-                    return false;
-                }
-
-                if (
-                    substitution.caseSensitive !== undefined &&
-                    typeof substitution.caseSensitive !==
-                        "boolean"
-                ) {
-                    return false;
-                }
-
-                if (
-                    substitution.enabled !== undefined &&
-                    typeof substitution.enabled !==
-                        "boolean"
-                ) {
-                    return false;
-                }
-
-                if (
-                    substitution.html !== undefined &&
-                    ![
-                        "none",
-                        "html",
-                        "all"
-                    ].includes(
-                        substitution.html
-                    )
-                ) {
-                    return false;
-                }
-            }
-        }
-
-        return true;
+        return validateFoxReplaceDatabase(
+            value
+        ).valid;
     }
 
     function importFoxReplaceDatabase(
@@ -1948,7 +2529,8 @@
 
         try {
             parsed =
-                typeof json === "string"
+                typeof json ===
+                "string"
                     ? JSON.parse(json)
                     : clone(json);
         } catch (error) {
@@ -1960,13 +2542,16 @@
             };
         }
 
-        if (
-            !isFoxReplaceDatabase(parsed)
-        ) {
+        const validation =
+            validateFoxReplaceDatabase(
+                parsed
+            );
+
+        if (!validation.valid) {
             return {
                 success: false,
                 error:
-                    "The imported data is not valid FoxReplace JSON."
+                    validation.error
             };
         }
 
@@ -1975,11 +2560,14 @@
                 parsed
             );
 
-        saveDatabase(normalized);
+        saveDatabase(
+            normalized
+        );
 
         return {
             success: true,
-            database: clone(normalized)
+            database:
+                clone(normalized)
         };
     }
 
@@ -2003,16 +2591,9 @@
         return json;
     }
 
-    function importDatabaseFromText(
-        text
-    ) {
-        return importFoxReplaceDatabase(
-            text
-        );
-    }
-
     function downloadDatabase(
-        filename = "foxreplace.json"
+        filename =
+            "foxreplace.json"
     ) {
         const json =
             exportFoxReplaceDatabase();
@@ -2027,21 +2608,32 @@
             );
 
         const url =
-            URL.createObjectURL(blob);
+            URL.createObjectURL(
+                blob
+            );
 
         const link =
-            document.createElement("a");
+            document.createElement(
+                "a"
+            );
 
         link.href = url;
-        link.download = filename;
+        link.download =
+            filename;
 
-        document.body.appendChild(link);
+        document.body.appendChild(
+            link
+        );
+
         link.click();
+
         link.remove();
 
         setTimeout(
             () =>
-                URL.revokeObjectURL(url),
+                URL.revokeObjectURL(
+                    url
+                ),
             1000
         );
 
@@ -2050,7 +2642,9 @@
 
     function clearDatabase() {
         saveDatabase(
-            clone(DEFAULT_DATABASE)
+            clone(
+                DEFAULT_DATABASE
+            )
         );
 
         return true;
@@ -2070,29 +2664,15 @@
         }
 
         return {
-            groups: db.groups.length,
+            groups:
+                db.groups.length,
+
             rules,
+
             jsonLength:
-                JSON.stringify(db).length
+                JSON.stringify(db)
+                    .length
         };
-    }
-
-    function copyJson(value) {
-        const json =
-            typeof value === "string"
-                ? value
-                : JSON.stringify(
-                      value,
-                      null,
-                      2
-                  );
-
-        GM_setClipboard(
-            json,
-            "text"
-        );
-
-        return json;
     }
 
     WNC.tools.isFoxReplaceDatabase =
@@ -2101,17 +2681,11 @@
     WNC.tools.import =
         importFoxReplaceDatabase;
 
-    WNC.tools.importText =
-        importDatabaseFromText;
-
     WNC.tools.export =
         exportFoxReplaceDatabase;
 
     WNC.tools.copy =
         copyDatabaseToClipboard;
-
-    WNC.tools.copyJson =
-        copyJson;
 
     WNC.tools.download =
         downloadDatabase;
@@ -2131,10 +2705,6 @@
     WNC.foxReplace.validate =
         isFoxReplaceDatabase;
 
-    console.info(
-        "[WNC] Part 5 loaded - FoxReplace tools"
-    );
-
     // ============================================================
     // PART 6 - CLEANER
     // ============================================================
@@ -2145,7 +2715,26 @@
         replacements: 0
     };
 
-    let cleanerObserver = null;
+    function shouldCleanGroup(
+        group
+    ) {
+        return Boolean(
+            group &&
+            group.enabled !== false &&
+            group.pageLoad !== false &&
+            group.auto !== false
+        );
+    }
+
+    function getPageLoadGroups(
+        url = location.href
+    ) {
+        return getMatchedPacks(
+            url
+        ).filter(
+            shouldCleanGroup
+        );
+    }
 
     function cleanGroup(
         text,
@@ -2161,10 +2750,34 @@
         text,
         url = location.href
     ) {
-        return applyMatchedPacks(
-            text,
-            url
-        );
+        const groups =
+            getPageLoadGroups(
+                url
+            );
+
+        let result = text;
+        let replacements = 0;
+
+        for (
+            const group of groups
+        ) {
+            const applied =
+                applyGroup(
+                    result,
+                    group
+                );
+
+            result =
+                applied.text;
+
+            replacements +=
+                applied.replacements;
+        }
+
+        return {
+            text: result,
+            replacements
+        };
     }
 
     function cleanText(
@@ -2199,7 +2812,9 @@
         }
 
         const groups =
-            getPageLoadGroups(url);
+            getPageLoadGroups(
+                url
+            );
 
         let replacements = 0;
 
@@ -2216,37 +2831,6 @@
         return replacements;
     }
 
-    function getCleanerStatus() {
-        return {
-            ...cleanerState,
-            observer:
-                Boolean(cleanerObserver)
-        };
-    }
-
-    function shouldCleanGroup(
-        group
-    ) {
-        return Boolean(
-            group &&
-            group.enabled !== false &&
-            group.pageLoad !== false &&
-            group.auto !== false
-        );
-    }
-
-    function getPageLoadGroups(
-        url = location.href
-    ) {
-        return getMatchedPacks(url)
-            .filter(
-                group =>
-                    shouldCleanGroup(
-                        group
-                    )
-            );
-    }
-
     function cleanPageLoad(
         root = document.body,
         url = location.href
@@ -2255,36 +2839,50 @@
             return 0;
         }
 
-        cleanerState.running = true;
-
-        const groups =
-            getPageLoadGroups(url);
-
-        let replacements = 0;
-
-        for (
-            const group of groups
+        if (
+            cleanerState.running
         ) {
-            replacements +=
-                applyGroupToDocument(
-                    root,
-                    group
-                );
+            return 0;
         }
 
-        cleanerState.replacements =
-            replacements;
+        cleanerState.running =
+            true;
 
-        cleanerState.lastRun =
-            new Date().toISOString();
+        try {
+            const groups =
+                getPageLoadGroups(
+                    url
+                );
 
-        cleanerState.running = false;
+            let replacements = 0;
 
-        return replacements;
+            for (
+                const group of groups
+            ) {
+                replacements +=
+                    applyGroupToDocument(
+                        root,
+                        group
+                    );
+            }
+
+            cleanerState.replacements =
+                replacements;
+
+            cleanerState.lastRun =
+                new Date().toISOString();
+
+            return replacements;
+        } finally {
+            cleanerState.running =
+                false;
+        }
     }
 
     function startCleanerObserver() {
-        if (cleanerObserver) {
+        if (
+            RUNTIME.observer
+        ) {
             return false;
         }
 
@@ -2295,19 +2893,37 @@
             return false;
         }
 
-        cleanerObserver =
+        const target =
+            document.body ||
+            document.documentElement;
+
+        if (!target) {
+            return false;
+        }
+
+        RUNTIME.observer =
             new MutationObserver(
                 mutations => {
+                    if (
+                        RUNTIME.observerPaused
+                    ) {
+                        return;
+                    }
+
                     const groups =
                         getPageLoadGroups(
                             location.href
                         );
 
                     if (
-                        groups.length === 0
+                        groups.length ===
+                        0
                     ) {
                         return;
                     }
+
+                    const elements =
+                        new Set();
 
                     for (
                         const mutation of
@@ -2318,8 +2934,41 @@
                             mutation.addedNodes
                         ) {
                             if (
-                                node.nodeType !==
+                                node.nodeType ===
                                 Node.ELEMENT_NODE
+                            ) {
+                                elements.add(
+                                    node
+                                );
+                            } else if (
+                                node.nodeType ===
+                                Node.TEXT_NODE &&
+                                node.parentElement
+                            ) {
+                                elements.add(
+                                    node.parentElement
+                                );
+                            }
+                        }
+                    }
+
+                    if (
+                        elements.size ===
+                        0
+                    ) {
+                        return;
+                    }
+
+                    RUNTIME.observerPaused =
+                        true;
+
+                    try {
+                        for (
+                            const element of
+                            elements
+                        ) {
+                            if (
+                                !element.isConnected
                             ) {
                                 continue;
                             }
@@ -2329,27 +2978,19 @@
                                 groups
                             ) {
                                 applyGroupToDocument(
-                                    node,
+                                    element,
                                     group
                                 );
                             }
                         }
+                    } finally {
+                        RUNTIME.observerPaused =
+                            false;
                     }
                 }
             );
 
-        const target =
-            document.body ||
-            document.documentElement;
-
-        if (!target) {
-            cleanerObserver =
-                null;
-
-            return false;
-        }
-
-        cleanerObserver.observe(
+        RUNTIME.observer.observe(
             target,
             {
                 childList: true,
@@ -2361,20 +3002,34 @@
     }
 
     function stopCleanerObserver() {
-        if (!cleanerObserver) {
+        if (
+            !RUNTIME.observer
+        ) {
             return false;
         }
 
-        cleanerObserver.disconnect();
-        cleanerObserver = null;
+        RUNTIME.observer.disconnect();
+
+        RUNTIME.observer =
+            null;
 
         return true;
     }
 
     function initializeCleaner() {
+        if (
+            RUNTIME.cleanerInitialized
+        ) {
+            return;
+        }
+
+        RUNTIME.cleanerInitialized =
+            true;
+
         const run = () => {
             cleanPageLoad(
-                document.body,
+                document.body ||
+                    document.documentElement,
                 location.href
             );
 
@@ -2397,6 +3052,17 @@
         }
     }
 
+    function getCleanerStatus() {
+        return {
+            ...cleanerState,
+
+            observer:
+                Boolean(
+                    RUNTIME.observer
+                )
+        };
+    }
+
     WNC.cleaner.cleanGroup =
         cleanGroup;
 
@@ -2412,17 +3078,14 @@
     WNC.cleaner.cleanElement =
         cleanElement;
 
-    WNC.cleaner.status =
-        getCleanerStatus;
+    WNC.cleaner.cleanPageLoad =
+        cleanPageLoad;
 
     WNC.cleaner.shouldCleanGroup =
         shouldCleanGroup;
 
     WNC.cleaner.getPageLoadGroups =
         getPageLoadGroups;
-
-    WNC.cleaner.cleanPageLoad =
-        cleanPageLoad;
 
     WNC.cleaner.start =
         startCleanerObserver;
@@ -2433,21 +3096,14 @@
     WNC.cleaner.initialize =
         initializeCleaner;
 
-    console.info(
-        "[WNC] Part 6 loaded - cleaner"
-    );
+    WNC.cleaner.status =
+        getCleanerStatus;
 
     // ============================================================
     // PART 7 - UI / DIAGNOSTICS / INITIALIZATION
     // ============================================================
 
     function getDiagnostics() {
-        const db =
-            getDatabase();
-
-        const stats =
-            getDatabaseStats();
-
         return {
             version:
                 WNC_VERSION,
@@ -2455,23 +3111,24 @@
             databaseKey:
                 FOXREPLACE_DB_KEY,
 
-            groups:
-                stats.groups,
-
-            rules:
-                stats.rules,
-
-            databaseBytes:
-                JSON.stringify(db).length,
+            stats:
+                getDatabaseStats(),
 
             scanner:
-                getScannerStatus(),
+                {
+                    ...scannerState
+                },
 
             cleaner:
                 getCleanerStatus(),
 
             editor:
-                getEditorState()
+                {
+                    ...editorState
+                },
+
+            initialized:
+                RUNTIME.initialized
         };
     }
 
@@ -2493,9 +3150,13 @@
 
     function openImportDialog() {
         const input =
-            document.createElement("input");
+            document.createElement(
+                "input"
+            );
 
-        input.type = "file";
+        input.type =
+            "file";
+
         input.accept =
             "application/json,.json";
 
@@ -2540,6 +3201,9 @@
                         error.message
                     );
                 }
+            },
+            {
+                once: true
             }
         );
 
@@ -2554,6 +3218,7 @@
 
     function createUi() {
         if (
+            RUNTIME.uiCreated ||
             document.getElementById(
                 "wnc-panel"
             )
@@ -2561,8 +3226,17 @@
             return;
         }
 
+        if (!document.body) {
+            return;
+        }
+
+        RUNTIME.uiCreated =
+            true;
+
         const panel =
-            document.createElement("div");
+            document.createElement(
+                "div"
+            );
 
         panel.id =
             "wnc-panel";
@@ -2620,50 +3294,42 @@
                     return;
                 }
 
-                const action =
-                    button.dataset.action;
-
                 try {
-                    if (
-                        action ===
-                        "import"
+                    switch (
+                        button.dataset.action
                     ) {
-                        openImportDialog();
+                        case "import":
+                            openImportDialog();
+                            break;
 
-                    } else if (
-                        action ===
-                        "export"
-                    ) {
-                        openExportDialog();
+                        case "export":
+                            openExportDialog();
+                            break;
 
-                    } else if (
-                        action ===
-                        "copy"
-                    ) {
-                        copyDatabaseJson();
+                        case "copy":
+                            copyDatabaseJson();
 
-                        status.textContent =
-                            "JSON copied";
+                            status.textContent =
+                                "JSON copied";
+                            break;
 
-                    } else if (
-                        action ===
-                        "scan"
-                    ) {
-                        const result =
-                            scanPage();
+                        case "scan": {
+                            const result =
+                                scanPage();
 
-                        status.textContent =
-                            `Matches: ${result.matches}`;
+                            status.textContent =
+                                `Matches: ${result.matches}`;
+                            break;
+                        }
 
-                    } else if (
-                        action ===
-                        "clean"
-                    ) {
-                        const count =
-                            cleanPageLoad();
+                        case "clean": {
+                            const count =
+                                cleanPageLoad();
 
-                        status.textContent =
-                            `Replacements: ${count}`;
+                            status.textContent =
+                                `Replacements: ${count}`;
+                            break;
+                        }
                     }
                 } catch (error) {
                     console.error(
@@ -2679,6 +3345,14 @@
     }
 
     function installStyles() {
+        if (
+            document.getElementById(
+                "wnc-styles"
+            )
+        ) {
+            return;
+        }
+
         GM_addStyle(`
             #wnc-panel {
                 position: fixed;
@@ -2686,7 +3360,7 @@
                 bottom: 12px;
                 z-index: 2147483647;
                 padding: 10px;
-                background: rgba(20, 20, 20, 0.95);
+                background: rgba(20,20,20,.95);
                 color: #fff;
                 border: 1px solid #666;
                 border-radius: 8px;
@@ -2748,7 +3422,7 @@
                     scanPage();
 
                 console.info(
-                    "[WNC] Scan result:",
+                    "[WNC] Scan:",
                     result
                 );
 
@@ -2765,7 +3439,7 @@
                     cleanPageLoad();
 
                 console.info(
-                    "[WNC] Clean result:",
+                    "[WNC] Clean:",
                     count
                 );
 
@@ -2787,10 +3461,24 @@
     }
 
     function initializeWNC() {
+        if (
+            RUNTIME.initialized
+        ) {
+            return;
+        }
+
+        RUNTIME.initialized =
+            true;
+
         installStyles();
+
         registerMenuCommands();
 
-        WNC.cleaner.initialize();
+        initializeCleaner();
+
+        console.info(
+            `[WNC] WebNovel Cleaner ${WNC_VERSION} initialized.`
+        );
 
         console.info(
             "[WNC] Database:",
@@ -2802,13 +3490,7 @@
             getDiagnostics()
         );
 
-        console.info(
-            `[WNC] WebNovel Cleaner ${WNC_VERSION} initialized.`
-        );
-
-        if (
-            document.body
-        ) {
+        if (document.body) {
             createUi();
         } else {
             document.addEventListener(
@@ -2830,9 +3512,6 @@
     WNC.ui.export =
         openExportDialog;
 
-    WNC.ui.diagnostics =
-        getDiagnostics;
-
     WNC.diagnostics.get =
         getDiagnostics;
 
@@ -2842,13 +3521,26 @@
     WNC.diagnostics.copyDatabase =
         copyDatabaseJson;
 
-    // Expose WNC for console/debugging.
+    /*
+     * Expose WNC for debugging.
+     */
     try {
-        unsafeWindow.WNC =
-            WNC;
+        if (
+            typeof unsafeWindow !==
+            "undefined"
+        ) {
+            unsafeWindow.WNC =
+                WNC;
+        }
     } catch {
-        window.WNC =
-            WNC;
+        try {
+            window.WNC =
+                WNC;
+        } catch {
+            // Ignore environments
+            // where window exposure
+            // is unavailable.
+        }
     }
 
     initializeWNC();
