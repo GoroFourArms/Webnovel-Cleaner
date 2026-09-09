@@ -106,6 +106,142 @@ function today() {
 
 
 // ============================================================
+// FOXREPLACE DATABASE NORMALIZATION
+// ============================================================
+//
+// Normalizes native FoxReplace database structure.
+// Does NOT convert to WNC-specific format.
+// Enforces canonical structure with defaults.
+//
+
+function normalizeFoxReplaceDatabase(db) {
+
+    if (
+        !db ||
+        typeof db !== "object"
+    ) {
+
+        db =
+            clone(
+                DEFAULT_DATABASE
+            );
+
+    }
+
+
+    if (!Array.isArray(db.groups))
+        db.groups = [];
+
+
+    db.groups =
+        db.groups.map(
+            (group, groupIndex) => {
+
+                if (
+                    !group ||
+                    typeof group !== "object"
+                ) {
+
+                    group = {};
+
+                }
+
+
+                if (!group.name)
+                    group.name = `Group ${groupIndex + 1}`;
+                else
+                    group.name = String(group.name);
+
+
+                if (!Array.isArray(group.urls))
+                    group.urls = [];
+
+
+                if (group.enabled === undefined)
+                    group.enabled = true;
+
+
+                if (group.pageLoad === undefined)
+                    group.pageLoad = true;
+
+
+                if (group.auto === undefined)
+                    group.auto = true;
+
+
+                if (!Array.isArray(group.substitutions))
+                    group.substitutions = [];
+
+
+                group.substitutions =
+                    group.substitutions.map(
+                        (substitution) => {
+
+                            if (
+                                !substitution ||
+                                typeof substitution !== "object"
+                            ) {
+
+                                substitution = {};
+
+                            }
+
+
+                            if (substitution.input === undefined)
+                                substitution.input = "";
+                            else
+                                substitution.input = String(substitution.input);
+
+
+                            if (substitution.output === undefined)
+                                substitution.output = "";
+                            else
+                                substitution.output = String(substitution.output);
+
+
+                            if (!substitution.inputType)
+                                substitution.inputType = "text";
+
+
+                            if (
+                                ![
+                                    "text",
+                                    "whole",
+                                    "regexp"
+                                ].includes(substitution.inputType)
+                            ) {
+
+                                substitution.inputType = "text";
+
+                            }
+
+
+                            if (substitution.caseSensitive === undefined)
+                                substitution.caseSensitive = false;
+
+
+                            if (substitution.enabled === undefined)
+                                substitution.enabled = true;
+
+
+                            return substitution;
+
+                        }
+                    );
+
+
+                return group;
+
+            }
+        );
+
+
+    return db;
+
+}
+
+
+// ============================================================
 // NORMALIZE ORDER
 // ============================================================
 //
