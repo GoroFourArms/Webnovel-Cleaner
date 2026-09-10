@@ -1472,19 +1472,19 @@
             </tr>
         `).join("");
 
-        content.innerHTML = `
-            <section class="wnc-screen">
-            <div class="wnc-unmatched-header">
-    <button
-        class="wnc-button"
-        data-action="groups"
-    >Groups</button>
-</div>
-                <div class="wnc-unmatched-controls">
+content.innerHTML = `
+    <section class="wnc-screen">
 
-                    <select
-                        class="wnc-control-select"
-                        data-unmatched-control="targetGroup"
+        <div class="wnc-unmatched-controls">
+
+            <button
+                class="wnc-button"
+                data-action="groups"
+            >Groups</button>
+
+            <select
+                class="wnc-control-select"
+                data-unmatched-control="targetGroup"
                         ${
                             groups.length
                                 ? ""
