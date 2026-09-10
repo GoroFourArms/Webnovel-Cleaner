@@ -6,7 +6,7 @@
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_download
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 (() => {
@@ -76,7 +76,10 @@
         candidateTemplate: "Other",
         candidateCaseSensitive: false,
 
-        selectedCandidates: new Set()
+        selectedCandidates: new Set(),
+
+        searchQuery: "",
+        showOtherGroups: false
     };
 
     // ---------------------------------------------------------------------
@@ -801,6 +804,17 @@
                     <div class="wnc-brand">WNC</div>
 
                     <div class="wnc-header-actions">
+
+                        <input
+                            id="wnc-search"
+                            class="wnc-search"
+                            type="search"
+                            placeholder="Search..."
+                            autocomplete="off"
+                            spellcheck="false"
+                            value="${escapeHTML(state.searchQuery)}"
+                        >
+
                         <button
                             class="wnc-button wnc-primary"
                             data-action="create-group"
@@ -815,7 +829,10 @@
                             class="wnc-button"
                             data-action="export"
                         >Export</button>
-
+<button
+    class="wnc-button"
+    data-action="close"
+>Close</button>
                         <input
                             id="wnc-import-file"
                             type="file"
@@ -870,12 +887,48 @@
     // Groups screen
     // ---------------------------------------------------------------------
 
-    function renderGroups(content) {
-        const groups = sortedGroups();
+        function renderGroups(content) {
+        const query = state.searchQuery.trim().toLowerCase();
 
-        const rows = groups.map(({ group, index }) => {
-            const matches = countGroupMatches(group);
-            const siteMatches = groupMatchesCurrentSite(group);
+        const groups = sortedGroups()
+            .map(({ group, index }) => {
+                const matches = countGroupMatches(group);
+                const siteMatches = groupMatchesCurrentSite(group);
+
+                const searchMatch =
+                    !query ||
+                    group.name.toLowerCase().includes(query) ||
+                    group.substitutions.some(rule =>
+                        String(rule.input)
+                            .toLowerCase()
+                            .includes(query)
+                    );
+
+                return {
+                    group,
+                    index,
+                    matches,
+                    siteMatches,
+                    searchMatch
+                };
+            })
+            .filter(item => item.searchMatch);
+
+        const activeGroups = groups.filter(item =>
+            item.matches > 0 || item.siteMatches
+        );
+
+        const otherGroups = groups.filter(item =>
+            item.matches === 0 && !item.siteMatches
+        );
+
+        const rows = activeGroups.map(item => {
+            const {
+                group,
+                index,
+                matches,
+                siteMatches
+            } = item;
 
             return `
                 <tr
@@ -884,8 +937,15 @@
                     data-group-index="${index}"
                 >
                     <td>${escapeHTML(group.name || "(Unnamed)")}</td>
-                    <td class="wnc-number">${group.substitutions.length}</td>
-                    <td class="wnc-number">${matches}</td>
+
+                    <td class="wnc-number">
+                        ${group.substitutions.length}
+                    </td>
+
+                    <td class="wnc-number">
+                        ${matches}
+                    </td>
+
                     <td class="wnc-site-status">
                         ${
                             siteMatches
@@ -896,6 +956,59 @@
                 </tr>
             `;
         }).join("");
+
+        const otherRows = otherGroups.map(item => {
+            const {
+                group,
+                index
+            } = item;
+
+            return `
+                <tr
+                    class="wnc-clickable-row"
+                    data-action="open-group"
+                    data-group-index="${index}"
+                >
+                    <td>${escapeHTML(group.name || "(Unnamed)")}</td>
+
+                    <td class="wnc-number">
+                        ${group.substitutions.length}
+                    </td>
+
+                    <td class="wnc-number">0</td>
+
+                    <td class="wnc-site-status">
+                        <span class="wnc-cross">✕</span>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+
+        const otherSection = otherGroups.length
+            ? `
+                <tr
+                    class="wnc-collapse-row"
+                    data-action="toggle-other-groups"
+                >
+                    <td colspan="4">
+                        <span class="wnc-collapse-arrow">
+                            ${state.showOtherGroups ? "▼" : "▶"}
+                        </span>
+
+                        Other Groups
+                        <span class="wnc-collapse-count">
+                            ${otherGroups.length}
+                        </span>
+                    </td>
+                </tr>
+
+                ${
+                    state.showOtherGroups
+                        ? otherRows
+                        : ""
+                }
+            `
+            : "";
 
         content.innerHTML = `
             <section class="wnc-screen">
@@ -915,13 +1028,28 @@
                         </thead>
 
                         <tbody>
-                            ${rows || `
-                                <tr>
-                                    <td colspan="4" class="wnc-empty">
-                                        No groups
-                                    </td>
-                                </tr>
-                            `}
+                            ${
+                                rows || !otherSection
+                                    ? rows
+                                    : ""
+                            }
+
+                            ${
+                                !rows && !otherSection
+                                    ? `
+                                        <tr>
+                                            <td
+                                                colspan="4"
+                                                class="wnc-empty"
+                                            >
+                                                No groups
+                                            </td>
+                                        </tr>
+                                    `
+                                    : ""
+                            }
+
+                            ${otherSection}
 
                             <tr
                                 class="wnc-clickable-row wnc-unmatched-row"
@@ -1518,7 +1646,9 @@
             case "export":
                 exportDatabase();
                 break;
-
+case "close":
+    closeUI();
+    break;
             case "open-group":
                 openGroup(
                     Number(target.dataset.groupIndex)
@@ -1527,6 +1657,12 @@
 
             case "open-unmatched":
                 openUnmatched();
+                break;
+
+            case "toggle-other-groups":
+                state.showOtherGroups =
+                    !state.showOtherGroups;
+                render();
                 break;
 
             case "back-groups":
@@ -1615,6 +1751,37 @@
 
     function handleInput(event) {
         const target = event.target;
+
+        if (target.id === "wnc-search") {
+            state.searchQuery = target.value;
+
+            if (state.screen === "groups") {
+                const cursorStart = target.selectionStart;
+                const cursorEnd = target.selectionEnd;
+
+                const content =
+                    document.getElementById("wnc-content");
+
+                if (content) {
+                    renderGroups(content);
+                }
+
+                requestAnimationFrame(() => {
+                    const search =
+                        document.getElementById("wnc-search");
+
+                    if (search) {
+                        search.focus();
+                        search.setSelectionRange(
+                            cursorStart,
+                            cursorEnd
+                        );
+                    }
+                });
+            }
+
+            return;
+        }
 
         if (target.matches("[data-candidate-field]")) {
             const index =
@@ -2127,48 +2294,58 @@
         style.id = "wnc-styles";
 
         style.textContent = `
-            #wnc-root {
-                position: fixed;
-                inset: 0;
-                z-index: 2147483647;
-                background: #111214;
-                color: #e8e8e8;
-                font-family:
-                    Inter,
-                    ui-sans-serif,
-                    system-ui,
-                    -apple-system,
-                    BlinkMacSystemFont,
-                    "Segoe UI",
-                    sans-serif;
-                font-size: 13px;
-                line-height: 1.35;
-            }
+#wnc-root {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2147483647;
 
-            #wnc-root *,
-            #wnc-root *::before,
-            #wnc-root *::after {
-                box-sizing: border-box;
-            }
+    width: min(1000px, 92vw);
+    height: min(720px, 82vh);
 
-            .wnc-shell {
-                width: 100%;
-                height: 100%;
-                display: flex;
-                flex-direction: column;
-                background: #111214;
-            }
+    background: #111214;
+    color: #e8e8e8;
 
-            .wnc-header {
-                height: 48px;
-                min-height: 48px;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 0 12px;
-                border-bottom: 1px solid #303236;
-                background: #17181a;
-            }
+    font-family:
+        Inter,
+        ui-sans-serif,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+    font-size: 13px;
+    line-height: 1.35;
+
+    border: 1px solid #303236;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+}
+.wnc-shell {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+
+    background: #111214;
+}
+
+.wnc-header {
+    height: 48px;
+    min-height: 48px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    padding: 0 12px;
+
+    border-bottom: 1px solid #303236;
+    background: #17181a;
+}
 
             .wnc-brand {
                 font-size: 15px;
@@ -2181,6 +2358,29 @@
                 display: flex;
                 align-items: center;
                 gap: 6px;
+                min-width: 0;
+            }
+
+            .wnc-search {
+                width: 240px;
+                height: 30px;
+                min-width: 120px;
+                padding: 2px 8px;
+                border: 1px solid #383a3e;
+                border-radius: 2px;
+                outline: none;
+                background: #1c1e21;
+                color: #e2e2e2;
+                font: inherit;
+            }
+
+            .wnc-search::placeholder {
+                color: #73767b;
+            }
+
+            .wnc-search:focus {
+                border-color: #60636a;
+                background: #202226;
             }
 
             .wnc-button {
@@ -2212,12 +2412,22 @@
                 white-space: nowrap;
             }
 
-            .wnc-screen {
-                width: 100%;
-                height: 100%;
-                overflow: auto;
-                padding: 14px;
-            }
+.wnc-screen {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+
+    overflow: hidden;
+    padding: 14px;
+}
+#wnc-content {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
 
             .wnc-section-heading,
             .wnc-workspace-heading {
@@ -2283,13 +2493,16 @@
                 border-bottom-color: #d4d4d4;
                 color: #f0f0f0;
             }
+.wnc-table-wrap {
+    width: 100%;
+    flex: 1;
+    min-height: 0;
 
-            .wnc-table-wrap {
-                width: 100%;
-                overflow: auto;
-                border: 1px solid #303236;
-                background: #151618;
-            }
+    overflow: auto;
+
+    border: 1px solid #303236;
+    background: #151618;
+}
 
             .wnc-table {
                 width: 100%;
@@ -2342,6 +2555,35 @@
 
             .wnc-unmatched-row td {
                 color: #d6d6d6;
+            }
+
+            .wnc-collapse-row {
+                cursor: pointer;
+            }
+
+            .wnc-collapse-row td {
+                height: 30px;
+                background: #191b1e !important;
+                color: #9da0a5 !important;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            .wnc-collapse-row:hover td {
+                background: #202226 !important;
+                color: #d0d2d5 !important;
+            }
+
+            .wnc-collapse-arrow {
+                display: inline-block;
+                width: 18px;
+                color: #8d9095;
+            }
+
+            .wnc-collapse-count {
+                margin-left: 5px;
+                color: #696c71;
+                font-weight: 400;
             }
 
             .wnc-number {
@@ -2533,26 +2775,30 @@
 
         document.head.appendChild(style);
     }
-
+function closeUI() {
+    document.getElementById("wnc-root")?.remove();
+}
     // ---------------------------------------------------------------------
     // Startup
     // ---------------------------------------------------------------------
 
-    function start() {
-        /*
-         * WNC is a UI workbench. It does not modify the page.
-         */
-        if (document.readyState === "loading") {
-            document.addEventListener(
-                "DOMContentLoaded",
-                mount,
-                { once: true }
-            );
-        } else {
-            mount();
-        }
+function openUI() {
+    if (document.readyState === "loading") {
+        document.addEventListener(
+            "DOMContentLoaded",
+            mount,
+            { once: true }
+        );
+    } else {
+        mount();
     }
+}
 
-    start();
+if (typeof GM_registerMenuCommand === "function") {
+    GM_registerMenuCommand(
+        "WNC — Open Rule Workbench",
+        openUI
+    );
+}
 
 })();
