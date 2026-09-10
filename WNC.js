@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WNC - WebNovel Cleaner Rule Workbench
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.0.0
+// @version      6.0.1
 // @description  FoxReplace rule collection and editing workbench.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -351,13 +351,19 @@
 
         let count = 0;
 
-        while (regex.exec(text) !== null) {
+        while (true) {
+            const match = regex.exec(text);
+
+            if (!match) {
+                break;
+            }
+
             count++;
 
             /*
              * Avoid an infinite loop on zero-length regexes.
              */
-            if (regex.lastIndex === regex.lastIndex - 1) {
+            if (match[0].length === 0) {
                 regex.lastIndex++;
             }
 
@@ -829,10 +835,12 @@
                             class="wnc-button"
                             data-action="export"
                         >Export</button>
-<button
-    class="wnc-button"
-    data-action="close"
->Close</button>
+
+                        <button
+                            class="wnc-button"
+                            data-action="close"
+                        >Close</button>
+
                         <input
                             id="wnc-import-file"
                             type="file"
@@ -887,7 +895,7 @@
     // Groups screen
     // ---------------------------------------------------------------------
 
-        function renderGroups(content) {
+    function renderGroups(content) {
         const query = state.searchQuery.trim().toLowerCase();
 
         const groups = sortedGroups()
@@ -1472,19 +1480,19 @@
             </tr>
         `).join("");
 
-content.innerHTML = `
-    <section class="wnc-screen">
+        content.innerHTML = `
+            <section class="wnc-screen">
 
-        <div class="wnc-unmatched-controls">
+                <div class="wnc-unmatched-controls">
 
-            <button
-                class="wnc-button"
-                data-action="groups"
-            >Groups</button>
+                    <button
+                        class="wnc-button"
+                        data-action="groups"
+                    >Groups</button>
 
-            <select
-                class="wnc-control-select"
-                data-unmatched-control="targetGroup"
+                    <select
+                        class="wnc-control-select"
+                        data-unmatched-control="targetGroup"
                         ${
                             groups.length
                                 ? ""
@@ -1629,92 +1637,92 @@ content.innerHTML = `
     // Events
     // ---------------------------------------------------------------------
 
- function handleClick(event) {
-    const target = event.target.closest("[data-action]");
+    function handleClick(event) {
+        const target = event.target.closest("[data-action]");
 
-    if (!target) {
-        return;
+        if (!target) {
+            return;
+        }
+
+        const action = target.dataset.action;
+
+        switch (action) {
+            case "create-group":
+                createGroup();
+                break;
+
+            case "import":
+                document
+                    .getElementById("wnc-import-file")
+                    ?.click();
+                break;
+
+            case "export":
+                exportDatabase();
+                break;
+
+            case "close":
+                closeUI();
+                break;
+
+            case "open-group":
+                openGroup(
+                    Number(target.dataset.groupIndex)
+                );
+                break;
+
+            case "open-unmatched":
+                openUnmatched();
+                break;
+
+            case "groups":
+                state.screen = "groups";
+                state.groupIndex = null;
+                render();
+                break;
+
+            case "toggle-other-groups":
+                state.showOtherGroups =
+                    !state.showOtherGroups;
+                render();
+                break;
+
+            case "back-groups":
+                state.screen = "groups";
+                state.groupIndex = null;
+                render();
+                break;
+
+            case "group-tab":
+                state.tab = target.dataset.tab;
+                render();
+                break;
+
+            case "add-rule":
+                addRule();
+                break;
+
+            case "delete-rule":
+                deleteRule(
+                    Number(target.dataset.ruleIndex)
+                );
+                break;
+
+            case "add-site":
+                addSite();
+                break;
+
+            case "delete-site":
+                deleteSite(
+                    Number(target.dataset.siteIndex)
+                );
+                break;
+
+            case "apply-checked":
+                applyCheckedCandidates();
+                break;
+        }
     }
-
-    const action = target.dataset.action;
-
-    switch (action) {
-        case "create-group":
-            createGroup();
-            break;
-
-        case "import":
-            document
-                .getElementById("wnc-import-file")
-                ?.click();
-            break;
-
-        case "export":
-            exportDatabase();
-            break;
-
-        case "close":
-            closeUI();
-            break;
-
-        case "open-group":
-            openGroup(
-                Number(target.dataset.groupIndex)
-            );
-            break;
-
-        case "open-unmatched":
-            openUnmatched();
-            break;
-
-        case "groups":
-            state.screen = "groups";
-            state.groupIndex = null;
-            render();
-            break;
-
-        case "toggle-other-groups":
-            state.showOtherGroups =
-                !state.showOtherGroups;
-            render();
-            break;
-
-        case "back-groups":
-            state.screen = "groups";
-            state.groupIndex = null;
-            render();
-            break;
-
-        case "group-tab":
-            state.tab = target.dataset.tab;
-            render();
-            break;
-
-        case "add-rule":
-            addRule();
-            break;
-
-        case "delete-rule":
-            deleteRule(
-                Number(target.dataset.ruleIndex)
-            );
-            break;
-
-        case "add-site":
-            addSite();
-            break;
-
-        case "delete-site":
-            deleteSite(
-                Number(target.dataset.siteIndex)
-            );
-            break;
-
-        case "apply-checked":
-            applyCheckedCandidates();
-            break;
-    }
-}
 
     function handleChange(event) {
         const target = event.target;
@@ -1809,6 +1817,16 @@ content.innerHTML = `
             }
 
             state.candidates[index][field] = target.value;
+
+            /*
+             * IMPORTANT:
+             *
+             * If the user manually changes the Input column, remember that
+             * the generated regexp template must not overwrite that edit.
+             */
+            if (field === "input") {
+                state.candidates[index]._inputEdited = true;
+            }
 
             /*
              * Candidate edits are deliberately not written to the database.
@@ -2336,6 +2354,7 @@ content.innerHTML = `
     border: 1px solid #303236;
     box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
 }
+
 .wnc-shell {
     width: 100%;
     height: 100%;
@@ -2361,70 +2380,70 @@ content.innerHTML = `
     background: #17181a;
 }
 
-            .wnc-brand {
-                font-size: 15px;
-                font-weight: 700;
-                letter-spacing: .04em;
-                color: #f0f0f0;
-            }
+.wnc-brand {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    color: #f0f0f0;
+}
 
-            .wnc-header-actions {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                min-width: 0;
-            }
+.wnc-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
 
-            .wnc-search {
-                width: 240px;
-                height: 30px;
-                min-width: 120px;
-                padding: 2px 8px;
-                border: 1px solid #383a3e;
-                border-radius: 2px;
-                outline: none;
-                background: #1c1e21;
-                color: #e2e2e2;
-                font: inherit;
-            }
+.wnc-search {
+    width: 240px;
+    height: 30px;
+    min-width: 120px;
+    padding: 2px 8px;
+    border: 1px solid #383a3e;
+    border-radius: 2px;
+    outline: none;
+    background: #1c1e21;
+    color: #e2e2e2;
+    font: inherit;
+}
 
-            .wnc-search::placeholder {
-                color: #73767b;
-            }
+.wnc-search::placeholder {
+    color: #73767b;
+}
 
-            .wnc-search:focus {
-                border-color: #60636a;
-                background: #202226;
-            }
+.wnc-search:focus {
+    border-color: #60636a;
+    background: #202226;
+}
 
-            .wnc-button {
-                height: 30px;
-                padding: 0 11px;
-                border: 1px solid #414348;
-                border-radius: 3px;
-                background: #222428;
-                color: #e7e7e7;
-                font: inherit;
-                cursor: pointer;
-            }
+.wnc-button {
+    height: 30px;
+    padding: 0 11px;
+    border: 1px solid #414348;
+    border-radius: 3px;
+    background: #222428;
+    color: #e7e7e7;
+    font: inherit;
+    cursor: pointer;
+}
 
-            .wnc-button:hover:not(:disabled) {
-                background: #292b2f;
-                border-color: #55585d;
-            }
+.wnc-button:hover:not(:disabled) {
+    background: #292b2f;
+    border-color: #55585d;
+}
 
-            .wnc-button:disabled {
-                opacity: .45;
-                cursor: default;
-            }
+.wnc-button:disabled {
+    opacity: .45;
+    cursor: default;
+}
 
-            .wnc-primary {
-                background: #25272a;
-            }
+.wnc-primary {
+    background: #25272a;
+}
 
-            .wnc-apply {
-                white-space: nowrap;
-            }
+.wnc-apply {
+    white-space: nowrap;
+}
 
 .wnc-screen {
     width: 100%;
@@ -2437,76 +2456,78 @@ content.innerHTML = `
     overflow: hidden;
     padding: 14px;
 }
+
 #wnc-content {
     flex: 1;
     min-height: 0;
     overflow: hidden;
 }
 
-            .wnc-section-heading,
-            .wnc-workspace-heading {
-                height: 34px;
-                display: flex;
-                align-items: center;
-                margin-bottom: 8px;
-            }
+.wnc-section-heading,
+.wnc-workspace-heading {
+    height: 34px;
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+}
 
-            .wnc-section-heading h1,
-            .wnc-workspace-heading h1 {
-                margin: 0;
-                font-size: 15px;
-                font-weight: 600;
-                color: #eeeeee;
-            }
+.wnc-section-heading h1,
+.wnc-workspace-heading h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #eeeeee;
+}
 
-            .wnc-workspace-heading {
-                gap: 7px;
-            }
+.wnc-workspace-heading {
+    gap: 7px;
+}
 
-            .wnc-back {
-                width: 27px;
-                height: 27px;
-                padding: 0;
-                border: 1px solid #3d3f43;
-                border-radius: 3px;
-                background: #202226;
-                color: #e8e8e8;
-                font-size: 21px;
-                line-height: 20px;
-                cursor: pointer;
-            }
+.wnc-back {
+    width: 27px;
+    height: 27px;
+    padding: 0;
+    border: 1px solid #3d3f43;
+    border-radius: 3px;
+    background: #202226;
+    color: #e8e8e8;
+    font-size: 21px;
+    line-height: 20px;
+    cursor: pointer;
+}
 
-            .wnc-back:hover {
-                background: #292b2f;
-            }
+.wnc-back:hover {
+    background: #292b2f;
+}
 
-            .wnc-tabs {
-                display: flex;
-                height: 32px;
-                margin-bottom: 8px;
-                border-bottom: 1px solid #34363a;
-            }
+.wnc-tabs {
+    display: flex;
+    height: 32px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #34363a;
+}
 
-            .wnc-tab {
-                min-width: 70px;
-                height: 31px;
-                padding: 0 12px;
-                border: 0;
-                border-bottom: 2px solid transparent;
-                background: transparent;
-                color: #8f9298;
-                font: inherit;
-                cursor: pointer;
-            }
+.wnc-tab {
+    min-width: 70px;
+    height: 31px;
+    padding: 0 12px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: #8f9298;
+    font: inherit;
+    cursor: pointer;
+}
 
-            .wnc-tab:hover {
-                color: #d8d8d8;
-            }
+.wnc-tab:hover {
+    color: #d8d8d8;
+}
 
-            .wnc-tab.active {
-                border-bottom-color: #d4d4d4;
-                color: #f0f0f0;
-            }
+.wnc-tab.active {
+    border-bottom-color: #d4d4d4;
+    color: #f0f0f0;
+}
+
 .wnc-table-wrap {
     width: 100%;
     flex: 1;
@@ -2518,301 +2539,331 @@ content.innerHTML = `
     background: #151618;
 }
 
-            .wnc-table {
-                width: 100%;
-                border-collapse: collapse;
-                table-layout: fixed;
-            }
+.wnc-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
 
-            .wnc-table th,
-            .wnc-table td {
-                height: 31px;
-                padding: 0 7px;
-                border-right: 1px solid #303236;
-                border-bottom: 1px solid #303236;
-                vertical-align: middle;
-                text-align: left;
-                overflow: hidden;
-            }
+.wnc-table th,
+.wnc-table td {
+    height: 31px;
+    padding: 0 7px;
+    border-right: 1px solid #303236;
+    border-bottom: 1px solid #303236;
+    vertical-align: middle;
+    text-align: left;
+    overflow: hidden;
+}
 
-            .wnc-table th:last-child,
-            .wnc-table td:last-child {
-                border-right: 0;
-            }
+.wnc-table th:last-child,
+.wnc-table td:last-child {
+    border-right: 0;
+}
 
-            .wnc-table th {
-                height: 29px;
-                background: #1c1e21;
-                color: #9da0a5;
-                font-size: 11px;
-                font-weight: 600;
-                text-transform: none;
-                white-space: nowrap;
-            }
+.wnc-table th {
+    height: 29px;
+    background: #1c1e21;
+    color: #9da0a5;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: none;
+    white-space: nowrap;
+}
 
-            .wnc-table td {
-                background: #151618;
-                color: #dedede;
-            }
+.wnc-table td {
+    background: #151618;
+    color: #dedede;
+}
 
-            .wnc-table tbody tr:hover td {
-                background: #1a1c1f;
-            }
+.wnc-table tbody tr:hover td {
+    background: #1a1c1f;
+}
 
-            .wnc-clickable-row {
-                cursor: pointer;
-            }
+.wnc-clickable-row {
+    cursor: pointer;
+}
 
-            .wnc-clickable-row:hover td {
-                background: #202226;
-            }
+.wnc-clickable-row:hover td {
+    background: #202226;
+}
 
-            .wnc-unmatched-row td {
-                color: #d6d6d6;
-            }
+.wnc-unmatched-row td {
+    color: #d6d6d6;
+}
 
-            .wnc-collapse-row {
-                cursor: pointer;
-            }
+.wnc-collapse-row {
+    cursor: pointer;
+}
 
-            .wnc-collapse-row td {
-                height: 30px;
-                background: #191b1e !important;
-                color: #9da0a5 !important;
-                font-size: 11px;
-                font-weight: 600;
-            }
+.wnc-collapse-row td {
+    height: 30px;
+    background: #191b1e !important;
+    color: #9da0a5 !important;
+    font-size: 11px;
+    font-weight: 600;
+}
 
-            .wnc-collapse-row:hover td {
-                background: #202226 !important;
-                color: #d0d2d5 !important;
-            }
+.wnc-collapse-row:hover td {
+    background: #202226 !important;
+    color: #d0d2d5 !important;
+}
 
-            .wnc-collapse-arrow {
-                display: inline-block;
-                width: 18px;
-                color: #8d9095;
-            }
+.wnc-collapse-arrow {
+    display: inline-block;
+    width: 18px;
+    color: #8d9095;
+}
 
-            .wnc-collapse-count {
-                margin-left: 5px;
-                color: #696c71;
-                font-weight: 400;
-            }
+.wnc-collapse-count {
+    margin-left: 5px;
+    color: #696c71;
+    font-weight: 400;
+}
 
-            .wnc-number {
-                width: 90px;
-                text-align: right !important;
-                color: #b8bbc0 !important;
-                font-variant-numeric: tabular-nums;
-            }
+.wnc-number {
+    width: 90px;
+    text-align: right !important;
+    color: #b8bbc0 !important;
+    font-variant-numeric: tabular-nums;
+}
 
-            .wnc-site-status {
-                width: 90px;
-                text-align: center !important;
-            }
+.wnc-site-status {
+    width: 90px;
+    text-align: center !important;
+}
 
-            .wnc-check {
-                color: #65c174;
-                font-weight: 700;
-            }
+.wnc-check {
+    color: #65c174;
+    font-weight: 700;
+}
 
-            .wnc-cross {
-                color: #8c8e93;
-                font-weight: 600;
-            }
+.wnc-cross {
+    color: #8c8e93;
+    font-weight: 600;
+}
 
-            .wnc-empty {
-                height: 40px !important;
-                text-align: center !important;
-                color: #777a80 !important;
-            }
+.wnc-empty {
+    height: 40px !important;
+    text-align: center !important;
+    color: #777a80 !important;
+}
 
-            .wnc-cell-input,
-            .wnc-cell-select,
-            .wnc-control-select {
-                width: 100%;
-                height: 27px;
-                min-width: 0;
-                padding: 2px 5px;
-                border: 1px solid #383a3e;
-                border-radius: 2px;
-                outline: none;
-                background: #1c1e21;
-                color: #e2e2e2;
-                font: inherit;
-            }
+.wnc-cell-input,
+.wnc-cell-select,
+.wnc-control-select {
+    width: 100%;
+    height: 27px;
+    min-width: 0;
+    padding: 2px 5px;
+    border: 1px solid #383a3e;
+    border-radius: 2px;
+    outline: none;
+    background: #1c1e21;
+    color: #e2e2e2;
+    font: inherit;
+}
 
-            .wnc-cell-input:focus,
-            .wnc-cell-select:focus,
-            .wnc-control-select:focus {
-                border-color: #60636a;
-                background: #202226;
-            }
+.wnc-cell-input:focus,
+.wnc-cell-select:focus,
+.wnc-control-select:focus {
+    border-color: #60636a;
+    background: #202226;
+}
 
-            .wnc-cell-select {
-                cursor: pointer;
-            }
+.wnc-cell-select {
+    cursor: pointer;
+}
 
-            .wnc-center {
-                width: 72px;
-                text-align: center !important;
-            }
+.wnc-center {
+    width: 72px;
+    text-align: center !important;
+}
 
-            .wnc-delete-cell {
-                width: 34px;
-                text-align: center !important;
-                padding: 0 !important;
-            }
+.wnc-delete-cell {
+    width: 34px;
+    text-align: center !important;
+    padding: 0 !important;
+}
 
-            .wnc-delete {
-                width: 25px;
-                height: 25px;
-                border: 0;
-                background: transparent;
-                color: #85878c;
-                font-size: 18px;
-                line-height: 24px;
-                cursor: pointer;
-            }
+.wnc-delete {
+    width: 25px;
+    height: 25px;
+    border: 0;
+    background: transparent;
+    color: #85878c;
+    font-size: 18px;
+    line-height: 24px;
+    cursor: pointer;
+}
 
-            .wnc-delete:hover {
-                color: #d2d2d2;
-                background: #292b2f;
-            }
+.wnc-delete:hover {
+    color: #d2d2d2;
+    background: #292b2f;
+}
 
-            .wnc-add-row td {
-                height: 34px;
-                background: #17191b !important;
-            }
+.wnc-add-row td {
+    height: 34px;
+    background: #17191b !important;
+}
 
-            .wnc-add-button {
-                height: 26px;
-                padding: 0 7px;
-                border: 1px solid transparent;
-                background: transparent;
-                color: #989ba1;
-                font: inherit;
-                cursor: pointer;
-            }
+.wnc-add-button {
+    height: 26px;
+    padding: 0 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #989ba1;
+    font: inherit;
+    cursor: pointer;
+}
 
-            .wnc-add-button:hover {
-                border-color: #3b3d41;
-                background: #222428;
-                color: #e1e1e1;
-            }
+.wnc-add-button:hover {
+    border-color: #3b3d41;
+    background: #222428;
+    color: #e1e1e1;
+}
 
-            .wnc-group-options {
-                width: 360px;
-                max-width: 100%;
-                margin-top: 10px;
-            }
+.wnc-group-options {
+    width: 360px;
+    max-width: 100%;
+    margin-top: 10px;
+}
 
-            .wnc-group-options .wnc-table td:first-child {
-                width: 150px;
-                color: #aeb1b6;
-            }
+.wnc-group-options .wnc-table td:first-child {
+    width: 150px;
+    color: #aeb1b6;
+}
 
-            .wnc-group-options .wnc-table td:last-child {
-                text-align: left;
-            }
+.wnc-group-options .wnc-table td:last-child {
+    text-align: left;
+}
 
-            .wnc-unmatched-controls {
-                display: grid;
-                grid-template-columns:
-                    minmax(150px, 1fr)
-                    100px
-                    115px
-                    80px
-                    auto;
-                gap: 5px;
-                margin-bottom: 8px;
-            }
+/*
+ * Unmatched has six controls:
+ *
+ *   Groups
+ *   Target Group
+ *   Type
+ *   Template
+ *   Case
+ *   Apply Checked
+ *
+ * Keep them together on one compact row on normal desktop widths.
+ */
+.wnc-unmatched-controls {
+    display: grid;
+    grid-template-columns:
+        auto
+        minmax(150px, 1fr)
+        100px
+        115px
+        80px
+        auto;
+    gap: 5px;
+    margin-bottom: 8px;
+    align-items: center;
+}
 
-            .wnc-unmatched-controls .wnc-control-select {
-                height: 30px;
-            }
+.wnc-unmatched-controls .wnc-control-select {
+    height: 30px;
+}
 
-            .wnc-unmatched-controls .wnc-button {
-                height: 30px;
-            }
+.wnc-unmatched-controls .wnc-button {
+    height: 30px;
+}
 
-            .wnc-check-cell {
-                width: 54px;
-                text-align: center !important;
-            }
+.wnc-check-cell {
+    width: 54px;
+    text-align: center !important;
+}
 
-            .wnc-unmatched-table th:nth-child(1) {
-                width: 54px;
-            }
+.wnc-unmatched-table th:nth-child(1) {
+    width: 54px;
+}
 
-            .wnc-unmatched-table th:nth-child(5) {
-                width: 85px;
-            }
+.wnc-unmatched-table th:nth-child(5) {
+    width: 85px;
+}
 
-            .wnc-rules-table th:nth-child(3) {
-                width: 95px;
-            }
+.wnc-rules-table th:nth-child(3) {
+    width: 95px;
+}
 
-            .wnc-rules-table th:nth-child(4),
-            .wnc-rules-table th:nth-child(5) {
-                width: 65px;
-            }
+.wnc-rules-table th:nth-child(4),
+.wnc-rules-table th:nth-child(5) {
+    width: 65px;
+}
 
-            .wnc-rules-table th:nth-child(6) {
-                width: 100px;
-            }
+.wnc-rules-table th:nth-child(6) {
+    width: 100px;
+}
 
-            .wnc-rules-table th:nth-child(7) {
-                width: 75px;
-            }
+.wnc-rules-table th:nth-child(7) {
+    width: 75px;
+}
 
-            @media (max-width: 800px) {
-                .wnc-unmatched-controls {
-                    grid-template-columns:
-                        1fr
-                        1fr
-                        1fr
-                        1fr
-                        1fr;
-                }
+@media (max-width: 800px) {
+    .wnc-unmatched-controls {
+        grid-template-columns:
+            auto
+            1fr
+            1fr
+            1fr
+            1fr
+            auto;
+    }
 
-                .wnc-screen {
-                    padding: 8px;
-                }
+    .wnc-screen {
+        padding: 8px;
+    }
 
-                .wnc-header {
-                    padding: 0 8px;
-                }
-            }
+    .wnc-header {
+        padding: 0 8px;
+    }
+}
+
+@media (max-width: 600px) {
+    .wnc-unmatched-controls {
+        grid-template-columns:
+            1fr
+            1fr
+            1fr;
+    }
+
+    .wnc-unmatched-controls .wnc-button {
+        width: 100%;
+    }
+}
         `;
 
         document.head.appendChild(style);
     }
-function closeUI() {
-    document.getElementById("wnc-root")?.remove();
-}
+
+    function closeUI() {
+        document.getElementById("wnc-root")?.remove();
+    }
+
     // ---------------------------------------------------------------------
     // Startup
     // ---------------------------------------------------------------------
 
-function openUI() {
-    if (document.readyState === "loading") {
-        document.addEventListener(
-            "DOMContentLoaded",
-            mount,
-            { once: true }
-        );
-    } else {
-        mount();
+    function openUI() {
+        if (document.readyState === "loading") {
+            document.addEventListener(
+                "DOMContentLoaded",
+                mount,
+                { once: true }
+            );
+        } else {
+            mount();
+        }
     }
-}
 
-if (typeof GM_registerMenuCommand === "function") {
-    GM_registerMenuCommand(
-        "WNC — Open Rule Workbench",
-        openUI
-    );
-}
+    if (typeof GM_registerMenuCommand === "function") {
+        GM_registerMenuCommand(
+            "WNC — Open Rule Workbench",
+            openUI
+        );
+    }
 
 })();
