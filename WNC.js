@@ -1322,12 +1322,35 @@ const topCandidate =
                     <td class="wnc-number">
                         ${matches}
                     </td>
-
                     <td class="wnc-site-status">
                         ${
                             siteMatches
                                 ? `<span class="wnc-check">✓</span>`
                                 : `<span class="wnc-cross">✕</span>`
+                        }
+                    </td>
+
+                    <td>
+                        ${
+                            topCandidate
+                                ? escapeHTML(topCandidate.candidate)
+                                : "—"
+                        }
+                    </td>
+
+                    <td>
+                        ${
+                            topCandidate
+                                ? escapeHTML(topCandidate.rule)
+                                : "—"
+                        }
+                    </td>
+
+                    <td class="wnc-number">
+                        ${
+                            topCandidate
+                                ? topCandidate.total
+                                : 0
                         }
                     </td>
                 </tr>
@@ -1395,14 +1418,17 @@ const topCandidate =
 
                 <div class="wnc-table-wrap">
                     <table class="wnc-table">
-                        <thead>
-                            <tr>
-                                <th>Group</th>
-                                <th>Rules</th>
-                                <th>Matches</th>
-                                <th>Sites</th>
-                            </tr>
-                        </thead>
+                      <thead>
+    <tr>
+        <th>Group</th>
+        <th>Rules</th>
+        <th>Matches</th>
+        <th>Sites</th>
+        <th>Top Candidate</th>
+        <th>Rule</th>
+        <th>Total</th>
+    </tr>
+</thead>
 
                         <tbody>
                             ${
