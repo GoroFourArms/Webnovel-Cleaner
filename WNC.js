@@ -1474,6 +1474,12 @@
 
         content.innerHTML = `
             <section class="wnc-screen">
+            <div class="wnc-unmatched-header">
+    <button
+        class="wnc-button"
+        data-action="groups"
+    >Groups</button>
+</div>
                 <div class="wnc-unmatched-controls">
 
                     <select
@@ -1623,84 +1629,92 @@
     // Events
     // ---------------------------------------------------------------------
 
-    function handleClick(event) {
-        const target = event.target.closest("[data-action]");
+ function handleClick(event) {
+    const target = event.target.closest("[data-action]");
 
-        if (!target) {
-            return;
-        }
-
-        const action = target.dataset.action;
-
-        switch (action) {
-            case "create-group":
-                createGroup();
-                break;
-
-            case "import":
-                document
-                    .getElementById("wnc-import-file")
-                    ?.click();
-                break;
-
-            case "export":
-                exportDatabase();
-                break;
-case "close":
-    closeUI();
-    break;
-            case "open-group":
-                openGroup(
-                    Number(target.dataset.groupIndex)
-                );
-                break;
-
-            case "open-unmatched":
-                openUnmatched();
-                break;
-
-            case "toggle-other-groups":
-                state.showOtherGroups =
-                    !state.showOtherGroups;
-                render();
-                break;
-
-            case "back-groups":
-                state.screen = "groups";
-                state.groupIndex = null;
-                render();
-                break;
-
-            case "group-tab":
-                state.tab = target.dataset.tab;
-                render();
-                break;
-
-            case "add-rule":
-                addRule();
-                break;
-
-            case "delete-rule":
-                deleteRule(
-                    Number(target.dataset.ruleIndex)
-                );
-                break;
-
-            case "add-site":
-                addSite();
-                break;
-
-            case "delete-site":
-                deleteSite(
-                    Number(target.dataset.siteIndex)
-                );
-                break;
-
-            case "apply-checked":
-                applyCheckedCandidates();
-                break;
-        }
+    if (!target) {
+        return;
     }
+
+    const action = target.dataset.action;
+
+    switch (action) {
+        case "create-group":
+            createGroup();
+            break;
+
+        case "import":
+            document
+                .getElementById("wnc-import-file")
+                ?.click();
+            break;
+
+        case "export":
+            exportDatabase();
+            break;
+
+        case "close":
+            closeUI();
+            break;
+
+        case "open-group":
+            openGroup(
+                Number(target.dataset.groupIndex)
+            );
+            break;
+
+        case "open-unmatched":
+            openUnmatched();
+            break;
+
+        case "groups":
+            state.screen = "groups";
+            state.groupIndex = null;
+            render();
+            break;
+
+        case "toggle-other-groups":
+            state.showOtherGroups =
+                !state.showOtherGroups;
+            render();
+            break;
+
+        case "back-groups":
+            state.screen = "groups";
+            state.groupIndex = null;
+            render();
+            break;
+
+        case "group-tab":
+            state.tab = target.dataset.tab;
+            render();
+            break;
+
+        case "add-rule":
+            addRule();
+            break;
+
+        case "delete-rule":
+            deleteRule(
+                Number(target.dataset.ruleIndex)
+            );
+            break;
+
+        case "add-site":
+            addSite();
+            break;
+
+        case "delete-site":
+            deleteSite(
+                Number(target.dataset.siteIndex)
+            );
+            break;
+
+        case "apply-checked":
+            applyCheckedCandidates();
+            break;
+    }
+}
 
     function handleChange(event) {
         const target = event.target;
