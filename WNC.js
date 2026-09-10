@@ -413,85 +413,251 @@
      */
 
     function extractCandidates(text) {
-        const counts = new Map();
+    const counts = new Map();
 
-        /*
-         * Unicode-aware token:
-         *   - uppercase/lowercase letters
-         *   - numbers after the first letter
-         *   - internal apostrophes
-         *   - internal hyphens
-         */
-        const tokenPattern =
-            /[\p{Lu}][\p{L}\p{M}\p{N}'’-]*(?:[-–—][\p{Lu}\p{L}\p{M}\p{N}'’-]*)?/gu;
+    const tokenPattern =
+        /[\p{Lu}][\p{L}\p{M}\p{N}'’-]*(?:[-–—][\p{Lu}\p{L}\p{M}\p{N}'’-]*)?/gu;
 
-        const matches = [];
-        let match;
+    const matches = [];
+    let match;
 
-        while ((match = tokenPattern.exec(text)) !== null) {
-            matches.push({
-                value: match[0],
-                start: match.index,
-                end: match.index + match[0].length
+    while ((match = tokenPattern.exec(text)) !== null) {
+        matches.push({
+            value: match[0],
+            start: match.index,
+            end: match.index + match[0].length
+        });
+    }
+
+    /*
+     * Build phrases first so we can identify the longest candidate
+     * covering each occurrence.
+     */
+    const occurrences = [];
+
+    for (let i = 0; i < matches.length; i++) {
+        let phrase = matches[i].value;
+
+        occurrences.push({
+            candidate: phrase,
+            start: matches[i].start,
+            end: matches[i].end
+        });
+
+        for (let j = i + 1; j < matches.length; j++) {
+            const previous = matches[j - 1];
+            const current = matches[j];
+
+            const between = text.slice(previous.end, current.start);
+
+            if (!/^[ \t\r\n]+$/.test(between)) {
+                break;
+            }
+
+            phrase += " " + current.value;
+
+            occurrences.push({
+                candidate: phrase,
+                start: matches[i].start,
+                end: current.end
             });
-        }
 
-        /*
-         * Build phrases from adjacent capitalized tokens separated only by
-         * normal whitespace.
-         */
-        for (let i = 0; i < matches.length; i++) {
-            let phrase = matches[i].value;
-
-            addCandidate(counts, matches[i].value);
-
-            for (let j = i + 1; j < matches.length; j++) {
-                const previous = matches[j - 1];
-                const current = matches[j];
-
-                const between = text.slice(previous.end, current.start);
-
-                if (!/^[ \t\r\n]+$/.test(between)) {
-                    break;
-                }
-
-                phrase += " " + current.value;
-
-                addCandidate(counts, phrase);
-
-                /*
-                 * Keep phrases reasonably bounded.
-                 */
-                if (j - i >= 5) {
-                    break;
-                }
+            if (j - i >= 5) {
+                break;
             }
         }
-
-        return [...counts.entries()].map(([candidate, matches]) => ({
-            candidate,
-            input: candidate,
-            output: "",
-            matches
-        }));
     }
 
-    function addCandidate(map, value) {
-        const candidate = value.trim();
+    /*
+     * Count each occurrence only once.
+     *
+     * When candidates overlap, the longest candidate wins.
+     *
+     * Example:
+     *
+     *   Security Office
+     *
+     * counts as:
+     *
+     *   Security Office = 1
+     *
+     * and does not add another count to:
+     *
+     *   Security
+     */
+    const selected = [];
 
-        if (!candidate) {
-            return;
+    for (const occurrence of occurrences) {
+        const overlaps = selected.some(existing =>
+            occurrence.start < existing.end &&
+            occurrence.end > existing.start
+        );
+
+        if (!overlaps) {
+            selected.push(occurrence);
+            continue;
         }
 
-        /*
-         * Ignore one-character candidates.
-         */
-        if ([...candidate].length < 2) {
-            return;
-        }
+        for (let i = selected.length - 1; i >= 0; i--) {
+            const existing = selected[i];
 
-        map.set(candidate, (map.get(candidate) || 0) + 1);
+            if (
+                occurrence.start < existing.end &&
+                occurrence.end > existing.start &&
+                occurrence.end - occurrence.start >
+                    existing.end - existing.start
+            ) {
+                selected.splice(i, 1);
+                selected.push(occurrence);
+            }
+        }
     }
+
+    for (const occurrence of selected) {
+        addCandidate(counts, occurrence.candidate);
+    }
+
+    return [...counts.entries()].map(([candidate, matches]) => ({
+        candidate,
+        input: candidate,
+        output: "",
+        matches
+    }));
+}
+
+const COMMON_STANDALONE_WORDS = new Set([
+    "the",
+    "a",
+    "an",
+    "this",
+    "that",
+    "these",
+    "those",
+    "and",
+    "but",
+    "or",
+    "nor",
+    "yet",
+    "so",
+    "he",
+    "she",
+    "it",
+    "they",
+    "we",
+    "i",
+    "you",
+    "his",
+    "her",
+    "its",
+    "their",
+    "our",
+    "your",
+    "my",
+    "then",
+    "now",
+    "just",
+    "still",
+    "also",
+    "even",
+    "only",
+    "already",
+    "finally",
+    "suddenly",
+    "when",
+    "while",
+    "where",
+    "what",
+    "why",
+    "how",
+    "who",
+    "if",
+    "though",
+    "although",
+    "because",
+    "since",
+    "after",
+    "before",
+    "until",
+    "unless",
+    "as",
+    "for",
+    "from",
+    "with",
+    "without",
+    "into",
+    "upon",
+    "over",
+    "under",
+    "through",
+    "there",
+    "here",
+    "however",
+    "therefore",
+    "meanwhile",
+    "instead",
+    "besides",
+    "otherwise",
+    "indeed",
+    "perhaps",
+    "maybe",
+    "certainly",
+    "actually",
+    "apparently",
+    "unfortunately",
+    "fortunately",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "by"
+]);
+
+function addCandidate(map, value) {
+    let candidate = value.trim();
+
+    if (!candidate) {
+        return;
+    }
+
+    /*
+     * Remove leading articles from multi-word candidates.
+     *
+     * "The White Dragon" becomes "White Dragon".
+     *
+     * We only do this for leading articles, so names such as
+     * "He Tao", "Do Hyuk", "Will Smith", and "May Chen"
+     * remain intact.
+     */
+    candidate = candidate.replace(
+        /^(?:The|A|An)\s+/i,
+        ""
+    );
+
+    if (!candidate) {
+        return;
+    }
+
+    if ([...candidate].length < 2) {
+        return;
+    }
+
+    /*
+     * Filter common words only when they are standalone.
+     *
+     * This means "He" is filtered, but "He Tao" remains.
+     */
+    if (
+    !/\s/.test(candidate) &&
+    COMMON_STANDALONE_WORDS.has(candidate.toLowerCase())
+) {
+    return;
+}
+    map.set(
+        candidate,
+        (map.get(candidate) || 0) + 1
+    );
+}
 
     // ---------------------------------------------------------------------
     // Existing-rule exclusion
@@ -1018,13 +1184,85 @@ function normalizeToken(token) {
     // Groups screen
     // ---------------------------------------------------------------------
 
+function findTopCandidateForGroup(group, text) {
+    let top = null;
+
+    for (const rule of group.substitutions) {
+        if (!rule.enabled || !rule.input) {
+            continue;
+        }
+
+        const regex = buildRuleRegex(rule);
+
+        if (!regex) {
+            continue;
+        }
+
+        const counts = new Map();
+
+        while (true) {
+            const match = regex.exec(text);
+
+            if (!match) {
+                break;
+            }
+
+            const candidate = match[0];
+
+            if (candidate) {
+                const total =
+                    (counts.get(candidate) || 0) + 1;
+
+                counts.set(candidate, total);
+
+                if (
+                    !top ||
+                    total > top.total
+                ) {
+                    top = {
+                        candidate,
+                        rule: rule.input,
+                        total
+                    };
+                }
+            }
+
+            /*
+             * Avoid an infinite loop on zero-length regexes.
+             */
+            if (match[0].length === 0) {
+                regex.lastIndex++;
+            }
+        }
+    }
+
+    return top;
+}
+
     function renderGroups(content) {
         const query = state.searchQuery.trim().toLowerCase();
 
         const groups = sortedGroups()
             .map(({ group, index }) => {
-                const matches = countGroupMatches(group);
-                const siteMatches = groupMatchesCurrentSite(group);
+                const pageText = getPageText();
+
+const ruleMatches = group.substitutions
+    .map(rule => ({
+        rule,
+        matches: rule.enabled
+            ? countRuleMatches(rule, pageText)
+            : 0
+    }))
+    .filter(item => item.matches > 0);
+
+const matches = ruleMatches.reduce(
+    (total, item) => total + item.matches,
+    0
+);
+
+const ruleCount = ruleMatches.length;
+
+const siteMatches = groupMatchesCurrentSite(group);
 
                 const searchMatch =
                     !query ||
@@ -1036,12 +1274,13 @@ function normalizeToken(token) {
                     );
 
                 return {
-                    group,
-                    index,
-                    matches,
-                    siteMatches,
-                    searchMatch
-                };
+    group,
+    index,
+    ruleCount,
+    matches,
+    siteMatches,
+    searchMatch
+};
             })
             .filter(item => item.searchMatch);
 
@@ -1055,11 +1294,12 @@ function normalizeToken(token) {
 
         const rows = activeGroups.map(item => {
             const {
-                group,
-                index,
-                matches,
-                siteMatches
-            } = item;
+    group,
+    index,
+    ruleCount,
+    matches,
+    siteMatches
+} = item;
 
             return `
                 <tr
@@ -1070,7 +1310,7 @@ function normalizeToken(token) {
                     <td>${escapeHTML(group.name || "(Unnamed)")}</td>
 
                     <td class="wnc-number">
-                        ${group.substitutions.length}
+                       ${ruleCount}
                     </td>
 
                     <td class="wnc-number">
