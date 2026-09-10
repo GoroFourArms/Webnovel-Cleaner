@@ -1293,13 +1293,19 @@ const siteMatches = groupMatchesCurrentSite(group);
         );
 
         const rows = activeGroups.map(item => {
-            const {
+      const {
     group,
     index,
     ruleCount,
     matches,
     siteMatches
 } = item;
+
+const topCandidate =
+    findTopCandidateForGroup(
+        group,
+        getPageText()
+    );
 
             return `
                 <tr
