@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.0.3
+// @version      6.0.4
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1357,32 +1357,36 @@ const topCandidate =
             `;
         }).join("");
 
-        const otherRows = otherGroups.map(item => {
-            const {
-                group,
-                index
-            } = item;
+const otherRows = otherGroups.map(item => {
+    const {
+        group,
+        index
+    } = item;
 
-            return `
-                <tr
-                    class="wnc-clickable-row"
-                    data-action="open-group"
-                    data-group-index="${index}"
-                >
-                    <td>${escapeHTML(group.name || "(Unnamed)")}</td>
+    return `
+        <tr
+            class="wnc-clickable-row"
+            data-action="open-group"
+            data-group-index="${index}"
+        >
+            <td>${escapeHTML(group.name || "(Unnamed)")}</td>
 
-                    <td class="wnc-number">
-                        ${group.substitutions.length}
-                    </td>
+            <td class="wnc-number">0</td>
 
-                    <td class="wnc-number">0</td>
+            <td class="wnc-number">0</td>
 
-                    <td class="wnc-site-status">
-                        <span class="wnc-cross">✕</span>
-                    </td>
-                </tr>
-            `;
-        }).join("");
+            <td class="wnc-site-status">
+                <span class="wnc-cross">✕</span>
+            </td>
+
+            <td>—</td>
+
+            <td>—</td>
+
+            <td class="wnc-number">0</td>
+        </tr>
+    `;
+}).join("");
 
         const otherSection = otherGroups.length
             ? `
