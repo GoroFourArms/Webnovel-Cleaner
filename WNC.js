@@ -1,12 +1,15 @@
 // ==UserScript==
-// @name         WNC - WebNovel Cleaner Rule Workbench
+// @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
 // @version      6.0.1
-// @description  FoxReplace rule collection and editing workbench.
-// @match        *://*/*
+// @description  Webnovel Cleaner
+// @match        *://*.webnovel.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC.js
+// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC.js
 // ==/UserScript==
 
 (() => {
