@@ -1,2119 +1,346 @@
 // ==UserScript==
-// @name         WebNovel Cleaner
+// @name         WNC - WebNovel Cleaner Rule Workbench
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      5.2.1
-// @description  WebNovel Cleaner - FoxReplace-compatible replacement engine, scanner, editor and database
-// @author       GoroFourArms
+// @version      6.0.0
+// @description  FoxReplace rule collection and editing workbench.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_registerMenuCommand
-// @grant        GM_setClipboard
-// @grant        GM_addStyle
-// @grant        unsafeWindow
-// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC.js
-// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC.js
+// @grant        GM_download
 // ==/UserScript==
 
 (() => {
     "use strict";
 
-    // ============================================================
-    // PART 1 - CORE / DATABASE
-    // ============================================================
+    /*
+     * WNC 6
+     *
+     * PURPOSE
+     * -------
+     * WNC is a FoxReplace rule workbench.
+     *
+     * It does NOT:
+     *   - replace text on the page
+     *   - use MutationObserver
+     *   - automatically clean pages
+     *   - act as a second FoxReplace runtime
+     *
+     * It DOES:
+     *   - hold native FoxReplace JSON
+     *   - scan the current page for unmatched capitalized words/phrases
+     *   - let the user edit candidates into FoxReplace rules
+     *   - let the user edit existing matching rules
+     *   - let the user edit group URL patterns
+     *   - import/export native FoxReplace JSON
+     */
 
-    const WNC_VERSION = "5.2.1";
+    // ---------------------------------------------------------------------
+    // Constants
+    // ---------------------------------------------------------------------
 
-    const FOXREPLACE_DB_KEY =
-        "WNC_FOXREPLACE_DATABASE_V1";
+    const DB_KEY = "WNC_FOXREPLACE_DATABASE_V1";
 
-    const LEGACY_DB_KEY =
-        "WNC_DATABASE_V5";
-
-    const WNC = {
-        version: WNC_VERSION,
-
-        database: {},
-        packs: {},
-        rules: {},
-        replace: {},
-        scanner: {},
-        editor: {},
-        tools: {},
-        foxReplace: {},
-        cleaner: {},
-        inspector: {},
-        diagnostics: {},
-        ui: {}
+    const UI = {
+        title: "WNC"
     };
 
-    const DEFAULT_DATABASE = {
-        groups: []
+    const DEFAULT_GROUP = {
+        name: "",
+        urls: [],
+        enabled: true,
+        pageLoad: true,
+        auto: true,
+        substitutions: []
     };
 
-    const RUNTIME = {
-        initialized: false,
-        cleanerInitialized: false,
-        observer: null,
-        observerPaused: false,
-        uiCreated: false
+    const DEFAULT_RULE = {
+        input: "",
+        output: "",
+        inputType: "text",
+        caseSensitive: false,
+        enabled: true,
+        html: "none"
     };
 
-    function clone(value) {
-        if (value === undefined) {
-            return undefined;
-        }
+    let db = loadDatabase();
 
-        return JSON.parse(
-            JSON.stringify(value)
-        );
-    }
+    let state = {
+        screen: "groups",
+        groupIndex: null,
+        tab: "rules",
 
-    function isObject(value) {
-        return (
-            value !== null &&
-            typeof value === "object" &&
-            !Array.isArray(value)
-        );
-    }
+        candidates: [],
 
-    function normalizeFoxReplaceDatabase(db) {
-        const source =
-            isObject(db)
-                ? clone(db)
-                : clone(DEFAULT_DATABASE);
+        targetGroup: null,
+        candidateType: "text",
+        candidateTemplate: "Other",
+        candidateCaseSensitive: false,
 
-        if (!Array.isArray(source.groups)) {
-            source.groups = [];
-        }
+        selectedCandidates: new Set()
+    };
 
-        source.groups = source.groups.map(
-            group => {
-                const normalized =
-                    isObject(group)
-                        ? group
-                        : {};
+    // ---------------------------------------------------------------------
+    // Storage
+    // ---------------------------------------------------------------------
 
-                if (
-                    typeof normalized.name !==
-                    "string"
-                ) {
-                    normalized.name =
-                        "Unnamed Group";
-                }
-
-                normalized.name =
-                    normalized.name.trim() ||
-                    "Unnamed Group";
-
-                if (
-                    !Array.isArray(
-                        normalized.urls
-                    )
-                ) {
-                    normalized.urls = [];
-                }
-
-                normalized.urls =
-                    normalized.urls.filter(
-                        url =>
-                            typeof url ===
-                            "string"
-                    );
-
-                if (
-                    typeof normalized.enabled !==
-                    "boolean"
-                ) {
-                    normalized.enabled =
-                        true;
-                }
-
-                if (
-                    typeof normalized.pageLoad !==
-                    "boolean"
-                ) {
-                    normalized.pageLoad =
-                        true;
-                }
-
-                if (
-                    typeof normalized.auto !==
-                    "boolean"
-                ) {
-                    normalized.auto =
-                        true;
-                }
-
-                if (
-                    !Array.isArray(
-                        normalized.substitutions
-                    )
-                ) {
-                    normalized.substitutions =
-                        [];
-                }
-
-                normalized.substitutions =
-                    normalized.substitutions.map(
-                        substitution => {
-                            const rule =
-                                isObject(
-                                    substitution
-                                )
-                                    ? substitution
-                                    : {};
-
-                            if (
-                                typeof rule.input !==
-                                "string"
-                            ) {
-                                rule.input = "";
-                            }
-
-                            if (
-                                typeof rule.output !==
-                                "string"
-                            ) {
-                                rule.output = "";
-                            }
-
-                            if (
-                                ![
-                                    "text",
-                                    "whole",
-                                    "regexp"
-                                ].includes(
-                                    rule.inputType
-                                )
-                            ) {
-                                rule.inputType =
-                                    "text";
-                            }
-
-                            if (
-                                typeof rule.caseSensitive !==
-                                "boolean"
-                            ) {
-                                rule.caseSensitive =
-                                    false;
-                            }
-
-                            if (
-                                typeof rule.enabled !==
-                                "boolean"
-                            ) {
-                                rule.enabled =
-                                    true;
-                            }
-
-                            if (
-                                ![
-                                    "none",
-                                    "html",
-                                    "all"
-                                ].includes(
-                                    rule.html
-                                )
-                            ) {
-                                rule.html =
-                                    "none";
-                            }
-
-                            return rule;
-                        }
-                    );
-
-                return normalized;
-            }
-        );
-
-        return source;
-    }
-
-    function validateFoxReplaceDatabase(
-        value
-    ) {
-        if (
-            !isObject(value) ||
-            !Array.isArray(value.groups)
-        ) {
-            return {
-                valid: false,
-                error:
-                    "Database must contain a groups array."
-            };
-        }
-
-        const names = new Set();
-
-        for (
-            let groupIndex = 0;
-            groupIndex <
-            value.groups.length;
-            groupIndex++
-        ) {
-            const group =
-                value.groups[groupIndex];
-
-            if (!isObject(group)) {
-                return {
-                    valid: false,
-                    error:
-                        `Group ${groupIndex + 1} is not an object.`
-                };
-            }
-
-            if (
-                group.name !== undefined &&
-                typeof group.name !==
-                    "string"
-            ) {
-                return {
-                    valid: false,
-                    error:
-                        `Group ${groupIndex + 1} has an invalid name.`
-                };
-            }
-
-            const name =
-                typeof group.name === "string"
-                    ? group.name.trim()
-                    : "";
-
-            if (name) {
-                if (names.has(name)) {
-                    return {
-                        valid: false,
-                        error:
-                            `Duplicate group name: ${name}`
-                    };
-                }
-
-                names.add(name);
-            }
-
-            if (
-                group.urls !== undefined &&
-                !Array.isArray(group.urls)
-            ) {
-                return {
-                    valid: false,
-                    error:
-                        `Group ${groupIndex + 1} has invalid urls.`
-                };
-            }
-
-            if (
-                Array.isArray(group.urls) &&
-                group.urls.some(
-                    url =>
-                        typeof url !==
-                        "string"
-                )
-            ) {
-                return {
-                    valid: false,
-                    error:
-                        `Group ${groupIndex + 1} contains an invalid URL pattern.`
-                };
-            }
-
-            for (
-                const field of [
-                    "enabled",
-                    "pageLoad",
-                    "auto"
-                ]
-            ) {
-                if (
-                    group[field] !== undefined &&
-                    typeof group[field] !==
-                        "boolean"
-                ) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1} has an invalid ${field} value.`
-                    };
-                }
-            }
-
-            if (
-                group.substitutions !==
-                    undefined &&
-                !Array.isArray(
-                    group.substitutions
-                )
-            ) {
-                return {
-                    valid: false,
-                    error:
-                        `Group ${groupIndex + 1} has invalid substitutions.`
-                };
-            }
-
-            for (
-                let ruleIndex = 0;
-                ruleIndex <
-                (
-                    group.substitutions ||
-                    []
-                ).length;
-                ruleIndex++
-            ) {
-                const rule =
-                    group.substitutions[
-                        ruleIndex
-                    ];
-
-                if (!isObject(rule)) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} is invalid.`
-                    };
-                }
-
-                if (
-                    rule.input !== undefined &&
-                    typeof rule.input !==
-                        "string"
-                ) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid input.`
-                    };
-                }
-
-                if (
-                    rule.output !== undefined &&
-                    typeof rule.output !==
-                        "string"
-                ) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid output.`
-                    };
-                }
-
-                if (
-                    rule.inputType !== undefined &&
-                    ![
-                        "text",
-                        "whole",
-                        "regexp"
-                    ].includes(
-                        rule.inputType
-                    )
-                ) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid inputType.`
-                    };
-                }
-
-                if (
-                    rule.caseSensitive !==
-                        undefined &&
-                    typeof rule.caseSensitive !==
-                        "boolean"
-                ) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid caseSensitive value.`
-                    };
-                }
-
-                if (
-                    rule.enabled !== undefined &&
-                    typeof rule.enabled !==
-                        "boolean"
-                ) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid enabled value.`
-                    };
-                }
-
-                if (
-                    rule.html !== undefined &&
-                    ![
-                        "none",
-                        "html",
-                        "all"
-                    ].includes(rule.html)
-                ) {
-                    return {
-                        valid: false,
-                        error:
-                            `Group ${groupIndex + 1}, substitution ${ruleIndex + 1} has invalid html value.`
-                    };
-                }
-            }
-        }
-
-        return {
-            valid: true,
-            error: null
-        };
-    }
-
-    function migrateLegacyDatabase() {
-        const currentValue =
-            GM_getValue(
-                FOXREPLACE_DB_KEY,
-                null
-            );
-
-        /*
-         * If a usable current database exists,
-         * never overwrite it with legacy data.
-         */
-        if (
-            currentValue !== null &&
-            currentValue !== undefined &&
-            currentValue !== ""
-        ) {
-            try {
-                const current =
-                    typeof currentValue ===
-                    "string"
-                        ? JSON.parse(
-                              currentValue
-                          )
-                        : currentValue;
-
-                const validation =
-                    validateFoxReplaceDatabase(
-                        current
-                    );
-
-                if (validation.valid) {
-                    return null;
-                }
-            } catch {
-                /*
-                 * Invalid current data is allowed
-                 * to fall through to legacy
-                 * migration.
-                 */
-            }
-        }
-
-        const legacyValue =
-            GM_getValue(
-                LEGACY_DB_KEY,
-                null
-            );
-
-        if (
-            legacyValue === null ||
-            legacyValue === undefined ||
-            legacyValue === ""
-        ) {
-            return null;
-        }
-
-        let legacy;
-
+    function readStorage(key, fallback = null) {
         try {
-            legacy =
-                typeof legacyValue ===
-                "string"
-                    ? JSON.parse(
-                          legacyValue
-                      )
-                    : clone(legacyValue);
+            if (typeof GM_getValue === "function") {
+                return GM_getValue(key, fallback);
+            }
+
+            const value = localStorage.getItem(key);
+            return value === null ? fallback : JSON.parse(value);
+        } catch {
+            return fallback;
+        }
+    }
+
+    function writeStorage(key, value) {
+        try {
+            if (typeof GM_setValue === "function") {
+                GM_setValue(key, value);
+                return;
+            }
+
+            localStorage.setItem(key, JSON.stringify(value));
         } catch (error) {
-            console.warn(
-                "[WNC] Legacy database parse failed:",
-                error
-            );
-
-            return null;
+            console.error("WNC storage error:", error);
         }
-
-        if (
-            !isObject(legacy) ||
-            !Array.isArray(legacy.packs)
-        ) {
-            return null;
-        }
-
-        const groups =
-            legacy.packs
-                .slice()
-                .sort(
-                    (a, b) =>
-                        Number(
-                            a?.order ?? 0
-                        ) -
-                        Number(
-                            b?.order ?? 0
-                        )
-                )
-                .map(pack => {
-                    const oldRules =
-                        Array.isArray(
-                            pack?.rules
-                        )
-                            ? pack.rules
-                            : [];
-
-                    const substitutions =
-                        oldRules
-                            .slice()
-                            .sort(
-                                (a, b) =>
-                                    Number(
-                                        a?.order ??
-                                            0
-                                    ) -
-                                    Number(
-                                        b?.order ??
-                                            0
-                                    )
-                            )
-                            .map(rule => {
-                                let inputType =
-                                    rule?.type;
-
-                                if (
-                                    inputType ===
-                                    "regex"
-                                ) {
-                                    inputType =
-                                        "regexp";
-                                }
-
-                                if (
-                                    ![
-                                        "text",
-                                        "whole",
-                                        "regexp"
-                                    ].includes(
-                                        inputType
-                                    )
-                                ) {
-                                    inputType =
-                                        "text";
-                                }
-
-                                let html =
-                                    rule?.htmlMode;
-
-                                if (
-                                    ![
-                                        "none",
-                                        "html",
-                                        "all"
-                                    ].includes(html)
-                                ) {
-                                    html =
-                                        "none";
-                                }
-
-                                return {
-                                    input:
-                                        typeof rule?.find ===
-                                        "string"
-                                            ? rule.find
-                                            : "",
-
-                                    output:
-                                        typeof rule?.replace ===
-                                        "string"
-                                            ? rule.replace
-                                            : "",
-
-                                    inputType,
-
-                                    caseSensitive:
-                                        typeof rule?.caseSensitive ===
-                                        "boolean"
-                                            ? rule.caseSensitive
-                                            : false,
-
-                                    enabled:
-                                        typeof rule?.enabled ===
-                                        "boolean"
-                                            ? rule.enabled
-                                            : true,
-
-                                    html
-                                };
-                            });
-
-                    return {
-                        name:
-                            typeof pack?.name ===
-                            "string"
-                                ? pack.name.trim() ||
-                                  "Unnamed Group"
-                                : "Unnamed Group",
-
-                        urls:
-                            Array.isArray(
-                                pack?.urls
-                            )
-                                ? pack.urls.filter(
-                                      url =>
-                                          typeof url ===
-                                          "string"
-                                  )
-                                : [],
-
-                        enabled:
-                            typeof pack?.enabled ===
-                            "boolean"
-                                ? pack.enabled
-                                : true,
-
-                        pageLoad:
-                            typeof pack?.pageLoad ===
-                            "boolean"
-                                ? pack.pageLoad
-                                : true,
-
-                        auto:
-                            typeof pack?.auto ===
-                            "boolean"
-                                ? pack.auto
-                                : true,
-
-                        substitutions
-                    };
-                });
-
-        const migrated =
-            normalizeFoxReplaceDatabase({
-                groups
-            });
-
-        const validation =
-            validateFoxReplaceDatabase(
-                migrated
-            );
-
-        if (!validation.valid) {
-            console.warn(
-                "[WNC] Legacy migration produced invalid data."
-            );
-
-            return null;
-        }
-
-        GM_setValue(
-            FOXREPLACE_DB_KEY,
-            JSON.stringify(migrated)
-        );
-
-        console.info(
-            "[WNC] Legacy database migrated."
-        );
-
-        return migrated;
     }
 
     function loadDatabase() {
-        migrateLegacyDatabase();
+        const raw = readStorage(DB_KEY, null);
 
-        const stored =
-            GM_getValue(
-                FOXREPLACE_DB_KEY,
-                null
-            );
-
-        if (
-            stored === null ||
-            stored === undefined ||
-            stored === ""
-        ) {
-            return clone(
-                DEFAULT_DATABASE
-            );
+        if (!raw) {
+            return {
+                groups: []
+            };
         }
 
-        try {
-            const parsed =
-                typeof stored ===
-                "string"
-                    ? JSON.parse(stored)
-                    : clone(stored);
+        const normalized = normalizeDatabase(raw);
 
-            const validation =
-                validateFoxReplaceDatabase(
-                    parsed
-                );
+        if (!normalized) {
+            return {
+                groups: []
+            };
+        }
 
-            if (!validation.valid) {
-                console.warn(
-                    "[WNC] Stored database is invalid:",
-                    validation.error
-                );
+        return normalized;
+    }
 
-                return clone(
-                    DEFAULT_DATABASE
-                );
+    function saveDatabase() {
+        db = normalizeDatabase(db);
+        writeStorage(DB_KEY, db);
+    }
+
+    // ---------------------------------------------------------------------
+    // Native FoxReplace normalization
+    // ---------------------------------------------------------------------
+
+    function normalizeDatabase(value) {
+        if (!value || typeof value !== "object") {
+            return null;
+        }
+
+        if (!Array.isArray(value.groups)) {
+            return null;
+        }
+
+        const groups = value.groups
+            .filter(group => group && typeof group === "object")
+            .map(normalizeGroup)
+            .filter(Boolean);
+
+        return {
+            groups
+        };
+    }
+
+    function normalizeGroup(group) {
+        const normalized = {
+            ...DEFAULT_GROUP,
+            ...group
+        };
+
+        normalized.name = String(normalized.name ?? "");
+
+        if (!Array.isArray(normalized.urls)) {
+            normalized.urls = [];
+        }
+
+        normalized.urls = normalized.urls.map(url => String(url ?? ""));
+
+        if (!Array.isArray(normalized.substitutions)) {
+            normalized.substitutions = [];
+        }
+
+        normalized.substitutions = normalized.substitutions
+            .map(normalizeRule)
+            .filter(Boolean);
+
+        normalized.enabled = Boolean(normalized.enabled);
+        normalized.pageLoad = Boolean(normalized.pageLoad);
+        normalized.auto = Boolean(normalized.auto);
+
+        return normalized;
+    }
+
+    function normalizeRule(rule) {
+        if (!rule || typeof rule !== "object") {
+            return null;
+        }
+
+        const normalized = {
+            ...DEFAULT_RULE,
+            ...rule
+        };
+
+        normalized.input = String(normalized.input ?? "");
+        normalized.output = String(normalized.output ?? "");
+        normalized.inputType = normalized.inputType === "regexp"
+            ? "regexp"
+            : "text";
+
+        normalized.caseSensitive = Boolean(normalized.caseSensitive);
+        normalized.enabled = Boolean(normalized.enabled);
+
+        normalized.html = String(normalized.html ?? "none");
+
+        return normalized;
+    }
+
+    // ---------------------------------------------------------------------
+    // Sorting
+    // ---------------------------------------------------------------------
+
+    function compareNames(a, b) {
+        return String(a).localeCompare(
+            String(b),
+            undefined,
+            {
+                sensitivity: "base",
+                numeric: true
             }
-
-            return normalizeFoxReplaceDatabase(
-                parsed
-            );
-        } catch (error) {
-            console.warn(
-                "[WNC] Database load failed:",
-                error
-            );
-
-            return clone(
-                DEFAULT_DATABASE
-            );
-        }
-    }
-
-    function saveDatabase(db) {
-        const normalized =
-            normalizeFoxReplaceDatabase(
-                db
-            );
-
-        const validation =
-            validateFoxReplaceDatabase(
-                normalized
-            );
-
-        if (!validation.valid) {
-            throw new Error(
-                validation.error
-            );
-        }
-
-        GM_setValue(
-            FOXREPLACE_DB_KEY,
-            JSON.stringify(normalized)
-        );
-
-        WNC.database.current =
-            clone(normalized);
-
-        return clone(normalized);
-    }
-
-    WNC.database.current =
-        loadDatabase();
-
-    function getDatabase() {
-        return clone(
-            WNC.database.current
         );
     }
 
-    function createPack(name) {
-        const db =
-            getDatabase();
-
-        const groupName =
-            String(name || "").trim();
-
-        if (!groupName) {
-            throw new Error(
-                "Group name cannot be empty."
-            );
-        }
-
-        if (
-            db.groups.some(
-                group =>
-                    group.name ===
-                    groupName
-            )
-        ) {
-            throw new Error(
-                `Group already exists: ${groupName}`
-            );
-        }
-
-        db.groups.push({
-            name: groupName,
-            urls: [],
-            enabled: true,
-            pageLoad: true,
-            auto: true,
-            substitutions: []
-        });
-
-        saveDatabase(db);
-
-        return groupName;
+    function sortedGroups() {
+        return db.groups
+            .map((group, index) => ({ group, index }))
+            .sort((a, b) => compareNames(a.group.name, b.group.name));
     }
 
-    function getPacks() {
-        return getDatabase().groups;
+    function sortedRules(group) {
+        return group.substitutions
+            .map((rule, index) => ({ rule, index }))
+            .sort((a, b) => compareNames(a.rule.input, b.rule.input));
     }
 
-    function getPack(name) {
-        return (
-            getDatabase().groups.find(
-                group =>
-                    group.name === name
-            ) || null
-        );
+    // ---------------------------------------------------------------------
+    // Current site matching
+    // ---------------------------------------------------------------------
+
+    function currentURL() {
+        return window.location.href;
     }
 
-    function updatePack(
-        name,
-        data
-    ) {
-        const db =
-            getDatabase();
+    function currentHostname() {
+        return window.location.hostname;
+    }
 
-        const group =
-            db.groups.find(
-                item =>
-                    item.name ===
-                    name
-            );
+    /*
+     * FoxReplace URL formats vary between versions/configurations.
+     *
+     * WNC deliberately keeps the stored URL values untouched.
+     * This matcher supports the common cases:
+     *
+     *   exact URL
+     *   URL substring
+     *   hostname
+     *   wildcard *
+     *   regular-expression-looking /.../ patterns
+     */
+    function urlPatternMatches(pattern) {
+        pattern = String(pattern ?? "").trim();
 
-        if (!group) {
+        if (!pattern) {
             return false;
         }
 
-        const source =
-            isObject(data)
-                ? data
-                : {};
+        const url = currentURL();
+        const hostname = currentHostname();
 
+        // /pattern/ style URL regex.
         if (
-            typeof source.name ===
-            "string"
+            pattern.length > 2 &&
+            pattern.startsWith("/") &&
+            pattern.lastIndexOf("/") > 0
         ) {
-            const newName =
-                source.name.trim();
+            const lastSlash = pattern.lastIndexOf("/");
 
-            if (!newName) {
-                throw new Error(
-                    "Group name cannot be empty."
-                );
+            try {
+                const source = pattern.slice(1, lastSlash);
+                const flags = pattern.slice(lastSlash + 1);
+
+                return new RegExp(source, flags).test(url);
+            } catch {
+                // Fall through to literal matching.
             }
+        }
 
-            if (
-                newName !==
-                    group.name &&
-                db.groups.some(
-                    item =>
-                        item !== group &&
-                        item.name ===
-                            newName
-                )
-            ) {
-                throw new Error(
-                    `Group already exists: ${newName}`
-                );
+        // Wildcard.
+        if (pattern.includes("*")) {
+            const escaped = pattern
+                .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+                .replace(/\*/g, ".*");
+
+            try {
+                return new RegExp(`^${escaped}$`, "i").test(url);
+            } catch {
+                // Continue.
             }
-
-            group.name =
-                newName;
         }
 
-        if (
-            Array.isArray(source.urls)
-        ) {
-            group.urls =
-                source.urls.filter(
-                    url =>
-                        typeof url ===
-                        "string"
-                );
-        }
-
-        if (
-            typeof source.enabled ===
-            "boolean"
-        ) {
-            group.enabled =
-                source.enabled;
-        }
-
-        if (
-            typeof source.pageLoad ===
-            "boolean"
-        ) {
-            group.pageLoad =
-                source.pageLoad;
-        }
-
-        if (
-            typeof source.auto ===
-            "boolean"
-        ) {
-            group.auto =
-                source.auto;
-        }
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function removePack(name) {
-        const db =
-            getDatabase();
-
-        const originalLength =
-            db.groups.length;
-
-        db.groups =
-            db.groups.filter(
-                group =>
-                    group.name !== name
-            );
-
-        if (
-            db.groups.length ===
-            originalLength
-        ) {
-            return false;
-        }
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function addRule(
-        packName,
-        rule
-    ) {
-        const db =
-            getDatabase();
-
-        const group =
-            db.groups.find(
-                item =>
-                    item.name ===
-                    packName
-            );
-
-        if (!group) {
-            return false;
-        }
-
-        const source =
-            isObject(rule)
-                ? rule
-                : {};
-
-        const inputType =
-            [
-                "text",
-                "whole",
-                "regexp"
-            ].includes(
-                source.inputType
-            )
-                ? source.inputType
-                : "text";
-
-        const html =
-            [
-                "none",
-                "html",
-                "all"
-            ].includes(
-                source.html
-            )
-                ? source.html
-                : "none";
-
-        group.substitutions.push({
-            input:
-                typeof source.input ===
-                "string"
-                    ? source.input
-                    : "",
-
-            output:
-                typeof source.output ===
-                "string"
-                    ? source.output
-                    : "",
-
-            inputType,
-
-            caseSensitive:
-                typeof source.caseSensitive ===
-                "boolean"
-                    ? source.caseSensitive
-                    : false,
-
-            enabled:
-                typeof source.enabled ===
-                "boolean"
-                    ? source.enabled
-                    : true,
-
-            html
-        });
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function updateRule(
-        packName,
-        ruleIndex,
-        data
-    ) {
-        const db =
-            getDatabase();
-
-        const group =
-            db.groups.find(
-                item =>
-                    item.name ===
-                    packName
-            );
-
-        if (!group) {
-            return false;
-        }
-
-        const index =
-            Number(ruleIndex);
-
-        if (
-            !Number.isInteger(index) ||
-            index < 0 ||
-            index >=
-                group.substitutions.length
-        ) {
-            return false;
-        }
-
-        const rule =
-            group.substitutions[index];
-
-        const source =
-            isObject(data)
-                ? data
-                : {};
-
-        if (
-            typeof source.input ===
-            "string"
-        ) {
-            rule.input =
-                source.input;
-        }
-
-        if (
-            typeof source.output ===
-            "string"
-        ) {
-            rule.output =
-                source.output;
-        }
-
-        if (
-            [
-                "text",
-                "whole",
-                "regexp"
-            ].includes(
-                source.inputType
-            )
-        ) {
-            rule.inputType =
-                source.inputType;
-        }
-
-        if (
-            typeof source.caseSensitive ===
-            "boolean"
-        ) {
-            rule.caseSensitive =
-                source.caseSensitive;
-        }
-
-        if (
-            typeof source.enabled ===
-            "boolean"
-        ) {
-            rule.enabled =
-                source.enabled;
-        }
-
-        if (
-            [
-                "none",
-                "html",
-                "all"
-            ].includes(source.html)
-        ) {
-            rule.html =
-                source.html;
-        }
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function removeRule(
-        packName,
-        ruleIndex
-    ) {
-        const db =
-            getDatabase();
-
-        const group =
-            db.groups.find(
-                item =>
-                    item.name ===
-                    packName
-            );
-
-        if (!group) {
-            return false;
-        }
-
-        const index =
-            Number(ruleIndex);
-
-        if (
-            !Number.isInteger(index) ||
-            index < 0 ||
-            index >=
-                group.substitutions.length
-        ) {
-            return false;
-        }
-
-        group.substitutions.splice(
-            index,
-            1
-        );
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function setPackOrder(
-        packName,
-        requestedOrder
-    ) {
-        const db =
-            getDatabase();
-
-        const currentIndex =
-            db.groups.findIndex(
-                group =>
-                    group.name ===
-                    packName
-            );
-
-        if (currentIndex < 0) {
-            return false;
-        }
-
-        let targetIndex =
-            Number(requestedOrder);
-
-        if (
-            !Number.isInteger(
-                targetIndex
-            )
-        ) {
-            return false;
-        }
-
-        targetIndex =
-            Math.max(
-                0,
-                Math.min(
-                    targetIndex,
-                    db.groups.length - 1
-                )
-            );
-
-        const [group] =
-            db.groups.splice(
-                currentIndex,
-                1
-            );
-
-        db.groups.splice(
-            targetIndex,
-            0,
-            group
-        );
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function setRuleOrder(
-        packName,
-        oldOrder,
-        requestedOrder
-    ) {
-        const db =
-            getDatabase();
-
-        const group =
-            db.groups.find(
-                item =>
-                    item.name ===
-                    packName
-            );
-
-        if (!group) {
-            return false;
-        }
-
-        const currentIndex =
-            Number(oldOrder);
-
-        let targetIndex =
-            Number(requestedOrder);
-
-        if (
-            !Number.isInteger(
-                currentIndex
-            ) ||
-            !Number.isInteger(
-                targetIndex
-            )
-        ) {
-            return false;
-        }
-
-        if (
-            currentIndex < 0 ||
-            currentIndex >=
-                group.substitutions.length
-        ) {
-            return false;
-        }
-
-        targetIndex =
-            Math.max(
-                0,
-                Math.min(
-                    targetIndex,
-                    group.substitutions.length - 1
-                )
-            );
-
-        const [rule] =
-            group.substitutions.splice(
-                currentIndex,
-                1
-            );
-
-        group.substitutions.splice(
-            targetIndex,
-            0,
-            rule
-        );
-
-        saveDatabase(db);
-
-        return true;
-    }
-
-    function matchSite(
-        pattern,
-        url
-    ) {
-        if (
-            typeof pattern !==
-                "string" ||
-            !pattern.trim()
-        ) {
-            return false;
-        }
-
-        const source =
-            pattern.trim();
-
-        const target =
-            String(url || "");
-
-        if (
-            source === "*" ||
-            source === target
-        ) {
+        if (pattern === hostname) {
             return true;
         }
 
-        const escaped =
-            source
-                .replace(
-                    /[.+?^${}()|[\]\\]/g,
-                    "\\$&"
-                )
-                .replace(
-                    /\*/g,
-                    ".*"
-                );
+        return url === pattern || url.includes(pattern);
+    }
+
+    function groupMatchesCurrentSite(group) {
+        if (!Array.isArray(group.urls) || group.urls.length === 0) {
+            return false;
+        }
+
+        return group.urls.some(urlPatternMatches);
+    }
+
+    // ---------------------------------------------------------------------
+    // Rule matching
+    // ---------------------------------------------------------------------
+
+    function buildRuleRegex(rule) {
+        if (!rule.input) {
+            return null;
+        }
+
+        const flags = rule.caseSensitive ? "g" : "gi";
 
         try {
-            return new RegExp(
-                `^${escaped}$`,
-                "i"
-            ).test(target);
+            if (rule.inputType === "regexp") {
+                return new RegExp(rule.input, flags);
+            }
+
+            return new RegExp(escapeRegExp(rule.input), flags);
         } catch {
-            return target
-                .toLowerCase()
-                .includes(
-                    source.toLowerCase()
-                );
-        }
-    }
-
-    function getMatchedPacks(
-        url = location.href
-    ) {
-        return getDatabase().groups.filter(
-            group => {
-                if (
-                    group.enabled ===
-                    false
-                ) {
-                    return false;
-                }
-
-                if (
-                    !group.urls ||
-                    group.urls.length ===
-                        0
-                ) {
-                    return true;
-                }
-
-                return group.urls.some(
-                    pattern =>
-                        matchSite(
-                            pattern,
-                            url
-                        )
-                );
-            }
-        );
-    }
-
-    WNC.database.get =
-        getDatabase;
-
-    WNC.database.save =
-        saveDatabase;
-
-    WNC.database.normalize =
-        normalizeFoxReplaceDatabase;
-
-    WNC.database.validate =
-        validateFoxReplaceDatabase;
-
-    WNC.packs.get =
-        getPacks;
-
-    WNC.packs.getOne =
-        getPack;
-
-    WNC.packs.create =
-        createPack;
-
-    WNC.packs.update =
-        updatePack;
-
-    WNC.packs.remove =
-        removePack;
-
-    WNC.packs.setOrder =
-        setPackOrder;
-
-    WNC.rules.add =
-        addRule;
-
-    WNC.rules.update =
-        updateRule;
-
-    WNC.rules.remove =
-        removeRule;
-
-    WNC.rules.setOrder =
-        setRuleOrder;
-
-    WNC.rules.getMatched =
-        getMatchedPacks;
-
-    // ============================================================
-    // PART 2 - REPLACEMENT ENGINE
-    // ============================================================
-
-    function escapeRegExp(value) {
-        return String(value).replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-        );
-    }
-
-    function buildRuleRegex(
-        rule
-    ) {
-        if (
-            !rule ||
-            typeof rule.input !==
-                "string" ||
-            !rule.input
-        ) {
-            return null;
-        }
-
-        let source;
-
-        switch (
-            rule.inputType
-        ) {
-            case "regexp":
-                source =
-                    rule.input;
-                break;
-
-            case "whole":
-                source =
-                    `\\b${escapeRegExp(
-                        rule.input
-                    )}\\b`;
-                break;
-
-            case "text":
-            default:
-                source =
-                    escapeRegExp(
-                        rule.input
-                    );
-                break;
-        }
-
-        let flags = "g";
-
-        if (
-            rule.caseSensitive !==
-            true
-        ) {
-            flags += "i";
-        }
-
-        try {
-            return new RegExp(
-                source,
-                flags
-            );
-        } catch (error) {
-            console.warn(
-                "[WNC] Invalid rule regex:",
-                rule.input,
-                error
-            );
-
             return null;
         }
     }
 
-    function applySubstitution(
-        text,
-        rule
-    ) {
-        if (
-            typeof text !==
-                "string" ||
-            !rule ||
-            rule.enabled === false
-        ) {
-            return {
-                text,
-                replacements: 0
-            };
-        }
-
-        const regex =
-            buildRuleRegex(rule);
-
-        if (!regex) {
-            return {
-                text,
-                replacements: 0
-            };
-        }
-
-        let replacements = 0;
-
-        const result =
-            text.replace(
-                regex,
-                (...args) => {
-                    replacements++;
-
-                    /*
-                     * Preserve native JavaScript
-                     * replacement semantics for
-                     * regexp substitutions.
-                     */
-                    return String(
-                        rule.output ?? ""
-                    ).replace(
-                        /\$(\$|&|`|'|\d{1,2})/g,
-                        token => {
-                            const key =
-                                token.slice(
-                                    1
-                                );
-
-                            if (
-                                key === "$"
-                            ) {
-                                return "$";
-                            }
-
-                            if (
-                                key === "&"
-                            ) {
-                                return args[0];
-                            }
-
-                            if (
-                                key === "`"
-                            ) {
-                                return args[
-                                    args.length -
-                                        2
-                                ];
-                            }
-
-                            if (
-                                key === "'"
-                            ) {
-                                return args[
-                                    args.length -
-                                        1
-                                ];
-                            }
-
-                            const index =
-                                Number(
-                                    key
-                                );
-
-                            return Number.isInteger(
-                                index
-                            ) &&
-                            index > 0 &&
-                            index <
-                                args.length - 2
-                                ? args[
-                                      index
-                                  ] ??
-                                      ""
-                                : token;
-                        }
-                    );
-                }
-            );
-
-        return {
-            text: result,
-            replacements
-        };
-    }
-
-    function applyGroup(
-        text,
-        group
-    ) {
-        if (
-            !group ||
-            group.enabled === false
-        ) {
-            return {
-                text,
-                replacements: 0
-            };
-        }
-
-        let result = text;
-        let replacements = 0;
-
-        for (
-            const rule of
-            group.substitutions || []
-        ) {
-            const applied =
-                applySubstitution(
-                    result,
-                    rule
-                );
-
-            result =
-                applied.text;
-
-            replacements +=
-                applied.replacements;
-        }
-
-        return {
-            text: result,
-            replacements
-        };
-    }
-
-    function applyDatabase(
-        text,
-        database
-    ) {
-        const db =
-            normalizeFoxReplaceDatabase(
-                database
-            );
-
-        let result = text;
-        let replacements = 0;
-
-        for (
-            const group of db.groups
-        ) {
-            const applied =
-                applyGroup(
-                    result,
-                    group
-                );
-
-            result =
-                applied.text;
-
-            replacements +=
-                applied.replacements;
-        }
-
-        return {
-            text: result,
-            replacements
-        };
-    }
-
-    function applyMatchedPacks(
-        text,
-        url = location.href
-    ) {
-        const groups =
-            getMatchedPacks(url);
-
-        let result = text;
-        let replacements = 0;
-
-        for (
-            const group of groups
-        ) {
-            const applied =
-                applyGroup(
-                    result,
-                    group
-                );
-
-            result =
-                applied.text;
-
-            replacements +=
-                applied.replacements;
-        }
-
-        return {
-            text: result,
-            replacements
-        };
-    }
-
-    function shouldProcessTextNode(
-        node
-    ) {
-        if (
-            !node ||
-            node.nodeType !==
-                Node.TEXT_NODE
-        ) {
-            return false;
-        }
-
-        const parent =
-            node.parentElement;
-
-        if (!parent) {
-            return false;
-        }
-
-        const tag =
-            parent.tagName;
-
-        if (
-            [
-                "SCRIPT",
-                "STYLE",
-                "NOSCRIPT",
-                "TEXTAREA",
-                "INPUT",
-                "SELECT",
-                "OPTION"
-            ].includes(tag)
-        ) {
-            return false;
-        }
-
-        return true;
-    }
-
-    function applyRuleToTextNode(
-        node,
-        rule
-    ) {
-        if (
-            !shouldProcessTextNode(
-                node
-            )
-        ) {
-            return 0;
-        }
-
-        const applied =
-            applySubstitution(
-                node.nodeValue,
-                rule
-            );
-
-        if (
-            applied.replacements > 0 &&
-            applied.text !==
-                node.nodeValue
-        ) {
-            node.nodeValue =
-                applied.text;
-        }
-
-        return applied.replacements;
-    }
-
-    function applySubstitutionToDocument(
-        root,
-        rule
-    ) {
-        if (
-            !root ||
-            !rule ||
-            rule.enabled === false
-        ) {
-            return 0;
-        }
-
-        /*
-         * HTML mode is deliberately handled
-         * separately. Normal text rules never
-         * rewrite innerHTML.
-         */
-        if (
-            rule.html === "html" ||
-            rule.html === "all"
-        ) {
-            return applyHtmlSubstitution(
-                root,
-                rule
-            );
-        }
-
-        let replacements = 0;
-
-        if (
-            root.nodeType ===
-            Node.TEXT_NODE
-        ) {
-            return applyRuleToTextNode(
-                root,
-                rule
-            );
-        }
-
-        const walker =
-            document.createTreeWalker(
-                root,
-                NodeFilter.SHOW_TEXT,
-                {
-                    acceptNode(node) {
-                        return shouldProcessTextNode(
-                            node
-                        )
-                            ? NodeFilter.FILTER_ACCEPT
-                            : NodeFilter.FILTER_REJECT;
-                    }
-                }
-            );
-
-        const nodes = [];
-
-        let node;
-
-        while (
-            (node =
-                walker.nextNode())
-        ) {
-            nodes.push(node);
-        }
-
-        for (
-            const textNode of nodes
-        ) {
-            replacements +=
-                applyRuleToTextNode(
-                    textNode,
-                    rule
-                );
-        }
-
-        return replacements;
-    }
-
-    function applyHtmlSubstitution(
-        root,
-        rule
-    ) {
-        if (
-            !root ||
-            !rule ||
-            rule.enabled === false
-        ) {
-            return 0;
-        }
-
-        const elements = [];
-
-        if (
-            root.nodeType ===
-            Node.ELEMENT_NODE
-        ) {
-            elements.push(root);
-        }
-
-        if (
-            root.querySelectorAll
-        ) {
-            elements.push(
-                ...root.querySelectorAll(
-                    "*"
-                )
-            );
-        }
-
-        let replacements = 0;
-
-        for (
-            const element of elements
-        ) {
-            if (
-                [
-                    "SCRIPT",
-                    "STYLE",
-                    "NOSCRIPT",
-                    "TEXTAREA",
-                    "INPUT",
-                    "SELECT",
-                    "OPTION"
-                ].includes(
-                    element.tagName
-                )
-            ) {
-                continue;
-            }
-
-            if (
-                rule.html === "html"
-            ) {
-                const applied =
-                    applySubstitution(
-                        element.innerHTML,
-                        rule
-                    );
-
-                if (
-                    applied.replacements >
-                    0
-                ) {
-                    element.innerHTML =
-                        applied.text;
-
-                    replacements +=
-                        applied.replacements;
-                }
-            } else if (
-                rule.html === "all"
-            ) {
-                const applied =
-                    applySubstitution(
-                        element.outerHTML,
-                        rule
-                    );
-
-                if (
-                    applied.replacements >
-                    0
-                ) {
-                    /*
-                     * Avoid replacing document
-                     * root itself.
-                     */
-                    if (
-                        element.parentNode
-                    ) {
-                        const template =
-                            document.createElement(
-                                "template"
-                            );
-
-                        template.innerHTML =
-                            applied.text;
-
-                        const replacement =
-                            template.content
-                                .firstElementChild;
-
-                        if (
-                            replacement
-                        ) {
-                            element.replaceWith(
-                                replacement
-                            );
-
-                            replacements +=
-                                applied.replacements;
-                        }
-                    }
-                }
-            }
-        }
-
-        return replacements;
-    }
-
-    function applyGroupToDocument(
-        root,
-        group
-    ) {
-        if (
-            !root ||
-            !group ||
-            group.enabled === false
-        ) {
-            return 0;
-        }
-
-        let replacements = 0;
-
-        for (
-            const rule of
-            group.substitutions || []
-        ) {
-            replacements +=
-                applySubstitutionToDocument(
-                    root,
-                    rule
-                );
-        }
-
-        return replacements;
-    }
-
-    function applyMatchedGroupsToDocument(
-        root,
-        url = location.href
-    ) {
-        const groups =
-            getMatchedPacks(url);
-
-        let replacements = 0;
-
-        for (
-            const group of groups
-        ) {
-            replacements +=
-                applyGroupToDocument(
-                    root,
-                    group
-                );
-        }
-
-        return replacements;
-    }
-
-    WNC.replace.escapeRegExp =
-        escapeRegExp;
-
-    WNC.replace.buildRegex =
-        buildRuleRegex;
-
-    WNC.replace.applyRule =
-        applySubstitution;
-
-    WNC.replace.applyGroup =
-        applyGroup;
-
-    WNC.replace.applyDatabase =
-        applyDatabase;
-
-    WNC.replace.applyMatched =
-        applyMatchedPacks;
-
-    WNC.replace.applyToDocument =
-        applySubstitutionToDocument;
-
-    WNC.replace.applyGroupToDocument =
-        applyGroupToDocument;
-
-    WNC.replace.applyMatchedToDocument =
-        applyMatchedGroupsToDocument;
-
-    // ============================================================
-    // PART 3 - SCANNER
-    // ============================================================
-
-    const scannerState = {
-        running: false,
-        scanned: 0,
-        matches: 0,
-        lastRun: null
-    };
-
-    function scanSubstitution(
-        text,
-        rule
-    ) {
-        if (
-            typeof text !==
-                "string" ||
-            !rule ||
-            rule.enabled === false
-        ) {
-            return 0;
-        }
-
-        const regex =
-            buildRuleRegex(rule);
+    function countRuleMatches(rule, text) {
+        const regex = buildRuleRegex(rule);
 
         if (!regex) {
             return 0;
@@ -2121,1428 +348,2211 @@
 
         let count = 0;
 
-        text.replace(
-            regex,
-            () => {
-                count++;
-                return "";
+        while (regex.exec(text) !== null) {
+            count++;
+
+            /*
+             * Avoid an infinite loop on zero-length regexes.
+             */
+            if (regex.lastIndex === regex.lastIndex - 1) {
+                regex.lastIndex++;
             }
-        );
+
+            if (count > 100000) {
+                break;
+            }
+        }
 
         return count;
     }
 
-    function scanGroup(
-        text,
-        group
-    ) {
-        if (
-            !group ||
-            group.enabled === false
-        ) {
-            return 0;
+    function ruleMatchesText(rule, text) {
+        return countRuleMatches(rule, text) > 0;
+    }
+
+    function getPageText() {
+        if (!document.body) {
+            return "";
         }
 
-        let matches = 0;
+        return document.body.innerText || "";
+    }
 
-        for (
-            const rule of
-            group.substitutions || []
+    // ---------------------------------------------------------------------
+    // Candidate scanner
+    // ---------------------------------------------------------------------
+
+    /*
+     * Candidate extraction:
+     *
+     * Finds capitalized words and capitalized multi-token phrases.
+     *
+     * Examples:
+     *
+     *   Park Min-Suk
+     *   King Eldor
+     *   Lady Aria
+     *   New York
+     *
+     * Hyphens inside a token are retained.
+     *
+     * Lowercase continuation words are allowed only when they are part of
+     * an immediately adjacent capitalized sequence through a hyphen.
+     */
+
+    function extractCandidates(text) {
+        const counts = new Map();
+
+        /*
+         * Unicode-aware token:
+         *   - uppercase/lowercase letters
+         *   - numbers after the first letter
+         *   - internal apostrophes
+         *   - internal hyphens
+         */
+        const tokenPattern =
+            /[\p{Lu}][\p{L}\p{M}\p{N}'’-]*(?:[-–—][\p{Lu}\p{L}\p{M}\p{N}'’-]*)?/gu;
+
+        const matches = [];
+        let match;
+
+        while ((match = tokenPattern.exec(text)) !== null) {
+            matches.push({
+                value: match[0],
+                start: match.index,
+                end: match.index + match[0].length
+            });
+        }
+
+        /*
+         * Build phrases from adjacent capitalized tokens separated only by
+         * normal whitespace.
+         */
+        for (let i = 0; i < matches.length; i++) {
+            let phrase = matches[i].value;
+
+            addCandidate(counts, matches[i].value);
+
+            for (let j = i + 1; j < matches.length; j++) {
+                const previous = matches[j - 1];
+                const current = matches[j];
+
+                const between = text.slice(previous.end, current.start);
+
+                if (!/^[ \t\r\n]+$/.test(between)) {
+                    break;
+                }
+
+                phrase += " " + current.value;
+
+                addCandidate(counts, phrase);
+
+                /*
+                 * Keep phrases reasonably bounded.
+                 */
+                if (j - i >= 5) {
+                    break;
+                }
+            }
+        }
+
+        return [...counts.entries()].map(([candidate, matches]) => ({
+            candidate,
+            input: candidate,
+            output: "",
+            matches
+        }));
+    }
+
+    function addCandidate(map, value) {
+        const candidate = value.trim();
+
+        if (!candidate) {
+            return;
+        }
+
+        /*
+         * Ignore one-character candidates.
+         */
+        if ([...candidate].length < 2) {
+            return;
+        }
+
+        map.set(candidate, (map.get(candidate) || 0) + 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // Existing-rule exclusion
+    // ---------------------------------------------------------------------
+
+    function getAllRules() {
+        return db.groups.flatMap(group => group.substitutions);
+    }
+
+    function candidateCoveredByExistingRule(candidate) {
+        const rules = getAllRules();
+
+        for (const rule of rules) {
+            if (!rule.enabled || !rule.input) {
+                continue;
+            }
+
+            const regex = buildRuleRegex(rule);
+
+            if (!regex) {
+                continue;
+            }
+
+            regex.lastIndex = 0;
+
+            if (regex.test(candidate)) {
+                return true;
+            }
+
+            /*
+             * Also test the candidate inside the page context.
+             */
+            regex.lastIndex = 0;
+
+            if (ruleMatchesText(rule, candidate)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function scanCandidates() {
+        const text = getPageText();
+
+        if (!text) {
+            state.candidates = [];
+            state.selectedCandidates.clear();
+            return;
+        }
+
+        const discovered = extractCandidates(text)
+            .filter(item => !candidateCoveredByExistingRule(item.candidate));
+
+        state.candidates = clusterAndSortCandidates(discovered);
+        state.selectedCandidates.clear();
+
+        /*
+         * Default target group to the first alphabetical group.
+         */
+        if (
+            state.targetGroup === null ||
+            !db.groups[state.targetGroup]
         ) {
-            matches +=
-                scanSubstitution(
-                    text,
-                    rule
+            const groups = sortedGroups();
+
+            state.targetGroup = groups.length
+                ? groups[0].index
+                : null;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Candidate clustering
+    // ---------------------------------------------------------------------
+
+    /*
+     * There are no visible cluster labels.
+     *
+     * Candidates are internally grouped by their normalized token set.
+     * Related candidates stay together and each cluster is sorted by
+     * highest match count first.
+     */
+
+    function candidateClusterKey(candidate) {
+        const tokens = tokenizeCandidate(candidate.candidate);
+
+        if (!tokens.length) {
+            return candidate.candidate.toLowerCase();
+        }
+
+        return tokens
+            .map(normalizeToken)
+            .sort()
+            .join("|");
+    }
+
+    function tokenizeCandidate(value) {
+        return String(value)
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean);
+    }
+
+    function normalizeToken(token) {
+        return token
+            .toLowerCase()
+            .replace(/[’']/g, "'")
+            .replace(/[–—]/g, "-")
+            .replace(/-/g, "");
+    }
+
+    function clusterAndSortCandidates(candidates) {
+        const clusters = new Map();
+
+        for (const candidate of candidates) {
+            const key = candidateClusterKey(candidate);
+
+            if (!clusters.has(key)) {
+                clusters.set(key, []);
+            }
+
+            clusters.get(key).push(candidate);
+        }
+
+        const orderedClusters = [...clusters.values()]
+            .sort((a, b) => {
+                const aMax = Math.max(...a.map(x => x.matches));
+                const bMax = Math.max(...b.map(x => x.matches));
+
+                if (bMax !== aMax) {
+                    return bMax - aMax;
+                }
+
+                return compareNames(
+                    a[0].candidate,
+                    b[0].candidate
                 );
-        }
+            });
 
-        return matches;
+        return orderedClusters.flatMap(cluster =>
+            cluster.sort((a, b) => {
+                if (b.matches !== a.matches) {
+                    return b.matches - a.matches;
+                }
+
+                return compareNames(
+                    a.candidate,
+                    b.candidate
+                );
+            })
+        );
     }
 
-    function scanPage(
-        root = document.body,
-        url = location.href
-    ) {
-        if (
-            scannerState.running
-        ) {
-            return {
-                scanned: 0,
-                matches: 0,
-                busy: true
-            };
+    // ---------------------------------------------------------------------
+    // Template helpers
+    // ---------------------------------------------------------------------
+
+    function generateTemplateInput(candidate, template) {
+        const tokens = tokenizeCandidate(candidate);
+
+        if (!tokens.length) {
+            return candidate;
         }
 
-        scannerState.running =
-            true;
+        switch (template) {
+            case "Korean":
+                return generateKoreanRegex(tokens);
 
-        scannerState.scanned++;
+            case "Japanese":
+                return generateJapanesePattern(tokens);
 
-        scannerState.lastRun =
-            new Date().toISOString();
-
-        try {
-            if (!root) {
-                return {
-                    scanned: 0,
-                    matches: 0,
-                    busy: false
-                };
-            }
-
-            const groups =
-                getMatchedPacks(url);
-
-            const text =
-                root.innerText ??
-                root.textContent ??
-                "";
-
-            let matches = 0;
-
-            for (
-                const group of groups
-            ) {
-                matches +=
-                    scanGroup(
-                        text,
-                        group
-                    );
-            }
-
-            scannerState.matches =
-                matches;
-
-            return {
-                scanned: 1,
-                matches,
-                busy: false
-            };
-        } finally {
-            scannerState.running =
-                false;
+            case "Other":
+            default:
+                return generateOtherRegex(tokens);
         }
     }
 
-    function findMatches(
-        text,
-        rule
-    ) {
-        const regex =
-            buildRuleRegex(rule);
+    /*
+     * Korean:
+     *
+     * Park Min-Suk
+     *
+     * becomes:
+     *
+     * (?<![a-z])Min[- ]?Suk(?![a-z])
+     *
+     * "Park" is deliberately not included.
+     *
+     * A two-token candidate is treated as:
+     *
+     *   First Last -> Last
+     *
+     * For three or more tokens, the first token is treated as the surname /
+     * prefix and omitted.
+     */
+    function generateKoreanRegex(tokens) {
+        let working = tokens;
 
-        if (!regex) {
-            return [];
+        if (working.length >= 2) {
+            working = working.slice(1);
+        }
+
+        const transformed = working.map(token => {
+            return token
+                .split(/[-–—]/)
+                .filter(Boolean)
+                .map(escapeRegExp)
+                .join("[- ]?");
+        });
+
+        const body = transformed.join(" ");
+
+        return `(?<![a-z])${body}(?![a-z])`;
+    }
+
+    /*
+     * Japanese:
+     *
+     * Firsttoken Secondtoken
+     *
+     * becomes:
+     *
+     * Secondtoken Firsttoken
+     *
+     * Literal spaces only.
+     *
+     * No \\s+.
+     */
+    function generateJapanesePattern(tokens) {
+        if (tokens.length < 2) {
+            return tokens.join(" ");
         }
 
         return [
-            ...String(text).matchAll(
-                regex
-            )
-        ];
+            tokens[tokens.length - 1],
+            ...tokens.slice(0, -1)
+        ].join(" ");
     }
 
-    function findPageMatches(
-        root = document.body,
-        url = location.href
-    ) {
-        if (!root) {
-            return [];
-        }
+    /*
+     * Other:
+     *
+     * First Middle Last
+     *
+     * becomes:
+     *
+     * (?<![a-z])First Middle Last(?![a-z])
+     */
+    function generateOtherRegex(tokens) {
+        const body = tokens
+            .map(escapeRegExp)
+            .join(" ");
 
-        const groups =
-            getMatchedPacks(url);
-
-        const text =
-            root.innerText ??
-            root.textContent ??
-            "";
-
-        const results = [];
-
-        for (
-            const group of groups
-        ) {
-            for (
-                const rule of
-                group.substitutions || []
-            ) {
-                const matches =
-                    findMatches(
-                        text,
-                        rule
-                    );
-
-                if (
-                    matches.length
-                ) {
-                    results.push({
-                        group:
-                            group.name,
-                        rule: clone(rule),
-                        matches
-                    });
-                }
-            }
-        }
-
-        return results;
+        return `(?<![a-z])${body}(?![a-z])`;
     }
 
-    function getScannerStatus() {
+    // ---------------------------------------------------------------------
+    // Utility
+    // ---------------------------------------------------------------------
+
+    function escapeRegExp(value) {
+        return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function escapeHTML(value) {
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function cssEscapeSafe(value) {
+        if (window.CSS && typeof window.CSS.escape === "function") {
+            return window.CSS.escape(String(value));
+        }
+
+        return String(value).replace(/[^a-zA-Z0-9_-]/g, "_");
+    }
+
+    function createNativeRule() {
         return {
-            ...scannerState
+            ...DEFAULT_RULE
         };
     }
 
-    WNC.scanner.scan =
-        scanPage;
-
-    WNC.scanner.find =
-        findMatches;
-
-    WNC.scanner.findPage =
-        findPageMatches;
-
-    WNC.scanner.status =
-        getScannerStatus;
-
-    // ============================================================
-    // PART 4 - EDITOR
-    // ============================================================
-
-    const editorState = {
-        selectedGroup: null,
-        selectedRule: null
-    };
-
-    function renamePack(
-        oldName,
-        newName
-    ) {
-        return updatePack(
-            oldName,
-            {
-                name: newName
-            }
-        );
-    }
-
-    function setPackUrls(
-        packName,
-        urls
-    ) {
-        return updatePack(
-            packName,
-            {
-                urls
-            }
-        );
-    }
-
-    function setPackEnabled(
-        packName,
-        enabled
-    ) {
-        return updatePack(
-            packName,
-            {
-                enabled:
-                    Boolean(enabled)
-            }
-        );
-    }
-
-    function setPackPageLoad(
-        packName,
-        pageLoad
-    ) {
-        return updatePack(
-            packName,
-            {
-                pageLoad:
-                    Boolean(pageLoad)
-            }
-        );
-    }
-
-    function setPackAuto(
-        packName,
-        auto
-    ) {
-        return updatePack(
-            packName,
-            {
-                auto:
-                    Boolean(auto)
-            }
-        );
-    }
-
-    function setRuleField(
-        packName,
-        ruleIndex,
-        field,
-        value
-    ) {
-        const allowed =
-            new Set([
-                "input",
-                "output",
-                "inputType",
-                "caseSensitive",
-                "enabled",
-                "html"
-            ]);
-
-        if (
-            !allowed.has(field)
-        ) {
-            return false;
-        }
-
-        return updateRule(
-            packName,
-            ruleIndex,
-            {
-                [field]: value
-            }
-        );
-    }
-
-    function getEditablePack(
-        packName
-    ) {
-        return getPack(
-            packName
-        );
-    }
-
-    function getEditableRule(
-        packName,
-        ruleIndex
-    ) {
-        const group =
-            getPack(packName);
-
-        if (!group) {
-            return null;
-        }
-
-        const index =
-            Number(ruleIndex);
-
-        if (
-            !Number.isInteger(index)
-        ) {
-            return null;
-        }
-
-        return (
-            group.substitutions?.[
-                index
-            ] || null
-        );
-    }
-
-    function selectGroup(
-        name
-    ) {
-        editorState.selectedGroup =
-            name;
-
-        editorState.selectedRule =
-            null;
-
-        return getEditablePack(
-            name
-        );
-    }
-
-    function selectRule(
-        packName,
-        ruleIndex
-    ) {
-        editorState.selectedGroup =
-            packName;
-
-        editorState.selectedRule =
-            Number(ruleIndex);
-
-        return getEditableRule(
-            packName,
-            ruleIndex
-        );
-    }
-
-    WNC.editor.renamePack =
-        renamePack;
-
-    WNC.editor.setPackUrls =
-        setPackUrls;
-
-    WNC.editor.setPackEnabled =
-        setPackEnabled;
-
-    WNC.editor.setPackPageLoad =
-        setPackPageLoad;
-
-    WNC.editor.setPackAuto =
-        setPackAuto;
-
-    WNC.editor.setRuleField =
-        setRuleField;
-
-    WNC.editor.getPack =
-        getEditablePack;
-
-    WNC.editor.getRule =
-        getEditableRule;
-
-    WNC.editor.selectGroup =
-        selectGroup;
-
-    WNC.editor.selectRule =
-        selectRule;
-
-    WNC.editor.state =
-        () => ({
-            ...editorState
-        });
-
-    // ============================================================
-    // PART 5 - FOXREPLACE IMPORT / EXPORT
-    // ============================================================
-
-    function isFoxReplaceDatabase(
-        value
-    ) {
-        return validateFoxReplaceDatabase(
-            value
-        ).valid;
-    }
-
-    function importFoxReplaceDatabase(
-        json
-    ) {
-        let parsed;
-
-        try {
-            parsed =
-                typeof json ===
-                "string"
-                    ? JSON.parse(json)
-                    : clone(json);
-        } catch (error) {
-            return {
-                success: false,
-                error:
-                    "Invalid JSON: " +
-                    error.message
-            };
-        }
-
-        const validation =
-            validateFoxReplaceDatabase(
-                parsed
-            );
-
-        if (!validation.valid) {
-            return {
-                success: false,
-                error:
-                    validation.error
-            };
-        }
-
-        const normalized =
-            normalizeFoxReplaceDatabase(
-                parsed
-            );
-
-        saveDatabase(
-            normalized
-        );
-
+    function createNativeGroup() {
         return {
-            success: true,
-            database:
-                clone(normalized)
+            ...DEFAULT_GROUP,
+            urls: [],
+            substitutions: []
         };
     }
 
-    function exportFoxReplaceDatabase() {
-        return JSON.stringify(
-            getDatabase(),
-            null,
-            2
-        );
+    function refresh() {
+        saveDatabase();
+        render();
     }
 
-    function copyDatabaseToClipboard() {
-        const json =
-            exportFoxReplaceDatabase();
+    // ---------------------------------------------------------------------
+    // Root UI
+    // ---------------------------------------------------------------------
 
-        GM_setClipboard(
-            json,
-            "text"
-        );
+    function mount() {
+        const existing = document.getElementById("wnc-root");
 
-        return json;
-    }
-
-    function downloadDatabase(
-        filename =
-            "foxreplace.json"
-    ) {
-        const json =
-            exportFoxReplaceDatabase();
-
-        const blob =
-            new Blob(
-                [json],
-                {
-                    type:
-                        "application/json"
-                }
-            );
-
-        const url =
-            URL.createObjectURL(
-                blob
-            );
-
-        const link =
-            document.createElement(
-                "a"
-            );
-
-        link.href = url;
-        link.download =
-            filename;
-
-        document.body.appendChild(
-            link
-        );
-
-        link.click();
-
-        link.remove();
-
-        setTimeout(
-            () =>
-                URL.revokeObjectURL(
-                    url
-                ),
-            1000
-        );
-
-        return true;
-    }
-
-    function clearDatabase() {
-        saveDatabase(
-            clone(
-                DEFAULT_DATABASE
-            )
-        );
-
-        return true;
-    }
-
-    function getDatabaseStats() {
-        const db =
-            getDatabase();
-
-        let rules = 0;
-
-        for (
-            const group of db.groups
-        ) {
-            rules +=
-                group.substitutions.length;
+        if (existing) {
+            existing.remove();
         }
 
-        return {
-            groups:
-                db.groups.length,
-
-            rules,
-
-            jsonLength:
-                JSON.stringify(db)
-                    .length
-        };
-    }
-
-    WNC.tools.isFoxReplaceDatabase =
-        isFoxReplaceDatabase;
-
-    WNC.tools.import =
-        importFoxReplaceDatabase;
-
-    WNC.tools.export =
-        exportFoxReplaceDatabase;
-
-    WNC.tools.copy =
-        copyDatabaseToClipboard;
-
-    WNC.tools.download =
-        downloadDatabase;
-
-    WNC.tools.clear =
-        clearDatabase;
-
-    WNC.tools.stats =
-        getDatabaseStats;
-
-    WNC.foxReplace.import =
-        importFoxReplaceDatabase;
-
-    WNC.foxReplace.export =
-        exportFoxReplaceDatabase;
-
-    WNC.foxReplace.validate =
-        isFoxReplaceDatabase;
-
-    // ============================================================
-    // PART 6 - CLEANER
-    // ============================================================
-
-    const cleanerState = {
-        running: false,
-        lastRun: null,
-        replacements: 0
-    };
-
-    function shouldCleanGroup(
-        group
-    ) {
-        return Boolean(
-            group &&
-            group.enabled !== false &&
-            group.pageLoad !== false &&
-            group.auto !== false
-        );
-    }
-
-    function getPageLoadGroups(
-        url = location.href
-    ) {
-        return getMatchedPacks(
-            url
-        ).filter(
-            shouldCleanGroup
-        );
-    }
-
-    function cleanGroup(
-        text,
-        group
-    ) {
-        return applyGroup(
-            text,
-            group
-        );
-    }
-
-    function cleanPage(
-        text,
-        url = location.href
-    ) {
-        const groups =
-            getPageLoadGroups(
-                url
-            );
-
-        let result = text;
-        let replacements = 0;
-
-        for (
-            const group of groups
-        ) {
-            const applied =
-                applyGroup(
-                    result,
-                    group
-                );
-
-            result =
-                applied.text;
-
-            replacements +=
-                applied.replacements;
-        }
-
-        return {
-            text: result,
-            replacements
-        };
-    }
-
-    function cleanText(
-        text,
-        url = location.href
-    ) {
-        return cleanPage(
-            text,
-            url
-        );
-    }
-
-    function cleanHtml(
-        html,
-        url = location.href
-    ) {
-        return cleanPage(
-            html,
-            url
-        );
-    }
-
-    function cleanElement(
-        element,
-        url = location.href
-    ) {
-        if (
-            !element ||
-            !element.isConnected
-        ) {
-            return 0;
-        }
-
-        const groups =
-            getPageLoadGroups(
-                url
-            );
-
-        let replacements = 0;
-
-        for (
-            const group of groups
-        ) {
-            replacements +=
-                applyGroupToDocument(
-                    element,
-                    group
-                );
-        }
-
-        return replacements;
-    }
-
-    function cleanPageLoad(
-        root = document.body,
-        url = location.href
-    ) {
-        if (!root) {
-            return 0;
-        }
-
-        if (
-            cleanerState.running
-        ) {
-            return 0;
-        }
-
-        cleanerState.running =
-            true;
-
-        try {
-            const groups =
-                getPageLoadGroups(
-                    url
-                );
-
-            let replacements = 0;
-
-            for (
-                const group of groups
-            ) {
-                replacements +=
-                    applyGroupToDocument(
-                        root,
-                        group
-                    );
-            }
-
-            cleanerState.replacements =
-                replacements;
-
-            cleanerState.lastRun =
-                new Date().toISOString();
-
-            return replacements;
-        } finally {
-            cleanerState.running =
-                false;
-        }
-    }
-
-    function startCleanerObserver() {
-        if (
-            RUNTIME.observer
-        ) {
-            return false;
-        }
-
-        if (
-            typeof MutationObserver ===
-            "undefined"
-        ) {
-            return false;
-        }
-
-        const target =
-            document.body ||
-            document.documentElement;
-
-        if (!target) {
-            return false;
-        }
-
-        RUNTIME.observer =
-            new MutationObserver(
-                mutations => {
-                    if (
-                        RUNTIME.observerPaused
-                    ) {
-                        return;
-                    }
-
-                    const groups =
-                        getPageLoadGroups(
-                            location.href
-                        );
-
-                    if (
-                        groups.length ===
-                        0
-                    ) {
-                        return;
-                    }
-
-                    const elements =
-                        new Set();
-
-                    for (
-                        const mutation of
-                        mutations
-                    ) {
-                        for (
-                            const node of
-                            mutation.addedNodes
-                        ) {
-                            if (
-                                node.nodeType ===
-                                Node.ELEMENT_NODE
-                            ) {
-                                elements.add(
-                                    node
-                                );
-                            } else if (
-                                node.nodeType ===
-                                Node.TEXT_NODE &&
-                                node.parentElement
-                            ) {
-                                elements.add(
-                                    node.parentElement
-                                );
-                            }
-                        }
-                    }
-
-                    if (
-                        elements.size ===
-                        0
-                    ) {
-                        return;
-                    }
-
-                    RUNTIME.observerPaused =
-                        true;
-
-                    try {
-                        for (
-                            const element of
-                            elements
-                        ) {
-                            if (
-                                !element.isConnected
-                            ) {
-                                continue;
-                            }
-
-                            for (
-                                const group of
-                                groups
-                            ) {
-                                applyGroupToDocument(
-                                    element,
-                                    group
-                                );
-                            }
-                        }
-                    } finally {
-                        RUNTIME.observerPaused =
-                            false;
-                    }
-                }
-            );
-
-        RUNTIME.observer.observe(
-            target,
-            {
-                childList: true,
-                subtree: true
-            }
-        );
-
-        return true;
-    }
-
-    function stopCleanerObserver() {
-        if (
-            !RUNTIME.observer
-        ) {
-            return false;
-        }
-
-        RUNTIME.observer.disconnect();
-
-        RUNTIME.observer =
-            null;
-
-        return true;
-    }
-
-    function initializeCleaner() {
-        if (
-            RUNTIME.cleanerInitialized
-        ) {
-            return;
-        }
-
-        RUNTIME.cleanerInitialized =
-            true;
-
-        const run = () => {
-            cleanPageLoad(
-                document.body ||
-                    document.documentElement,
-                location.href
-            );
-
-            startCleanerObserver();
-        };
-
-        if (
-            document.readyState ===
-            "loading"
-        ) {
-            document.addEventListener(
-                "DOMContentLoaded",
-                run,
-                {
-                    once: true
-                }
-            );
-        } else {
-            run();
-        }
-    }
-
-    function getCleanerStatus() {
-        return {
-            ...cleanerState,
-
-            observer:
-                Boolean(
-                    RUNTIME.observer
-                )
-        };
-    }
-
-    WNC.cleaner.cleanGroup =
-        cleanGroup;
-
-    WNC.cleaner.cleanPage =
-        cleanPage;
-
-    WNC.cleaner.cleanText =
-        cleanText;
-
-    WNC.cleaner.cleanHtml =
-        cleanHtml;
-
-    WNC.cleaner.cleanElement =
-        cleanElement;
-
-    WNC.cleaner.cleanPageLoad =
-        cleanPageLoad;
-
-    WNC.cleaner.shouldCleanGroup =
-        shouldCleanGroup;
-
-    WNC.cleaner.getPageLoadGroups =
-        getPageLoadGroups;
-
-    WNC.cleaner.start =
-        startCleanerObserver;
-
-    WNC.cleaner.stop =
-        stopCleanerObserver;
-
-    WNC.cleaner.initialize =
-        initializeCleaner;
-
-    WNC.cleaner.status =
-        getCleanerStatus;
-
-    // ============================================================
-    // PART 7 - UI / DIAGNOSTICS / INITIALIZATION
-    // ============================================================
-
-    function getDiagnostics() {
-        return {
-            version:
-                WNC_VERSION,
-
-            databaseKey:
-                FOXREPLACE_DB_KEY,
-
-            stats:
-                getDatabaseStats(),
-
-            scanner:
-                {
-                    ...scannerState
-                },
-
-            cleaner:
-                getCleanerStatus(),
-
-            editor:
-                {
-                    ...editorState
-                },
-
-            initialized:
-                RUNTIME.initialized
-        };
-    }
-
-    function showDatabaseJson() {
-        const json =
-            exportFoxReplaceDatabase();
-
-        console.log(
-            "[WNC] FoxReplace database:",
-            json
-        );
-
-        return json;
-    }
-
-    function copyDatabaseJson() {
-        return copyDatabaseToClipboard();
-    }
-
-    function openImportDialog() {
-        const input =
-            document.createElement(
-                "input"
-            );
-
-        input.type =
-            "file";
-
-        input.accept =
-            "application/json,.json";
-
-        input.addEventListener(
-            "change",
-            async () => {
-                const file =
-                    input.files?.[0];
-
-                if (!file) {
-                    return;
-                }
-
-                try {
-                    const text =
-                        await file.text();
-
-                    const result =
-                        importFoxReplaceDatabase(
-                            text
-                        );
-
-                    if (
-                        !result.success
-                    ) {
-                        alert(
-                            "WNC import failed:\n\n" +
-                            result.error
-                        );
-
-                        return;
-                    }
-
-                    alert(
-                        "WNC database imported successfully."
-                    );
-
-                    location.reload();
-                } catch (error) {
-                    alert(
-                        "WNC import failed:\n\n" +
-                        error.message
-                    );
-                }
-            },
-            {
-                once: true
-            }
-        );
-
-        input.click();
-    }
-
-    function openExportDialog() {
-        downloadDatabase(
-            "foxreplace.json"
-        );
-    }
-
-    function createUi() {
-        if (
-            RUNTIME.uiCreated ||
-            document.getElementById(
-                "wnc-panel"
-            )
-        ) {
-            return;
-        }
-
-        if (!document.body) {
-            return;
-        }
-
-        RUNTIME.uiCreated =
-            true;
-
-        const panel =
-            document.createElement(
-                "div"
-            );
-
-        panel.id =
-            "wnc-panel";
-
-        panel.innerHTML = `
-            <div class="wnc-title">
-                WebNovel Cleaner
-            </div>
-
-            <div class="wnc-buttons">
-                <button data-action="import">
-                    Import
-                </button>
-
-                <button data-action="export">
-                    Export
-                </button>
-
-                <button data-action="copy">
-                    Copy JSON
-                </button>
-
-                <button data-action="scan">
-                    Scan
-                </button>
-
-                <button data-action="clean">
-                    Clean
-                </button>
-            </div>
-
-            <div class="wnc-status">
-                Ready
+        const root = document.createElement("div");
+        root.id = "wnc-root";
+
+        root.innerHTML = `
+            <div class="wnc-shell">
+                <header class="wnc-header">
+                    <div class="wnc-brand">WNC</div>
+
+                    <div class="wnc-header-actions">
+                        <button
+                            class="wnc-button wnc-primary"
+                            data-action="create-group"
+                        >Create New Group</button>
+
+                        <button
+                            class="wnc-button"
+                            data-action="import"
+                        >Import</button>
+
+                        <button
+                            class="wnc-button"
+                            data-action="export"
+                        >Export</button>
+
+                        <input
+                            id="wnc-import-file"
+                            type="file"
+                            accept=".json,application/json"
+                            hidden
+                        >
+                    </div>
+                </header>
+
+                <main id="wnc-content"></main>
             </div>
         `;
 
-        document.body.appendChild(
-            panel
-        );
+        document.documentElement.appendChild(root);
 
-        const status =
-            panel.querySelector(
-                ".wnc-status"
-            );
+        injectStyles();
 
-        panel.addEventListener(
-            "click",
-            event => {
-                const button =
-                    event.target.closest(
-                        "button"
-                    );
+        root.addEventListener("click", handleClick);
+        root.addEventListener("change", handleChange);
+        root.addEventListener("input", handleInput);
 
-                if (!button) {
-                    return;
-                }
-
-                try {
-                    switch (
-                        button.dataset.action
-                    ) {
-                        case "import":
-                            openImportDialog();
-                            break;
-
-                        case "export":
-                            openExportDialog();
-                            break;
-
-                        case "copy":
-                            copyDatabaseJson();
-
-                            status.textContent =
-                                "JSON copied";
-                            break;
-
-                        case "scan": {
-                            const result =
-                                scanPage();
-
-                            status.textContent =
-                                `Matches: ${result.matches}`;
-                            break;
-                        }
-
-                        case "clean": {
-                            const count =
-                                cleanPageLoad();
-
-                            status.textContent =
-                                `Replacements: ${count}`;
-                            break;
-                        }
-                    }
-                } catch (error) {
-                    console.error(
-                        "[WNC] UI error:",
-                        error
-                    );
-
-                    status.textContent =
-                        "Error - see console";
-                }
-            }
-        );
+        render();
     }
 
-    function installStyles() {
-        if (
-            document.getElementById(
-                "wnc-styles"
-            )
-        ) {
+    // ---------------------------------------------------------------------
+    // Rendering
+    // ---------------------------------------------------------------------
+
+    function render() {
+        const content = document.getElementById("wnc-content");
+
+        if (!content) {
             return;
         }
 
-        GM_addStyle(`
-            #wnc-panel {
-                position: fixed;
-                right: 12px;
-                bottom: 12px;
-                z-index: 2147483647;
-                padding: 10px;
-                background: rgba(20,20,20,.95);
-                color: #fff;
-                border: 1px solid #666;
-                border-radius: 8px;
-                font: 13px/1.4 sans-serif;
-                box-shadow: 0 4px 18px rgba(0,0,0,.35);
+        if (state.screen === "groups") {
+            renderGroups(content);
+            return;
+        }
+
+        if (state.screen === "group") {
+            renderGroup(content);
+            return;
+        }
+
+        if (state.screen === "unmatched") {
+            renderUnmatched(content);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Groups screen
+    // ---------------------------------------------------------------------
+
+    function renderGroups(content) {
+        const groups = sortedGroups();
+
+        const rows = groups.map(({ group, index }) => {
+            const matches = countGroupMatches(group);
+            const siteMatches = groupMatchesCurrentSite(group);
+
+            return `
+                <tr
+                    class="wnc-clickable-row"
+                    data-action="open-group"
+                    data-group-index="${index}"
+                >
+                    <td>${escapeHTML(group.name || "(Unnamed)")}</td>
+                    <td class="wnc-number">${group.substitutions.length}</td>
+                    <td class="wnc-number">${matches}</td>
+                    <td class="wnc-site-status">
+                        ${
+                            siteMatches
+                                ? `<span class="wnc-check">✓</span>`
+                                : `<span class="wnc-cross">✕</span>`
+                        }
+                    </td>
+                </tr>
+            `;
+        }).join("");
+
+        content.innerHTML = `
+            <section class="wnc-screen">
+                <div class="wnc-section-heading">
+                    <h1>Groups</h1>
+                </div>
+
+                <div class="wnc-table-wrap">
+                    <table class="wnc-table">
+                        <thead>
+                            <tr>
+                                <th>Group</th>
+                                <th>Rules</th>
+                                <th>Matches</th>
+                                <th>Sites</th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            ${rows || `
+                                <tr>
+                                    <td colspan="4" class="wnc-empty">
+                                        No groups
+                                    </td>
+                                </tr>
+                            `}
+
+                            <tr
+                                class="wnc-clickable-row wnc-unmatched-row"
+                                data-action="open-unmatched"
+                            >
+                                <td>Unmatched</td>
+                                <td></td>
+                                <td class="wnc-number">
+                                    ${state.candidates.length}
+                                </td>
+                                <td></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        `;
+    }
+
+    function countGroupMatches(group) {
+        const text = getPageText();
+
+        if (!text) {
+            return 0;
+        }
+
+        let total = 0;
+
+        for (const rule of group.substitutions) {
+            if (!rule.enabled) {
+                continue;
             }
 
-            #wnc-panel .wnc-title {
+            total += countRuleMatches(rule, text);
+        }
+
+        return total;
+    }
+
+    // ---------------------------------------------------------------------
+    // Group workspace
+    // ---------------------------------------------------------------------
+
+    function renderGroup(content) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group) {
+            state.screen = "groups";
+            render();
+            return;
+        }
+
+        content.innerHTML = `
+            <section class="wnc-screen">
+                <div class="wnc-workspace-heading">
+                    <button
+                        class="wnc-back"
+                        data-action="back-groups"
+                        title="Back"
+                    >‹</button>
+
+                    <h1>${escapeHTML(group.name || "(Unnamed)")}</h1>
+                </div>
+
+                <div class="wnc-tabs">
+                    <button
+                        class="wnc-tab ${
+                            state.tab === "rules" ? "active" : ""
+                        }"
+                        data-action="group-tab"
+                        data-tab="rules"
+                    >Rules</button>
+
+                    <button
+                        class="wnc-tab ${
+                            state.tab === "sites" ? "active" : ""
+                        }"
+                        data-action="group-tab"
+                        data-tab="sites"
+                    >Sites</button>
+                </div>
+
+                <div id="wnc-group-workspace"></div>
+            </section>
+        `;
+
+        const workspace =
+            document.getElementById("wnc-group-workspace");
+
+        if (state.tab === "rules") {
+            renderRules(workspace, group);
+        } else {
+            renderSites(workspace, group);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Rules tab
+    // ---------------------------------------------------------------------
+
+    function renderRules(container, group) {
+        const text = getPageText();
+
+        const visibleRules = sortedRules(group)
+            .filter(({ rule }) => {
+                if (!rule.enabled || !rule.input) {
+                    return false;
+                }
+
+                return ruleMatchesText(rule, text);
+            });
+
+        const rows = visibleRules.map(({ rule, index }) => {
+            const matches = countRuleMatches(rule, text);
+
+            return `
+                <tr data-rule-index="${index}">
+                    <td>
+                        <input
+                            class="wnc-cell-input"
+                            data-field="input"
+                            value="${escapeHTML(rule.input)}"
+                        >
+                    </td>
+
+                    <td>
+                        <input
+                            class="wnc-cell-input"
+                            data-field="output"
+                            value="${escapeHTML(rule.output)}"
+                        >
+                    </td>
+
+                    <td>
+                        <select
+                            class="wnc-cell-select"
+                            data-field="inputType"
+                        >
+                            <option
+                                value="text"
+                                ${rule.inputType === "text" ? "selected" : ""}
+                            >Text</option>
+
+                            <option
+                                value="regexp"
+                                ${
+                                    rule.inputType === "regexp"
+                                        ? "selected"
+                                        : ""
+                                }
+                            >Regexp</option>
+                        </select>
+                    </td>
+
+                    <td class="wnc-center">
+                        <input
+                            type="checkbox"
+                            data-field="caseSensitive"
+                            ${rule.caseSensitive ? "checked" : ""}
+                        >
+                    </td>
+
+                    <td class="wnc-center">
+                        <input
+                            type="checkbox"
+                            data-field="enabled"
+                            ${rule.enabled ? "checked" : ""}
+                        >
+                    </td>
+
+                    <td>
+                        <input
+                            class="wnc-cell-input"
+                            data-field="html"
+                            value="${escapeHTML(rule.html)}"
+                        >
+                    </td>
+
+                    <td class="wnc-number">
+                        ${matches}
+                    </td>
+
+                    <td class="wnc-delete-cell">
+                        <button
+                            class="wnc-delete"
+                            data-action="delete-rule"
+                            data-rule-index="${index}"
+                            title="Delete rule"
+                        >×</button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+
+        container.innerHTML = `
+            <div class="wnc-table-wrap">
+                <table class="wnc-table wnc-rules-table">
+                    <thead>
+                        <tr>
+                            <th>Input</th>
+                            <th>Output</th>
+                            <th>Type</th>
+                            <th>Case</th>
+                            <th>Enabled</th>
+                            <th>HTML</th>
+                            <th>Matches</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${rows || `
+                            <tr>
+                                <td colspan="8" class="wnc-empty">
+                                    No rules from this group match this page
+                                </td>
+                            </tr>
+                        `}
+
+                        <tr class="wnc-add-row">
+                            <td colspan="8">
+                                <button
+                                    class="wnc-add-button"
+                                    data-action="add-rule"
+                                >+ Add rule</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    // ---------------------------------------------------------------------
+    // Sites tab
+    // ---------------------------------------------------------------------
+
+    function renderSites(container, group) {
+        const rows = group.urls.map((url, index) => `
+            <tr>
+                <td>
+                    <input
+                        class="wnc-cell-input"
+                        data-site-index="${index}"
+                        data-field="url"
+                        value="${escapeHTML(url)}"
+                    >
+                </td>
+
+                <td class="wnc-site-match">
+                    ${
+                        urlPatternMatches(url)
+                            ? `<span class="wnc-check">✓</span>`
+                            : `<span class="wnc-cross">✕</span>`
+                    }
+                </td>
+
+                <td class="wnc-delete-cell">
+                    <button
+                        class="wnc-delete"
+                        data-action="delete-site"
+                        data-site-index="${index}"
+                        title="Delete URL"
+                    >×</button>
+                </td>
+            </tr>
+        `).join("");
+
+        container.innerHTML = `
+            <div class="wnc-table-wrap">
+                <table class="wnc-table">
+                    <thead>
+                        <tr>
+                            <th>URL Pattern</th>
+                            <th>Current Site</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${rows || `
+                            <tr>
+                                <td colspan="3" class="wnc-empty">
+                                    No URL patterns
+                                </td>
+                            </tr>
+                        `}
+
+                        <tr class="wnc-add-row">
+                            <td colspan="3">
+                                <button
+                                    class="wnc-add-button"
+                                    data-action="add-site"
+                                >+ Add URL pattern</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="wnc-group-options">
+                <table class="wnc-table">
+                    <tbody>
+                        <tr>
+                            <td>Enabled</td>
+                            <td>
+                                <input
+                                    type="checkbox"
+                                    data-group-field="enabled"
+                                    ${
+                                        group.enabled
+                                            ? "checked"
+                                            : ""
+                                    }
+                                >
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td>Page Load</td>
+                            <td>
+                                <input
+                                    type="checkbox"
+                                    data-group-field="pageLoad"
+                                    ${
+                                        group.pageLoad
+                                            ? "checked"
+                                            : ""
+                                    }
+                                >
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td>Auto</td>
+                            <td>
+                                <input
+                                    type="checkbox"
+                                    data-group-field="auto"
+                                    ${
+                                        group.auto
+                                            ? "checked"
+                                            : ""
+                                    }
+                                >
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    // ---------------------------------------------------------------------
+    // Unmatched screen
+    // ---------------------------------------------------------------------
+
+    function renderUnmatched(content) {
+        if (!state.candidates.length) {
+            scanCandidates();
+        }
+
+        const groups = sortedGroups();
+
+        const targetOptions = groups.map(({ group, index }) => `
+            <option
+                value="${index}"
+                ${
+                    state.targetGroup === index
+                        ? "selected"
+                        : ""
+                }
+            >${escapeHTML(group.name || "(Unnamed)")}</option>
+        `).join("");
+
+        const rows = state.candidates.map((item, index) => `
+            <tr data-candidate-index="${index}">
+                <td class="wnc-check-cell">
+                    <input
+                        type="checkbox"
+                        data-candidate-check="${index}"
+                        ${
+                            state.selectedCandidates.has(index)
+                                ? "checked"
+                                : ""
+                        }
+                    >
+                </td>
+
+                <td>
+                    <input
+                        class="wnc-cell-input"
+                        data-candidate-field="candidate"
+                        data-candidate-index="${index}"
+                        value="${escapeHTML(item.candidate)}"
+                    >
+                </td>
+
+                <td>
+                    <input
+                        class="wnc-cell-input"
+                        data-candidate-field="input"
+                        data-candidate-index="${index}"
+                        value="${escapeHTML(item.input)}"
+                    >
+                </td>
+
+                <td>
+                    <input
+                        class="wnc-cell-input"
+                        data-candidate-field="output"
+                        data-candidate-index="${index}"
+                        value="${escapeHTML(item.output)}"
+                    >
+                </td>
+
+                <td class="wnc-number">
+                    ${item.matches}
+                </td>
+            </tr>
+        `).join("");
+
+        content.innerHTML = `
+            <section class="wnc-screen">
+                <div class="wnc-unmatched-controls">
+
+                    <select
+                        class="wnc-control-select"
+                        data-unmatched-control="targetGroup"
+                        ${
+                            groups.length
+                                ? ""
+                                : "disabled"
+                        }
+                    >
+                        ${
+                            groups.length
+                                ? targetOptions
+                                : `<option>No groups</option>`
+                        }
+                    </select>
+
+                    <select
+                        class="wnc-control-select"
+                        data-unmatched-control="type"
+                    >
+                        <option
+                            value="text"
+                            ${
+                                state.candidateType === "text"
+                                    ? "selected"
+                                    : ""
+                            }
+                        >text</option>
+
+                        <option
+                            value="regexp"
+                            ${
+                                state.candidateType === "regexp"
+                                    ? "selected"
+                                    : ""
+                            }
+                        >regexp</option>
+                    </select>
+
+                    <select
+                        class="wnc-control-select"
+                        data-unmatched-control="template"
+                        ${
+                            state.candidateType !== "regexp"
+                                ? "disabled"
+                                : ""
+                        }
+                    >
+                        <option
+                            value="Korean"
+                            ${
+                                state.candidateTemplate === "Korean"
+                                    ? "selected"
+                                    : ""
+                            }
+                        >Korean</option>
+
+                        <option
+                            value="Japanese"
+                            ${
+                                state.candidateTemplate === "Japanese"
+                                    ? "selected"
+                                    : ""
+                            }
+                        >Japanese</option>
+
+                        <option
+                            value="Other"
+                            ${
+                                state.candidateTemplate === "Other"
+                                    ? "selected"
+                                    : ""
+                            }
+                        >Other</option>
+                    </select>
+
+                    <select
+                        class="wnc-control-select"
+                        data-unmatched-control="case"
+                    >
+                        <option
+                            value="false"
+                            ${
+                                !state.candidateCaseSensitive
+                                    ? "selected"
+                                    : ""
+                            }
+                        >No</option>
+
+                        <option
+                            value="true"
+                            ${
+                                state.candidateCaseSensitive
+                                    ? "selected"
+                                    : ""
+                            }
+                        >Yes</option>
+                    </select>
+
+                    <button
+                        class="wnc-button wnc-apply"
+                        data-action="apply-checked"
+                        ${
+                            !groups.length
+                                ? "disabled"
+                                : ""
+                        }
+                    >Apply Checked</button>
+
+                </div>
+
+                <div class="wnc-table-wrap">
+                    <table class="wnc-table wnc-unmatched-table">
+                        <thead>
+                            <tr>
+                                <th>Apply</th>
+                                <th>Candidate</th>
+                                <th>Input</th>
+                                <th>Output</th>
+                                <th>Matches</th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            ${
+                                rows || `
+                                    <tr>
+                                        <td
+                                            colspan="5"
+                                            class="wnc-empty"
+                                        >
+                                            No unmatched candidates
+                                        </td>
+                                    </tr>
+                                `
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        `;
+    }
+
+    // ---------------------------------------------------------------------
+    // Events
+    // ---------------------------------------------------------------------
+
+    function handleClick(event) {
+        const target = event.target.closest("[data-action]");
+
+        if (!target) {
+            return;
+        }
+
+        const action = target.dataset.action;
+
+        switch (action) {
+            case "create-group":
+                createGroup();
+                break;
+
+            case "import":
+                document
+                    .getElementById("wnc-import-file")
+                    ?.click();
+                break;
+
+            case "export":
+                exportDatabase();
+                break;
+
+            case "open-group":
+                openGroup(
+                    Number(target.dataset.groupIndex)
+                );
+                break;
+
+            case "open-unmatched":
+                openUnmatched();
+                break;
+
+            case "back-groups":
+                state.screen = "groups";
+                state.groupIndex = null;
+                render();
+                break;
+
+            case "group-tab":
+                state.tab = target.dataset.tab;
+                render();
+                break;
+
+            case "add-rule":
+                addRule();
+                break;
+
+            case "delete-rule":
+                deleteRule(
+                    Number(target.dataset.ruleIndex)
+                );
+                break;
+
+            case "add-site":
+                addSite();
+                break;
+
+            case "delete-site":
+                deleteSite(
+                    Number(target.dataset.siteIndex)
+                );
+                break;
+
+            case "apply-checked":
+                applyCheckedCandidates();
+                break;
+        }
+    }
+
+    function handleChange(event) {
+        const target = event.target;
+
+        // Import.
+        if (target.id === "wnc-import-file") {
+            importFile(target.files?.[0]);
+            target.value = "";
+            return;
+        }
+
+        // Candidate checkboxes.
+        if (target.matches("[data-candidate-check]")) {
+            const index = Number(target.dataset.candidateCheck);
+
+            if (target.checked) {
+                state.selectedCandidates.add(index);
+            } else {
+                state.selectedCandidates.delete(index);
+            }
+
+            return;
+        }
+
+        // Unmatched global controls.
+        if (target.matches("[data-unmatched-control]")) {
+            handleUnmatchedControl(target);
+            return;
+        }
+
+        // Existing rule fields.
+        if (target.matches("[data-field]")) {
+            handleRuleField(target);
+            return;
+        }
+
+        // Site fields.
+        if (target.matches("[data-site-index]")) {
+            handleSiteField(target);
+            return;
+        }
+
+        // Group options.
+        if (target.matches("[data-group-field]")) {
+            handleGroupField(target);
+        }
+    }
+
+    function handleInput(event) {
+        const target = event.target;
+
+        if (target.matches("[data-candidate-field]")) {
+            const index =
+                Number(target.dataset.candidateIndex);
+
+            const field =
+                target.dataset.candidateField;
+
+            if (!state.candidates[index]) {
+                return;
+            }
+
+            state.candidates[index][field] = target.value;
+
+            /*
+             * Candidate edits are deliberately not written to the database.
+             * Unmatched is transient WNC state.
+             */
+            return;
+        }
+
+        if (target.matches("[data-field]")) {
+            handleRuleField(target);
+            return;
+        }
+
+        if (target.matches("[data-site-index]")) {
+            handleSiteField(target);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Group actions
+    // ---------------------------------------------------------------------
+
+    function createGroup() {
+        const group = createNativeGroup();
+
+        let number = 1;
+        let name = "New Group";
+
+        while (
+            db.groups.some(
+                existing => existing.name === name
+            )
+        ) {
+            number++;
+            name = `New Group ${number}`;
+        }
+
+        group.name = name;
+
+        db.groups.push(group);
+
+        saveDatabase();
+
+        /*
+         * Open the new group immediately.
+         */
+        state.groupIndex = db.groups.length - 1;
+        state.screen = "group";
+        state.tab = "rules";
+
+        render();
+    }
+
+    function openGroup(index) {
+        if (!db.groups[index]) {
+            return;
+        }
+
+        state.groupIndex = index;
+        state.screen = "group";
+        state.tab = "rules";
+
+        render();
+    }
+
+    function openUnmatched() {
+        state.screen = "unmatched";
+
+        /*
+         * Always rescan when entering Unmatched so the list reflects the
+         * current page and current FoxReplace database.
+         */
+        scanCandidates();
+
+        render();
+    }
+
+    // ---------------------------------------------------------------------
+    // Rule actions
+    // ---------------------------------------------------------------------
+
+    function addRule() {
+        const group = db.groups[state.groupIndex];
+
+        if (!group) {
+            return;
+        }
+
+        const rule = createNativeRule();
+
+        group.substitutions.push(rule);
+
+        saveDatabase();
+
+        render();
+
+        /*
+         * Focus the new row's Input cell if possible.
+         */
+        requestAnimationFrame(() => {
+            const rows = document.querySelectorAll(
+                ".wnc-rules-table tbody tr[data-rule-index]"
+            );
+
+            const last = rows[rows.length - 1];
+
+            last
+                ?.querySelector('[data-field="input"]')
+                ?.focus();
+        });
+    }
+
+    function deleteRule(index) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group || !group.substitutions[index]) {
+            return;
+        }
+
+        group.substitutions.splice(index, 1);
+
+        saveDatabase();
+        render();
+    }
+
+    function handleRuleField(target) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group) {
+            return;
+        }
+
+        const row = target.closest("tr");
+
+        if (!row) {
+            return;
+        }
+
+        const index = Number(row.dataset.ruleIndex);
+
+        if (!group.substitutions[index]) {
+            return;
+        }
+
+        const rule = group.substitutions[index];
+        const field = target.dataset.field;
+
+        if (target.type === "checkbox") {
+            rule[field] = target.checked;
+        } else {
+            rule[field] = target.value;
+        }
+
+        saveDatabase();
+
+        /*
+         * Rule visibility depends on matching the current page.
+         * Re-render after the user leaves an Input field rather than during
+         * every keystroke.
+         */
+        if (
+            field === "input" ||
+            field === "inputType" ||
+            field === "caseSensitive" ||
+            field === "enabled"
+        ) {
+            /*
+             * Do not immediately re-render text input while the user is typing.
+             * The database is already updated. The next explicit UI action
+             * refreshes the visible match list.
+             */
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Site actions
+    // ---------------------------------------------------------------------
+
+    function addSite() {
+        const group = db.groups[state.groupIndex];
+
+        if (!group) {
+            return;
+        }
+
+        group.urls.push("");
+
+        saveDatabase();
+        render();
+    }
+
+    function deleteSite(index) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group || index < 0 || index >= group.urls.length) {
+            return;
+        }
+
+        group.urls.splice(index, 1);
+
+        saveDatabase();
+        render();
+    }
+
+    function handleSiteField(target) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group) {
+            return;
+        }
+
+        const index = Number(target.dataset.siteIndex);
+
+        if (index < 0 || index >= group.urls.length) {
+            return;
+        }
+
+        group.urls[index] = target.value;
+
+        saveDatabase();
+    }
+
+    function handleGroupField(target) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group) {
+            return;
+        }
+
+        const field = target.dataset.groupField;
+
+        group[field] = target.checked;
+
+        saveDatabase();
+    }
+
+    // ---------------------------------------------------------------------
+    // Unmatched controls
+    // ---------------------------------------------------------------------
+
+    function handleUnmatchedControl(target) {
+        const control = target.dataset.unmatchedControl;
+
+        switch (control) {
+            case "targetGroup":
+                state.targetGroup = Number(target.value);
+                break;
+
+            case "type":
+                state.candidateType = target.value;
+
+                /*
+                 * Type change only changes the global setting.
+                 * Existing Input edits are not destroyed.
+                 */
+                break;
+
+            case "template":
+                state.candidateTemplate = target.value;
+                break;
+
+            case "case":
+                state.candidateCaseSensitive =
+                    target.value === "true";
+                break;
+        }
+
+        /*
+         * Re-render only for controls whose visual state depends on the
+         * selected value.
+         */
+        if (
+            control === "type" ||
+            control === "template" ||
+            control === "case" ||
+            control === "targetGroup"
+        ) {
+            render();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Apply Checked
+    // ---------------------------------------------------------------------
+
+    function applyCheckedCandidates() {
+        const group = db.groups[state.targetGroup];
+
+        if (!group) {
+            return;
+        }
+
+        const indexes = [...state.selectedCandidates]
+            .sort((a, b) => b - a);
+
+        if (!indexes.length) {
+            return;
+        }
+
+        for (const index of indexes) {
+            const candidate = state.candidates[index];
+
+            if (!candidate) {
+                continue;
+            }
+
+            let input = String(candidate.input ?? "");
+            const output = String(candidate.output ?? "");
+
+            /*
+             * If regexp is selected, the template provides the initial
+             * generated Input only when the user has not already edited it.
+             *
+             * The actual Input column is authoritative.
+             */
+            if (
+                state.candidateType === "regexp" &&
+                !candidate._inputEdited
+            ) {
+                input = generateTemplateInput(
+                    candidate.candidate,
+                    state.candidateTemplate
+                );
+            }
+
+            const rule = createNativeRule();
+
+            rule.input = input;
+            rule.output = output;
+            rule.inputType = state.candidateType;
+            rule.caseSensitive =
+                state.candidateCaseSensitive;
+            rule.enabled = true;
+
+            /*
+             * Native FoxReplace default.
+             */
+            rule.html = "none";
+
+            /*
+             * Avoid creating an exact duplicate substitution in the target
+             * group. If an exact same rule already exists, the candidate is
+             * still considered handled.
+             */
+            const duplicate = group.substitutions.some(existing =>
+                existing.input === rule.input &&
+                existing.output === rule.output &&
+                existing.inputType === rule.inputType &&
+                existing.caseSensitive === rule.caseSensitive &&
+                existing.enabled === rule.enabled &&
+                existing.html === rule.html
+            );
+
+            if (!duplicate) {
+                group.substitutions.push(rule);
+            }
+
+            /*
+             * Remove from Unmatched.
+             */
+            state.candidates.splice(index, 1);
+        }
+
+        state.selectedCandidates.clear();
+
+        saveDatabase();
+
+        /*
+         * Return to the refreshed Unmatched spreadsheet.
+         */
+        state.screen = "unmatched";
+
+        /*
+         * Do not scan immediately because the candidate list is already
+         * updated and should not unexpectedly reintroduce rows during this
+         * operation.
+         */
+        render();
+    }
+
+    // ---------------------------------------------------------------------
+    // Import
+    // ---------------------------------------------------------------------
+
+    async function importFile(file) {
+        if (!file) {
+            return;
+        }
+
+        try {
+            const text = await file.text();
+            const parsed = JSON.parse(text);
+
+            const validated = normalizeDatabase(parsed);
+
+            if (!validated) {
+                alert(
+                    "Invalid FoxReplace JSON.\n\n" +
+                    "The current WNC database was not changed."
+                );
+
+                return;
+            }
+
+            db = validated;
+
+            saveDatabase();
+
+            /*
+             * Import replaces only the canonical FoxReplace database.
+             * Unmatched remains transient.
+             */
+            state.candidates = [];
+            state.selectedCandidates.clear();
+
+            render();
+
+        } catch (error) {
+            console.error("WNC import error:", error);
+
+            alert(
+                "The JSON file could not be imported.\n\n" +
+                "The current WNC database was not changed."
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Export
+    // ---------------------------------------------------------------------
+
+    function exportDatabase() {
+        /*
+         * Build a fresh native FoxReplace object.
+         *
+         * WNC-specific state is intentionally absent.
+         */
+        const exported = {
+            groups: sortedGroups().map(({ group }) => {
+                const outputGroup = {
+                    name: group.name,
+                    urls: [...group.urls],
+                    enabled: group.enabled,
+                    pageLoad: group.pageLoad,
+                    auto: group.auto,
+                    substitutions: sortedRules(group)
+                        .map(({ rule }) => ({
+                            input: rule.input,
+                            output: rule.output,
+                            inputType: rule.inputType,
+                            caseSensitive: rule.caseSensitive,
+                            enabled: rule.enabled,
+                            html: rule.html
+                        }))
+                };
+
+                return outputGroup;
+            })
+        };
+
+        const json = JSON.stringify(exported, null, 2);
+
+        const blob = new Blob(
+            [json],
+            {
+                type: "application/json"
+            }
+        );
+
+        const url = URL.createObjectURL(blob);
+
+        const anchor = document.createElement("a");
+
+        anchor.href = url;
+        anchor.download = "foxreplace.json";
+
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+        }, 1000);
+    }
+
+    // ---------------------------------------------------------------------
+    // Styles
+    // ---------------------------------------------------------------------
+
+    function injectStyles() {
+        if (document.getElementById("wnc-styles")) {
+            return;
+        }
+
+        const style = document.createElement("style");
+
+        style.id = "wnc-styles";
+
+        style.textContent = `
+            #wnc-root {
+                position: fixed;
+                inset: 0;
+                z-index: 2147483647;
+                background: #111214;
+                color: #e8e8e8;
+                font-family:
+                    Inter,
+                    ui-sans-serif,
+                    system-ui,
+                    -apple-system,
+                    BlinkMacSystemFont,
+                    "Segoe UI",
+                    sans-serif;
+                font-size: 13px;
+                line-height: 1.35;
+            }
+
+            #wnc-root *,
+            #wnc-root *::before,
+            #wnc-root *::after {
+                box-sizing: border-box;
+            }
+
+            .wnc-shell {
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                background: #111214;
+            }
+
+            .wnc-header {
+                height: 48px;
+                min-height: 48px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0 12px;
+                border-bottom: 1px solid #303236;
+                background: #17181a;
+            }
+
+            .wnc-brand {
+                font-size: 15px;
                 font-weight: 700;
+                letter-spacing: .04em;
+                color: #f0f0f0;
+            }
+
+            .wnc-header-actions {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .wnc-button {
+                height: 30px;
+                padding: 0 11px;
+                border: 1px solid #414348;
+                border-radius: 3px;
+                background: #222428;
+                color: #e7e7e7;
+                font: inherit;
+                cursor: pointer;
+            }
+
+            .wnc-button:hover:not(:disabled) {
+                background: #292b2f;
+                border-color: #55585d;
+            }
+
+            .wnc-button:disabled {
+                opacity: .45;
+                cursor: default;
+            }
+
+            .wnc-primary {
+                background: #25272a;
+            }
+
+            .wnc-apply {
+                white-space: nowrap;
+            }
+
+            .wnc-screen {
+                width: 100%;
+                height: 100%;
+                overflow: auto;
+                padding: 14px;
+            }
+
+            .wnc-section-heading,
+            .wnc-workspace-heading {
+                height: 34px;
+                display: flex;
+                align-items: center;
                 margin-bottom: 8px;
             }
 
-            #wnc-panel .wnc-buttons {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 5px;
+            .wnc-section-heading h1,
+            .wnc-workspace-heading h1 {
+                margin: 0;
+                font-size: 15px;
+                font-weight: 600;
+                color: #eeeeee;
             }
 
-            #wnc-panel button {
+            .wnc-workspace-heading {
+                gap: 7px;
+            }
+
+            .wnc-back {
+                width: 27px;
+                height: 27px;
+                padding: 0;
+                border: 1px solid #3d3f43;
+                border-radius: 3px;
+                background: #202226;
+                color: #e8e8e8;
+                font-size: 21px;
+                line-height: 20px;
                 cursor: pointer;
-                padding: 4px 8px;
-                border: 1px solid #888;
-                border-radius: 4px;
-                background: #333;
-                color: #fff;
             }
 
-            #wnc-panel button:hover {
-                background: #444;
+            .wnc-back:hover {
+                background: #292b2f;
             }
 
-            #wnc-panel .wnc-status {
-                margin-top: 7px;
-                opacity: .8;
+            .wnc-tabs {
+                display: flex;
+                height: 32px;
+                margin-bottom: 8px;
+                border-bottom: 1px solid #34363a;
             }
-        `);
+
+            .wnc-tab {
+                min-width: 70px;
+                height: 31px;
+                padding: 0 12px;
+                border: 0;
+                border-bottom: 2px solid transparent;
+                background: transparent;
+                color: #8f9298;
+                font: inherit;
+                cursor: pointer;
+            }
+
+            .wnc-tab:hover {
+                color: #d8d8d8;
+            }
+
+            .wnc-tab.active {
+                border-bottom-color: #d4d4d4;
+                color: #f0f0f0;
+            }
+
+            .wnc-table-wrap {
+                width: 100%;
+                overflow: auto;
+                border: 1px solid #303236;
+                background: #151618;
+            }
+
+            .wnc-table {
+                width: 100%;
+                border-collapse: collapse;
+                table-layout: fixed;
+            }
+
+            .wnc-table th,
+            .wnc-table td {
+                height: 31px;
+                padding: 0 7px;
+                border-right: 1px solid #303236;
+                border-bottom: 1px solid #303236;
+                vertical-align: middle;
+                text-align: left;
+                overflow: hidden;
+            }
+
+            .wnc-table th:last-child,
+            .wnc-table td:last-child {
+                border-right: 0;
+            }
+
+            .wnc-table th {
+                height: 29px;
+                background: #1c1e21;
+                color: #9da0a5;
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: none;
+                white-space: nowrap;
+            }
+
+            .wnc-table td {
+                background: #151618;
+                color: #dedede;
+            }
+
+            .wnc-table tbody tr:hover td {
+                background: #1a1c1f;
+            }
+
+            .wnc-clickable-row {
+                cursor: pointer;
+            }
+
+            .wnc-clickable-row:hover td {
+                background: #202226;
+            }
+
+            .wnc-unmatched-row td {
+                color: #d6d6d6;
+            }
+
+            .wnc-number {
+                width: 90px;
+                text-align: right !important;
+                color: #b8bbc0 !important;
+                font-variant-numeric: tabular-nums;
+            }
+
+            .wnc-site-status {
+                width: 90px;
+                text-align: center !important;
+            }
+
+            .wnc-check {
+                color: #65c174;
+                font-weight: 700;
+            }
+
+            .wnc-cross {
+                color: #8c8e93;
+                font-weight: 600;
+            }
+
+            .wnc-empty {
+                height: 40px !important;
+                text-align: center !important;
+                color: #777a80 !important;
+            }
+
+            .wnc-cell-input,
+            .wnc-cell-select,
+            .wnc-control-select {
+                width: 100%;
+                height: 27px;
+                min-width: 0;
+                padding: 2px 5px;
+                border: 1px solid #383a3e;
+                border-radius: 2px;
+                outline: none;
+                background: #1c1e21;
+                color: #e2e2e2;
+                font: inherit;
+            }
+
+            .wnc-cell-input:focus,
+            .wnc-cell-select:focus,
+            .wnc-control-select:focus {
+                border-color: #60636a;
+                background: #202226;
+            }
+
+            .wnc-cell-select {
+                cursor: pointer;
+            }
+
+            .wnc-center {
+                width: 72px;
+                text-align: center !important;
+            }
+
+            .wnc-delete-cell {
+                width: 34px;
+                text-align: center !important;
+                padding: 0 !important;
+            }
+
+            .wnc-delete {
+                width: 25px;
+                height: 25px;
+                border: 0;
+                background: transparent;
+                color: #85878c;
+                font-size: 18px;
+                line-height: 24px;
+                cursor: pointer;
+            }
+
+            .wnc-delete:hover {
+                color: #d2d2d2;
+                background: #292b2f;
+            }
+
+            .wnc-add-row td {
+                height: 34px;
+                background: #17191b !important;
+            }
+
+            .wnc-add-button {
+                height: 26px;
+                padding: 0 7px;
+                border: 1px solid transparent;
+                background: transparent;
+                color: #989ba1;
+                font: inherit;
+                cursor: pointer;
+            }
+
+            .wnc-add-button:hover {
+                border-color: #3b3d41;
+                background: #222428;
+                color: #e1e1e1;
+            }
+
+            .wnc-group-options {
+                width: 360px;
+                max-width: 100%;
+                margin-top: 10px;
+            }
+
+            .wnc-group-options .wnc-table td:first-child {
+                width: 150px;
+                color: #aeb1b6;
+            }
+
+            .wnc-group-options .wnc-table td:last-child {
+                text-align: left;
+            }
+
+            .wnc-unmatched-controls {
+                display: grid;
+                grid-template-columns:
+                    minmax(150px, 1fr)
+                    100px
+                    115px
+                    80px
+                    auto;
+                gap: 5px;
+                margin-bottom: 8px;
+            }
+
+            .wnc-unmatched-controls .wnc-control-select {
+                height: 30px;
+            }
+
+            .wnc-unmatched-controls .wnc-button {
+                height: 30px;
+            }
+
+            .wnc-check-cell {
+                width: 54px;
+                text-align: center !important;
+            }
+
+            .wnc-unmatched-table th:nth-child(1) {
+                width: 54px;
+            }
+
+            .wnc-unmatched-table th:nth-child(5) {
+                width: 85px;
+            }
+
+            .wnc-rules-table th:nth-child(3) {
+                width: 95px;
+            }
+
+            .wnc-rules-table th:nth-child(4),
+            .wnc-rules-table th:nth-child(5) {
+                width: 65px;
+            }
+
+            .wnc-rules-table th:nth-child(6) {
+                width: 100px;
+            }
+
+            .wnc-rules-table th:nth-child(7) {
+                width: 75px;
+            }
+
+            @media (max-width: 800px) {
+                .wnc-unmatched-controls {
+                    grid-template-columns:
+                        1fr
+                        1fr
+                        1fr
+                        1fr
+                        1fr;
+                }
+
+                .wnc-screen {
+                    padding: 8px;
+                }
+
+                .wnc-header {
+                    padding: 0 8px;
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
     }
 
-    function registerMenuCommands() {
-        GM_registerMenuCommand(
-            "WNC: Import FoxReplace JSON",
-            openImportDialog
-        );
+    // ---------------------------------------------------------------------
+    // Startup
+    // ---------------------------------------------------------------------
 
-        GM_registerMenuCommand(
-            "WNC: Export FoxReplace JSON",
-            openExportDialog
-        );
-
-        GM_registerMenuCommand(
-            "WNC: Copy Database JSON",
-            copyDatabaseJson
-        );
-
-        GM_registerMenuCommand(
-            "WNC: Scan Page",
-            () => {
-                const result =
-                    scanPage();
-
-                console.info(
-                    "[WNC] Scan:",
-                    result
-                );
-
-                alert(
-                    `WNC scan complete.\nMatches: ${result.matches}`
-                );
-            }
-        );
-
-        GM_registerMenuCommand(
-            "WNC: Clean Page",
-            () => {
-                const count =
-                    cleanPageLoad();
-
-                console.info(
-                    "[WNC] Clean:",
-                    count
-                );
-
-                alert(
-                    `WNC clean complete.\nReplacements: ${count}`
-                );
-            }
-        );
-
-        GM_registerMenuCommand(
-            "WNC: Show Diagnostics",
-            () => {
-                console.log(
-                    "[WNC] Diagnostics:",
-                    getDiagnostics()
-                );
-            }
-        );
-    }
-
-    function initializeWNC() {
-        if (
-            RUNTIME.initialized
-        ) {
-            return;
-        }
-
-        RUNTIME.initialized =
-            true;
-
-        installStyles();
-
-        registerMenuCommands();
-
-        initializeCleaner();
-
-        console.info(
-            `[WNC] WebNovel Cleaner ${WNC_VERSION} initialized.`
-        );
-
-        console.info(
-            "[WNC] Database:",
-            getDatabase()
-        );
-
-        console.info(
-            "[WNC] Diagnostics:",
-            getDiagnostics()
-        );
-
-        if (document.body) {
-            createUi();
-        } else {
+    function start() {
+        /*
+         * WNC is a UI workbench. It does not modify the page.
+         */
+        if (document.readyState === "loading") {
             document.addEventListener(
                 "DOMContentLoaded",
-                createUi,
-                {
-                    once: true
-                }
+                mount,
+                { once: true }
             );
+        } else {
+            mount();
         }
     }
 
-    WNC.ui.create =
-        createUi;
-
-    WNC.ui.import =
-        openImportDialog;
-
-    WNC.ui.export =
-        openExportDialog;
-
-    WNC.diagnostics.get =
-        getDiagnostics;
-
-    WNC.diagnostics.showDatabase =
-        showDatabaseJson;
-
-    WNC.diagnostics.copyDatabase =
-        copyDatabaseJson;
-
-    /*
-     * Expose WNC for debugging.
-     */
-    try {
-        if (
-            typeof unsafeWindow !==
-            "undefined"
-        ) {
-            unsafeWindow.WNC =
-                WNC;
-        }
-    } catch {
-        try {
-            window.WNC =
-                WNC;
-        } catch {
-            // Ignore environments
-            // where window exposure
-            // is unavailable.
-        }
-    }
-
-    initializeWNC();
+    start();
 
 })();
