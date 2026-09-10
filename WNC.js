@@ -3,7 +3,7 @@
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
 // @version      6.0.1
 // @description  Webnovel Cleaner
-// @match        *://*.webnovel.com/*
+// @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -564,87 +564,207 @@
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Candidate clustering
-    // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Candidate clustering
+// ---------------------------------------------------------------------
+
+/*
+ * Candidates are clustered by connected shared-token relationships.
+ *
+ * Example:
+ *
+ *   Fred        59
+ *   Fred Smith  11
+ *   Smith John   4
+ *
+ * becomes ONE cluster because:
+ *
+ *   Fred <-> Fred Smith <-> Smith John
+ *
+ * Candidates do not need to share a token directly with every member
+ * of the cluster. A chain of shared tokens is enough.
+ *
+ * Unclustered candidates whose frequency is below 5% of the maximum
+ * candidate frequency are hidden.
+ */
+
+const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
+
+function candidateTokens(candidate) {
+    return new Set(
+        tokenizeCandidate(candidate.candidate)
+            .map(normalizeToken)
+            .filter(Boolean)
+    );
+}
+
+function candidatesShareToken(a, b) {
+    const aTokens = candidateTokens(a);
+    const bTokens = candidateTokens(b);
+
+    for (const token of aTokens) {
+        if (bTokens.has(token)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function clusterAndSortCandidates(candidates) {
+    if (!candidates.length) {
+        return [];
+    }
 
     /*
-     * There are no visible cluster labels.
-     *
-     * Candidates are internally grouped by their normalized token set.
-     * Related candidates stay together and each cluster is sorted by
-     * highest match count first.
+     * Find the highest candidate frequency on the page.
      */
+    const maxFrequency = Math.max(
+        ...candidates.map(candidate => candidate.matches)
+    );
 
-    function candidateClusterKey(candidate) {
-        const tokens = tokenizeCandidate(candidate.candidate);
+    /*
+     * Anything below this frequency is hidden IF it is genuinely
+     * unclustered.
+     *
+     * Example:
+     *
+     *   max = 59
+     *   5%  = 2.95
+     *
+     * Therefore an unclustered candidate occurring 1 or 2 times
+     * is hidden, while one occurring 3+ times remains visible.
+     */
+    const minimumUnclusteredFrequency =
+        maxFrequency * UNCLUSTERED_FREQUENCY_RATIO;
 
-        if (!tokens.length) {
-            return candidate.candidate.toLowerCase();
+    /*
+     * Build connected components.
+     *
+     * This deliberately uses transitive chaining:
+     *
+     *   Fred
+     *      |
+     *   Fred Smith
+     *      |
+     *   Smith John
+     *
+     * All three become one cluster.
+     */
+    const visited = new Set();
+    const clusters = [];
+
+    for (let i = 0; i < candidates.length; i++) {
+        if (visited.has(i)) {
+            continue;
         }
 
-        return tokens
-            .map(normalizeToken)
-            .sort()
-            .join("|");
-    }
+        const clusterIndexes = [];
+        const queue = [i];
 
-    function tokenizeCandidate(value) {
-        return String(value)
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean);
-    }
+        visited.add(i);
 
-    function normalizeToken(token) {
-        return token
-            .toLowerCase()
-            .replace(/[’']/g, "'")
-            .replace(/[–—]/g, "-")
-            .replace(/-/g, "");
-    }
+        while (queue.length) {
+            const currentIndex = queue.shift();
 
-    function clusterAndSortCandidates(candidates) {
-        const clusters = new Map();
+            clusterIndexes.push(currentIndex);
 
-        for (const candidate of candidates) {
-            const key = candidateClusterKey(candidate);
+            for (
+                let otherIndex = 0;
+                otherIndex < candidates.length;
+                otherIndex++
+            ) {
+                if (visited.has(otherIndex)) {
+                    continue;
+                }
 
-            if (!clusters.has(key)) {
-                clusters.set(key, []);
+                if (
+                    candidatesShareToken(
+                        candidates[currentIndex],
+                        candidates[otherIndex]
+                    )
+                ) {
+                    visited.add(otherIndex);
+                    queue.push(otherIndex);
+                }
             }
-
-            clusters.get(key).push(candidate);
         }
 
-        const orderedClusters = [...clusters.values()]
-            .sort((a, b) => {
-                const aMax = Math.max(...a.map(x => x.matches));
-                const bMax = Math.max(...b.map(x => x.matches));
-
-                if (bMax !== aMax) {
-                    return bMax - aMax;
-                }
-
-                return compareNames(
-                    a[0].candidate,
-                    b[0].candidate
-                );
-            });
-
-        return orderedClusters.flatMap(cluster =>
-            cluster.sort((a, b) => {
-                if (b.matches !== a.matches) {
-                    return b.matches - a.matches;
-                }
-
-                return compareNames(
-                    a.candidate,
-                    b.candidate
-                );
-            })
+        clusters.push(
+            clusterIndexes.map(index => candidates[index])
         );
     }
+
+    /*
+     * Remove weak genuinely-unclustered candidates.
+     *
+     * A cluster containing two or more candidates is considered
+     * meaningful regardless of the individual frequencies.
+     *
+     * A one-item cluster is kept only when its frequency reaches
+     * the 5% threshold.
+     */
+    const filteredClusters = clusters.filter(cluster => {
+        if (cluster.length > 1) {
+            return true;
+        }
+
+        return cluster[0].matches >= minimumUnclusteredFrequency;
+    });
+
+    /*
+     * Sort clusters by their highest-frequency candidate.
+     */
+    filteredClusters.sort((a, b) => {
+        const aMax = Math.max(
+            ...a.map(candidate => candidate.matches)
+        );
+
+        const bMax = Math.max(
+            ...b.map(candidate => candidate.matches)
+        );
+
+        if (bMax !== aMax) {
+            return bMax - aMax;
+        }
+
+        return compareNames(
+            a[0].candidate,
+            b[0].candidate
+        );
+    });
+
+    /*
+     * Sort candidates inside each cluster by frequency.
+     */
+    return filteredClusters.flatMap(cluster => {
+        return cluster.sort((a, b) => {
+            if (b.matches !== a.matches) {
+                return b.matches - a.matches;
+            }
+
+            return compareNames(
+                a.candidate,
+                b.candidate
+            );
+        });
+    });
+}
+
+function tokenizeCandidate(value) {
+    return String(value)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+}
+
+function normalizeToken(token) {
+    return token
+        .toLowerCase()
+        .replace(/[’']/g, "'")
+        .replace(/[–—]/g, "-")
+        .replace(/-/g, "");
+}
 
     // ---------------------------------------------------------------------
     // Template helpers
