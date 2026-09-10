@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.0.4
+// @version      6.0.5
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1391,10 +1391,10 @@ const otherRows = otherGroups.map(item => {
         const otherSection = otherGroups.length
             ? `
                 <tr
-                    class="wnc-collapse-row"
-                    data-action="toggle-other-groups"
-                >
-                    <td colspan="4">
+    class="wnc-collapse-row"
+    data-action="toggle-other-groups"
+>
+    <td colspan="7">
                         <span class="wnc-collapse-arrow">
                             ${state.showOtherGroups ? "▼" : "▶"}
                         </span>
@@ -1446,7 +1446,7 @@ const otherRows = otherGroups.map(item => {
                                     ? `
                                         <tr>
                                             <td
-                                                colspan="4"
+                                                colspan="7"
                                                 class="wnc-empty"
                                             >
                                                 No groups
@@ -1458,17 +1458,26 @@ const otherRows = otherGroups.map(item => {
 
                             ${otherSection}
 
-                            <tr
-                                class="wnc-clickable-row wnc-unmatched-row"
-                                data-action="open-unmatched"
-                            >
-                                <td>Unmatched</td>
-                                <td></td>
-                                <td class="wnc-number">
-                                    ${state.candidates.length}
-                                </td>
-                                <td></td>
-                            </tr>
+<tr
+    class="wnc-clickable-row wnc-unmatched-row"
+    data-action="open-unmatched"
+>
+    <td>Unmatched</td>
+
+    <td></td>
+
+    <td class="wnc-number">
+        ${state.candidates.length}
+    </td>
+
+    <td></td>
+
+    <td></td>
+
+    <td></td>
+
+    <td></td>
+</tr>
                         </tbody>
                     </table>
                 </div>
