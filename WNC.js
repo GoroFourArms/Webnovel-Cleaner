@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.2
+// @version      6.1.3
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1231,7 +1231,398 @@ function cycleGroupHTML() {
         };
     }
 
+    // ---------------------------------------------------------------------
+    // Styles
+    // ---------------------------------------------------------------------
 
+    function injectStyles() {
+        if (document.getElementById("wnc-styles")) {
+            return;
+        }
+
+        const style = document.createElement("style");
+        style.id = "wnc-styles";
+
+        style.textContent = `
+            #wnc-root {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                width: 100%;
+                max-height: 90vh;
+                z-index: 2147483647;
+                overflow: auto;
+                box-sizing: border-box;
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 14px;
+                line-height: 1.4;
+                color: #e8e8e8;
+                background: #171717;
+                border-bottom: 2px solid #444;
+                box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+            }
+
+            #wnc-root *,
+            #wnc-root *::before,
+            #wnc-root *::after {
+                box-sizing: border-box;
+            }
+
+            .wnc-shell {
+                width: 100%;
+            }
+
+            .wnc-header {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 10px 14px;
+                background: #222;
+                border-bottom: 1px solid #444;
+            }
+
+            .wnc-brand {
+                flex: 0 0 auto;
+                font-size: 18px;
+                font-weight: 700;
+                white-space: nowrap;
+            }
+
+            .wnc-header-actions {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-wrap: wrap;
+                width: 100%;
+            }
+
+            .wnc-search {
+                flex: 1 1 180px;
+                min-width: 150px;
+                height: 34px;
+                padding: 6px 10px;
+                color: #eee;
+                background: #111;
+                border: 1px solid #555;
+                border-radius: 5px;
+                outline: none;
+            }
+
+            .wnc-search:focus {
+                border-color: #888;
+            }
+
+            .wnc-button,
+            .wnc-choice,
+            .wnc-tab,
+            .wnc-back,
+            .wnc-delete,
+            .wnc-add-button,
+            .wnc-html-button {
+                appearance: none;
+                font: inherit;
+                color: #eee;
+                background: #303030;
+                border: 1px solid #555;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+
+            .wnc-button {
+                min-height: 34px;
+                padding: 6px 12px;
+                white-space: nowrap;
+            }
+
+            .wnc-button:hover,
+            .wnc-choice:hover,
+            .wnc-tab:hover,
+            .wnc-add-button:hover,
+            .wnc-html-button:hover {
+                background: #414141;
+            }
+
+            .wnc-button:disabled,
+            .wnc-choice:disabled {
+                opacity: 0.45;
+                cursor: default;
+            }
+
+            .wnc-primary,
+            .wnc-apply {
+                font-weight: 700;
+            }
+
+            .wnc-screen {
+                padding: 12px;
+                background: #171717;
+            }
+
+            .wnc-section-heading,
+            .wnc-workspace-heading {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 10px;
+            }
+
+            .wnc-section-heading h1 {
+                margin: 0;
+                font-size: 20px;
+            }
+
+            .wnc-group-name {
+                flex: 1;
+                min-width: 200px;
+                height: 36px;
+                padding: 6px 10px;
+                color: #eee;
+                background: #111;
+                border: 1px solid #555;
+                border-radius: 5px;
+                font: inherit;
+                font-size: 18px;
+                font-weight: 700;
+            }
+
+            .wnc-back {
+                width: 36px;
+                height: 36px;
+                font-size: 24px;
+                line-height: 1;
+            }
+
+            .wnc-tabs {
+                display: flex;
+                gap: 4px;
+                margin-bottom: 10px;
+            }
+
+            .wnc-tab {
+                padding: 7px 14px;
+            }
+
+            .wnc-tab.active,
+            .wnc-choice.active {
+                background: #555;
+                border-color: #888;
+                font-weight: 700;
+            }
+
+            .wnc-table-wrap {
+                width: 100%;
+                overflow: auto;
+                border: 1px solid #444;
+                border-radius: 5px;
+            }
+
+            .wnc-table {
+                width: 100%;
+                border-collapse: collapse;
+                background: #1d1d1d;
+            }
+
+            .wnc-table th,
+            .wnc-table td {
+                padding: 7px 8px;
+                border-bottom: 1px solid #383838;
+                text-align: left;
+                vertical-align: middle;
+                white-space: nowrap;
+            }
+
+            .wnc-table th {
+                background: #292929;
+                font-weight: 700;
+                user-select: none;
+            }
+
+            .wnc-table th[data-action] {
+                cursor: pointer;
+            }
+
+            .wnc-table th[data-action]:hover {
+                background: #3a3a3a;
+            }
+
+            .wnc-clickable-row {
+                cursor: pointer;
+            }
+
+            .wnc-clickable-row:hover td {
+                background: #292929;
+            }
+
+            .wnc-unmatched-row td {
+                background: #202020;
+                font-weight: 700;
+            }
+
+            .wnc-number {
+                text-align: right !important;
+                font-variant-numeric: tabular-nums;
+            }
+
+            .wnc-center {
+                text-align: center !important;
+            }
+
+            .wnc-cell-input {
+                width: 100%;
+                min-width: 120px;
+                height: 30px;
+                padding: 4px 7px;
+                color: #eee;
+                background: #111;
+                border: 1px solid #444;
+                border-radius: 4px;
+                font: inherit;
+            }
+
+            .wnc-cell-input:focus {
+                border-color: #888;
+                outline: none;
+            }
+
+            .wnc-choice-group {
+                display: inline-flex;
+                gap: 3px;
+                white-space: nowrap;
+            }
+
+            .wnc-choice {
+                min-height: 30px;
+                padding: 4px 9px;
+            }
+
+            .wnc-delete {
+                width: 30px;
+                height: 30px;
+                font-size: 18px;
+                line-height: 1;
+            }
+
+            .wnc-delete:hover {
+                background: #5a3030;
+            }
+
+            .wnc-add-row td {
+                padding: 9px;
+                text-align: center;
+                background: #181818;
+            }
+
+            .wnc-add-button {
+                padding: 6px 12px;
+            }
+
+            .wnc-empty {
+                padding: 18px !important;
+                text-align: center !important;
+                opacity: 0.65;
+            }
+
+            .wnc-site-status,
+            .wnc-site-match {
+                text-align: center !important;
+            }
+
+            .wnc-check {
+                font-weight: 700;
+            }
+
+            .wnc-cross {
+                opacity: 0.7;
+            }
+
+            .wnc-collapse-row {
+                cursor: pointer;
+            }
+
+            .wnc-collapse-row td {
+                background: #252525;
+                font-weight: 700;
+            }
+
+            .wnc-collapse-arrow {
+                display: inline-block;
+                width: 20px;
+            }
+
+            .wnc-collapse-count {
+                margin-left: 8px;
+                opacity: 0.7;
+            }
+
+            .wnc-unmatched-controls {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-wrap: wrap;
+                margin-bottom: 10px;
+                padding: 10px;
+                background: #222;
+                border: 1px solid #444;
+                border-radius: 5px;
+            }
+
+            .wnc-control-select {
+                min-width: 180px;
+                height: 34px;
+                padding: 5px 8px;
+                color: #eee;
+                background: #111;
+                border: 1px solid #555;
+                border-radius: 5px;
+                font: inherit;
+            }
+
+            .wnc-control-select:focus {
+                outline: none;
+                border-color: #888;
+            }
+
+            .wnc-group-options {
+                margin-top: 10px;
+                max-width: 500px;
+            }
+
+            .wnc-html-button {
+                min-width: 110px;
+                padding: 5px 10px;
+            }
+
+            input[type="checkbox"] {
+                width: 17px;
+                height: 17px;
+                cursor: pointer;
+            }
+
+            @media (max-width: 900px) {
+                .wnc-header {
+                    align-items: flex-start;
+                }
+
+                .wnc-header-actions {
+                    flex-direction: column;
+                    align-items: stretch;
+                }
+
+                .wnc-search {
+                    width: 100%;
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    // ---------------------------------------------------------------------
+    // Root UI
+    // ---------------------------------------------------------------------
+
+    function mount() {
     // ---------------------------------------------------------------------
     // Root UI
     // ---------------------------------------------------------------------
