@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.0
+// @version      6.1.1
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -2324,7 +2324,7 @@ switch (action) {
         break;
 
 case "unmatched-type":
-    state.candidateType = event.target.dataset.value;
+    state.candidateType = target.dataset.type;
 
     if (state.candidateType === "regexp") {
         updateCandidateTemplate();
@@ -2334,11 +2334,11 @@ case "unmatched-type":
     break;
 
 case "unmatched-template":
-    state.candidateTemplate = event.target.dataset.value;
+    state.candidateTemplate = target.dataset.template;
     updateCandidateTemplate();
     render();
     break;
-
+        
     case "unmatched-case":
         handleUnmatchedControl(target);
         break;
@@ -2471,20 +2471,19 @@ function handleChange(event) {
             handleGroupField(target);
         }
     }
-const groupNameInput = event.target.closest(".wnc-group-name");
+function handleInput(event) {
+    const target = event.target;
 
-if (groupNameInput) {
-    const group = db.groups[state.groupIndex];
+    if (target.matches(".wnc-group-name")) {
+        const group = db.groups[state.groupIndex];
 
-    if (group) {
-        group.name = groupNameInput.value;
-        saveDatabase();
+        if (group) {
+            group.name = target.value;
+            saveDatabase();
+        }
+
+        return;
     }
-
-    return;
-}
-    function handleInput(event) {
-        const target = event.target;
 
         if (target.id === "wnc-search") {
             state.searchQuery = target.value;
