@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.0.6
+// @version      6.0.17
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -47,23 +47,24 @@
         title: "WNC"
     };
 
-    const DEFAULT_GROUP = {
-        name: "",
-        urls: [],
-        enabled: true,
-        pageLoad: true,
-        auto: true,
-        substitutions: []
-    };
+const DEFAULT_GROUP = {
+    name: "",
+    urls: [],
+    enabled: true,
+    pageLoad: true,
+    auto: true,
+    html: 0,
+    substitutions: []
+};
 
-    const DEFAULT_RULE = {
-        input: "",
-        output: "",
-        inputType: "text",
-        caseSensitive: false,
-        enabled: true,
-        html: "none"
-    };
+const DEFAULT_RULE = {
+    input: "",
+    output: "",
+    inputType: "text",
+    outputType: 0,
+    caseSensitive: false,
+    enabled: true
+};
 
     let db = loadDatabase();
 
@@ -81,9 +82,11 @@
 
         selectedCandidates: new Set(),
 
-        searchQuery: "",
-        showOtherGroups: false,
-unmatchedInitialized: false
+searchQuery: "",
+showOtherGroups: false,
+unmatchedInitialized: false,
+ruleSortField: null,
+ruleSortDirection: 1
     };
 
     // ---------------------------------------------------------------------
@@ -137,9 +140,8 @@ unmatchedInitialized: false
     }
 
     function saveDatabase() {
-        db = normalizeDatabase(db);
-        writeStorage(DB_KEY, db);
-    }
+    writeStorage(DB_KEY, db);
+}
 
     // ---------------------------------------------------------------------
     // Native FoxReplace normalization
@@ -160,6 +162,7 @@ unmatchedInitialized: false
             .filter(Boolean);
 
         return {
+            ...value,
             groups
         };
     }
@@ -176,7 +179,9 @@ unmatchedInitialized: false
             normalized.urls = [];
         }
 
-        normalized.urls = normalized.urls.map(url => String(url ?? ""));
+        normalized.urls = normalized.urls
+    .filter(url => typeof url === "string" || typeof url === "number")
+    .map(url => String(url));
 
         if (!Array.isArray(normalized.substitutions)) {
             normalized.substitutions = [];
@@ -189,33 +194,79 @@ unmatchedInitialized: false
         normalized.enabled = Boolean(normalized.enabled);
         normalized.pageLoad = Boolean(normalized.pageLoad);
         normalized.auto = Boolean(normalized.auto);
+        normalized.html =
+        normalized.html === 1 ||
+        normalized.html === "1"
+        ? 1
+        : normalized.html === 2 ||
+          normalized.html === "2"
+            ? 2
+            : 0;
 
-        return normalized;
+return normalized;
+}
+
+
+function normalizeRule(rule) {
+    if (!rule || typeof rule !== "object") return null;
+
+    const normalized = {
+        ...rule
+    };
+
+    normalized.input = String(normalized.input ?? "");
+    normalized.output = String(normalized.output ?? "");
+
+    if (
+        normalized.outputType === 1 ||
+        normalized.outputType === "1" ||
+        normalized.outputType === "function"
+    ) {
+        normalized.outputType = 1;
+    } else {
+        normalized.outputType = 0;
     }
 
-    function normalizeRule(rule) {
-        if (!rule || typeof rule !== "object") {
-            return null;
-        }
+    // WNC uses readable strings internally.
+    if (
+        normalized.inputType === 1 ||
+        normalized.inputType === "1"
+    ) {
+        normalized.inputType = "whole";
+    } else if (
+        normalized.inputType === 2 ||
+        normalized.inputType === "2"
+    ) {
+        normalized.inputType = "regexp";
+    } else {
+        normalized.inputType = "text";
+    }
 
-        const normalized = {
-            ...DEFAULT_RULE,
-            ...rule
-        };
+    normalized.caseSensitive =
+        typeof normalized.caseSensitive === "boolean"
+            ? normalized.caseSensitive
+            : normalized.caseSensitive === "true"
+                ? true
+                : normalized.caseSensitive === "false"
+                    ? false
+                    : Boolean(normalized.caseSensitive);
 
-        normalized.input = String(normalized.input ?? "");
-        normalized.output = String(normalized.output ?? "");
-        normalized.inputType = normalized.inputType === "regexp"
-            ? "regexp"
-            : "text";
+    normalized.enabled =
+        typeof normalized.enabled === "boolean"
+            ? normalized.enabled
+            : normalized.enabled === "true"
+                ? true
+                : normalized.enabled === "false"
+                    ? false
+                    : Boolean(normalized.enabled);
 
-        normalized.caseSensitive = Boolean(normalized.caseSensitive);
-        normalized.enabled = Boolean(normalized.enabled);
-
+    // Only normalize html when it actually exists.
+    if ("html" in normalized) {
         normalized.html = String(normalized.html ?? "none");
-
-        return normalized;
     }
+
+    return normalized;
+}
 
     // ---------------------------------------------------------------------
     // Sorting
@@ -238,11 +289,49 @@ unmatchedInitialized: false
             .sort((a, b) => compareNames(a.group.name, b.group.name));
     }
 
-    function sortedRules(group) {
-        return group.substitutions
-            .map((rule, index) => ({ rule, index }))
-            .sort((a, b) => compareNames(a.rule.input, b.rule.input));
+    function sortRulesByHeader(field) {
+    const group = db.groups[state.groupIndex];
+
+    if (!group || !group.substitutions.length) {
+        return;
     }
+
+    if (state.ruleSortField === field) {
+        state.ruleSortDirection *= -1;
+    } else {
+        state.ruleSortField = field;
+        state.ruleSortDirection = 1;
+    }
+
+    const pageText = getPageText();
+
+    group.substitutions.sort((a, b) => {
+        let comparison = 0;
+
+        if (field === "matches") {
+            comparison =
+                countRuleMatches(a, pageText) -
+                countRuleMatches(b, pageText);
+        } else if (
+            field === "caseSensitive" ||
+            field === "enabled"
+        ) {
+            comparison =
+                Number(a[field]) -
+                Number(b[field]);
+        } else {
+            comparison = compareNames(
+                a[field],
+                b[field]
+            );
+        }
+
+        return comparison * state.ruleSortDirection;
+    });
+
+    saveDatabase();
+    render();
+}
 
     // ---------------------------------------------------------------------
     // Current site matching
@@ -336,11 +425,18 @@ unmatchedInitialized: false
         const flags = rule.caseSensitive ? "g" : "gi";
 
         try {
-            if (rule.inputType === "regexp") {
-                return new RegExp(rule.input, flags);
-            }
+        if (rule.inputType === "regexp") {
+            return new RegExp(rule.input, flags);
+        }
 
-            return new RegExp(escapeRegExp(rule.input), flags);
+        if (rule.inputType === "whole") {
+            return new RegExp(
+                `(?<![\\p{L}\\p{N}_])${escapeRegExp(rule.input)}(?![\\p{L}\\p{N}_])`,
+                flags + "u"
+            );
+        }
+
+        return new RegExp(escapeRegExp(rule.input), flags);
         } catch {
             return null;
         }
@@ -486,37 +582,48 @@ unmatchedInitialized: false
      *
      *   Security
      */
-    const selected = [];
+const selected = [];
 
-    for (const occurrence of occurrences) {
-        const overlaps = selected.some(existing =>
-            occurrence.start < existing.end &&
-            occurrence.end > existing.start
-        );
+const sortedOccurrences = [...occurrences].sort((a, b) => {
+    const lengthDifference =
+        (b.end - b.start) - (a.end - a.start);
 
-        if (!overlaps) {
-            selected.push(occurrence);
-            continue;
-        }
-
-        for (let i = selected.length - 1; i >= 0; i--) {
-            const existing = selected[i];
-
-            if (
-                occurrence.start < existing.end &&
-                occurrence.end > existing.start &&
-                occurrence.end - occurrence.start >
-                    existing.end - existing.start
-            ) {
-                selected.splice(i, 1);
-                selected.push(occurrence);
-            }
-        }
+    if (lengthDifference !== 0) {
+        return lengthDifference;
     }
 
-    for (const occurrence of selected) {
-        addCandidate(counts, occurrence.candidate);
+    if (a.start !== b.start) {
+        return a.start - b.start;
     }
+
+    return compareNames(
+        a.candidate,
+        b.candidate
+    );
+});
+
+for (const occurrence of sortedOccurrences) {
+    const overlaps = selected.some(existing =>
+        occurrence.start < existing.end &&
+        occurrence.end > existing.start
+    );
+
+    if (!overlaps) {
+        selected.push(occurrence);
+    }
+}
+
+selected.sort((a, b) => {
+    if (a.start !== b.start) {
+        return a.start - b.start;
+    }
+
+    return a.end - b.end;
+});
+
+for (const occurrence of selected) {
+    addCandidate(counts, occurrence.candidate);
+}
 
     return [...counts.entries()].map(([candidate, matches]) => ({
         candidate,
@@ -527,6 +634,65 @@ unmatchedInitialized: false
 }
 
 const COMMON_STANDALONE_WORDS = new Set([
+  "And",
+"But",
+"Or",
+"If",
+"So",
+"Yet",
+"For",
+"Nor",
+"Then",
+"Than",
+"That",
+"This",
+"These",
+"Those",
+"The",
+"A",
+"An",
+"I",
+"Am",
+"Is",
+"Are",
+"Was",
+"Were",
+"Be",
+"Been",
+"Being",
+"He",
+"She",
+"It",
+"We",
+"They",
+"You",
+"Me",
+"Him",
+"Her",
+"Us",
+"Them",
+"My",
+"Your",
+"His",
+"Her",
+"Our",
+"Their",
+"Of",
+"In",
+"On",
+"At",
+"To",
+"From",
+"With",
+"By",
+"As",
+"Into",
+"Upon",
+"About",
+"After",
+"Before",
+"Over",
+"Under",
     "the",
     "a",
     "an",
@@ -649,11 +815,27 @@ function addCandidate(map, value) {
      * This means "He" is filtered, but "He Tao" remains.
      */
     if (
-    !/\s/.test(candidate) &&
-    COMMON_STANDALONE_WORDS.has(candidate.toLowerCase())
-) {
-    return;
-}
+        !/\s/.test(candidate) &&
+        COMMON_STANDALONE_WORDS.has(
+            candidate.toLowerCase()
+        )
+    ) {
+        return;
+    }
+
+    const tokens = candidate.split(/\s+/);
+
+    if (
+        tokens.length > 1 &&
+        tokens.every(token =>
+            COMMON_STANDALONE_WORDS.has(
+                token.toLowerCase()
+            )
+        )
+    ) {
+        return;
+    }
+
     map.set(
         candidate,
         (map.get(candidate) || 0) + 1
@@ -676,37 +858,21 @@ function candidateCoveredByExistingRule(candidate) {
             continue;
         }
 
-        if (rule.inputType === "regexp") {
-            const regex = buildRuleRegex(rule);
+        const regex = buildRuleRegex(rule);
 
-            if (!regex) {
-                continue;
-            }
-
-            regex.lastIndex = 0;
-
-            const match = regex.exec(candidate);
-
-            if (
-                match &&
-                match.index === 0 &&
-                match[0].length === candidate.length
-            ) {
-                return true;
-            }
-
+        if (!regex) {
             continue;
         }
 
-        const input = rule.caseSensitive
-            ? rule.input
-            : rule.input.toLowerCase();
+        regex.lastIndex = 0;
 
-        const value = rule.caseSensitive
-            ? candidate
-            : candidate.toLowerCase();
+        const match = regex.exec(candidate);
 
-        if (input === value) {
+        if (
+            match &&
+            match.index === 0 &&
+            match[0].length === candidate.length
+        ) {
             return true;
         }
     }
@@ -714,37 +880,40 @@ function candidateCoveredByExistingRule(candidate) {
     return false;
 }
 
-    function scanCandidates() {
-        const text = getPageText();
+function scanCandidates() {
+    const text = getPageText();
 
-        if (!text) {
-    state.candidates = [];
-    state.selectedCandidates.clear();
-        state.unmatchedInitialized = true;
-}
-    return;
-}
+    /*
+     * Default target group to the first alphabetical group.
+     */
+    if (
+        state.targetGroup === null ||
+        !db.groups[state.targetGroup]
+    ) {
+        const groups = sortedGroups();
 
-        const discovered = extractCandidates(text)
-            .filter(item => !candidateCoveredByExistingRule(item.candidate));
+        state.targetGroup = groups.length
+            ? groups[0].index
+            : null;
+    }
 
-        state.candidates = clusterAndSortCandidates(discovered);
+    if (!text) {
+        state.candidates = [];
         state.selectedCandidates.clear();
+        state.unmatchedInitialized = true;
+        return;
+    }
 
-        /*
-         * Default target group to the first alphabetical group.
-         */
-        if (
-            state.targetGroup === null ||
-            !db.groups[state.targetGroup]
-        ) {
-            const groups = sortedGroups();
+    const discovered = extractCandidates(text)
+        .filter(item =>
+            !candidateCoveredByExistingRule(item.candidate)
+        );
 
-            state.targetGroup = groups.length
-                ? groups[0].index
-                : null;
-        }
-    state.unmatchedInitialized = true;}
+    state.candidates = clusterAndSortCandidates(discovered);
+    state.selectedCandidates.clear();
+
+    state.unmatchedInitialized = true;
+}
 
 // ---------------------------------------------------------------------
 // Candidate clustering
@@ -794,145 +963,96 @@ function candidatesShareToken(a, b) {
 }
 
 function clusterAndSortCandidates(candidates) {
-    if (!candidates.length) {
-        return [];
+const sorted = [...candidates].sort((a, b) => {
+if (b.matches !== a.matches) {
+return b.matches - a.matches;
+}
+    return compareNames(
+        a.candidate,
+        b.candidate
+    );
+});
+
+const clusters = [];
+const assigned = new Set();
+
+for (let i = 0; i < sorted.length; i++) {
+    if (assigned.has(i)) {
+        continue;
     }
 
-    /*
-     * Find the highest candidate frequency on the page.
-     */
-    const maxFrequency = Math.max(
-        ...candidates.map(candidate => candidate.matches)
-    );
+    const clusterIndexes = new Set([i]);
 
     /*
-     * Anything below this frequency is hidden IF it is genuinely
-     * unclustered.
+     * Breadth-first search with a maximum depth of 2.
      *
-     * Example:
+     * Degree 0:
+     *   Bob
      *
-     *   max = 59
-     *   5%  = 2.95
+     * Degree 1:
+     *   Bob Yang
      *
-     * Therefore an unclustered candidate occurring 1 or 2 times
-     * is hidden, while one occurring 3+ times remains visible.
+     * Degree 2:
+     *   Yang Ho
+     *
+     * Degree 3 is never explored.
      */
-    const minimumUnclusteredFrequency =
-        maxFrequency * UNCLUSTERED_FREQUENCY_RATIO;
+    let frontier = [i];
 
-    /*
-     * Build connected components.
-     *
-     * This deliberately uses transitive chaining:
-     *
-     *   Fred
-     *      |
-     *   Fred Smith
-     *      |
-     *   Smith John
-     *
-     * All three become one cluster.
-     */
-    const visited = new Set();
-    const clusters = [];
+    for (let depth = 0; depth < 2; depth++) {
+        const nextFrontier = [];
 
-    for (let i = 0; i < candidates.length; i++) {
-        if (visited.has(i)) {
-            continue;
-        }
-
-        const clusterIndexes = [];
-        const queue = [i];
-
-        visited.add(i);
-
-        while (queue.length) {
-            const currentIndex = queue.shift();
-
-            clusterIndexes.push(currentIndex);
-
-            for (
-                let otherIndex = 0;
-                otherIndex < candidates.length;
-                otherIndex++
-            ) {
-                if (visited.has(otherIndex)) {
+        for (const sourceIndex of frontier) {
+            for (let j = 0; j < sorted.length; j++) {
+                if (clusterIndexes.has(j) || assigned.has(j)) {
                     continue;
                 }
 
                 if (
                     candidatesShareToken(
-                        candidates[currentIndex],
-                        candidates[otherIndex]
+                        sorted[sourceIndex].candidate,
+                        sorted[j].candidate
                     )
                 ) {
-                    visited.add(otherIndex);
-                    queue.push(otherIndex);
+                    clusterIndexes.add(j);
+                    nextFrontier.push(j);
                 }
             }
         }
 
-        clusters.push(
-            clusterIndexes.map(index => candidates[index])
-        );
+        frontier = nextFrontier;
+
+        if (!frontier.length) {
+            break;
+        }
+    }
+
+    const cluster = [];
+
+    for (const index of clusterIndexes) {
+        cluster.push(sorted[index]);
+        assigned.add(index);
     }
 
     /*
-     * Remove weak genuinely-unclustered candidates.
+     * Keep the cluster only when:
      *
-     * A cluster containing two or more candidates is considered
-     * meaningful regardless of the individual frequencies.
-     *
-     * A one-item cluster is kept only when its frequency reaches
-     * the 5% threshold.
+     * 1. It contains multiple candidates, or
+     * 2. Its candidate has at least 5% of the maximum frequency.
      */
-    const filteredClusters = clusters.filter(cluster => {
-        if (cluster.length > 1) {
-            return true;
-        }
+    const maxMatches = sorted[0]?.matches || 0;
 
-        return cluster[0].matches >= minimumUnclusteredFrequency;
-    });
-
-    /*
-     * Sort clusters by their highest-frequency candidate.
-     */
-    filteredClusters.sort((a, b) => {
-        const aMax = Math.max(
-            ...a.map(candidate => candidate.matches)
-        );
-
-        const bMax = Math.max(
-            ...b.map(candidate => candidate.matches)
-        );
-
-        if (bMax !== aMax) {
-            return bMax - aMax;
-        }
-
-        return compareNames(
-            a[0].candidate,
-            b[0].candidate
-        );
-    });
-
-    /*
-     * Sort candidates inside each cluster by frequency.
-     */
-    return filteredClusters.flatMap(cluster => {
-        return cluster.sort((a, b) => {
-            if (b.matches !== a.matches) {
-                return b.matches - a.matches;
-            }
-
-            return compareNames(
-                a.candidate,
-                b.candidate
-            );
-        });
-    });
+    if (
+        cluster.length > 1 ||
+        cluster[0].matches >=
+            maxMatches * UNCLUSTERED_FREQUENCY_RATIO
+    ) {
+        clusters.push(cluster);
+    }
 }
 
+return clusters.flat();
+}
 function tokenizeCandidate(value) {
     return String(value)
         .trim()
@@ -951,7 +1071,36 @@ function normalizeToken(token) {
     // ---------------------------------------------------------------------
     // Template helpers
     // ---------------------------------------------------------------------
+function getHTMLModeLabel(mode) {
+    switch (Number(mode)) {
+        case 1:
+            return "Output only";
 
+        case 2:
+            return "Input & Output";
+
+        default:
+            return "No";
+    }
+}
+
+function cycleGroupHTML() {
+    const group = db.groups[state.groupIndex];
+
+    if (!group) {
+        return;
+    }
+
+    const current =
+        Number.isInteger(Number(group.html))
+            ? Number(group.html)
+            : 0;
+
+    group.html = (current + 1) % 3;
+
+    saveDatabase();
+    render();
+}
     function generateTemplateInput(candidate, template) {
         const tokens = tokenizeCandidate(candidate);
 
@@ -1068,14 +1217,6 @@ function normalizeToken(token) {
             .replace(/'/g, "&#039;");
     }
 
-    function cssEscapeSafe(value) {
-        if (window.CSS && typeof window.CSS.escape === "function") {
-            return window.CSS.escape(String(value));
-        }
-
-        return String(value).replace(/[^a-zA-Z0-9_-]/g, "_");
-    }
-
     function createNativeRule() {
         return {
             ...DEFAULT_RULE
@@ -1090,10 +1231,6 @@ function normalizeToken(token) {
         };
     }
 
-    function refresh() {
-        saveDatabase();
-        render();
-    }
 
     // ---------------------------------------------------------------------
     // Root UI
@@ -1245,7 +1382,8 @@ function findTopCandidateForGroup(group, text) {
                 ) {
                     top = {
                         candidate,
-                        rule: rule.input,
+                        replace: rule.input,
+                        with: rule.output,
                         total
                     };
                 }
@@ -1266,265 +1404,261 @@ function renderGroups(content) {
 
     const groups = sortedGroups()
         .map(({ group, index }) => {
+            const ruleMatches = group.substitutions
+                .map(rule => ({
+                    rule,
+                    matches: rule.enabled
+                        ? countRuleMatches(rule, pageText)
+                        : 0
+                }))
+                .filter(item => item.matches > 0);
 
-const ruleMatches = group.substitutions
-    .map(rule => ({
-        rule,
-        matches: rule.enabled
-            ? countRuleMatches(rule, pageText)
-            : 0
-    }))
-    .filter(item => item.matches > 0);
+            const matches = ruleMatches.reduce(
+                (total, item) => total + item.matches,
+                0
+            );
 
-const matches = ruleMatches.reduce(
-    (total, item) => total + item.matches,
-    0
-);
+            const ruleCount = ruleMatches.length;
+            const siteMatches = groupMatchesCurrentSite(group);
 
-const ruleCount = ruleMatches.length;
+            const searchMatch =
+                !query ||
+                group.name.toLowerCase().includes(query) ||
+                group.substitutions.some(rule =>
+                    String(rule.input)
+                        .toLowerCase()
+                        .includes(query)
+                );
 
-const siteMatches = groupMatchesCurrentSite(group);
+            return {
+                group,
+                index,
+                ruleCount,
+                matches,
+                siteMatches,
+                searchMatch
+            };
+        })
+        .filter(item => item.searchMatch);
 
-                const searchMatch =
-                    !query ||
-                    group.name.toLowerCase().includes(query) ||
-                    group.substitutions.some(rule =>
-                        String(rule.input)
-                            .toLowerCase()
-                            .includes(query)
-                    );
+    const activeGroups = groups.filter(item =>
+        item.matches > 0 || item.siteMatches
+    );
 
-                return {
-    group,
-    index,
-    ruleCount,
-    matches,
-    siteMatches,
-    searchMatch
-};
-            })
-            .filter(item => item.searchMatch);
+    const otherGroups = groups.filter(item =>
+        item.matches === 0 && !item.siteMatches
+    );
 
-        const activeGroups = groups.filter(item =>
-            item.matches > 0 || item.siteMatches
-        );
-
-        const otherGroups = groups.filter(item =>
-            item.matches === 0 && !item.siteMatches
-        );
-
-        const rows = activeGroups.map(item => {
+    const rows = activeGroups.map(item => {
         const {
-    group,
-    index,
-    ruleCount,
-    matches,
-    siteMatches
-} = item;
+            group,
+            index,
+            ruleCount,
+            matches,
+            siteMatches
+        } = item;
 
         const topCandidate =
-        findTopCandidateForGroup(
-        group,
-        pageText
-        );
+            findTopCandidateForGroup(
+                group,
+                pageText
+            );
 
-            return `
-                <tr
-                    class="wnc-clickable-row"
-                    data-action="open-group"
-                    data-group-index="${index}"
-                >
-                    <td>${escapeHTML(group.name || "(Unnamed)")}</td>
+        return `
+            <tr
+                class="wnc-clickable-row"
+                data-action="open-group"
+                data-group-index="${index}"
+            >
+                <td>
+                    ${escapeHTML(group.name || "(Unnamed)")}
+                </td>
 
-                    <td class="wnc-number">
-                       ${ruleCount}
-                    </td>
+                <td class="wnc-number">
+                    ${ruleCount}
+                </td>
 
-                    <td class="wnc-number">
-                        ${matches}
-                    </td>
-                    <td class="wnc-site-status">
-                        ${
-                            siteMatches
-                                ? `<span class="wnc-check">✓</span>`
-                                : `<span class="wnc-cross">✕</span>`
-                        }
-                    </td>
+                <td class="wnc-number">
+                    ${matches}
+                </td>
 
-                    <td>
-                        ${
-                            topCandidate
-                                ? escapeHTML(topCandidate.candidate)
-                                : "—"
-                        }
-                    </td>
+                <td class="wnc-site-status">
+                    ${
+                        siteMatches
+                            ? `<span class="wnc-check">✓</span>`
+                            : `<span class="wnc-cross">✕</span>`
+                    }
+                </td>
 
-                    <td>
-                        ${
-                            topCandidate
-                                ? escapeHTML(topCandidate.rule)
-                                : "—"
-                        }
-                    </td>
+                <td>
+                    ${
+                        topCandidate
+                            ? escapeHTML(topCandidate.candidate)
+                            : "—"
+                    }
+                </td>
 
-                    <td class="wnc-number">
-                        ${
-                            topCandidate
-                                ? topCandidate.total
-                                : 0
-                        }
-                    </td>
-                </tr>
-            `;
-        }).join("");
+                <td>
+                    ${
+                        topCandidate
+                            ? escapeHTML(topCandidate.replace)
+                            : "—"
+                    }
+                </td>
 
-const otherRows = otherGroups.map(item => {
-    const {
-        group,
-        index
-    } = item;
+                <td>
+                    ${
+                        topCandidate
+                            ? escapeHTML(topCandidate.with)
+                            : "—"
+                    }
+                </td>
 
-    return `
-        <tr
-            class="wnc-clickable-row"
-            data-action="open-group"
-            data-group-index="${index}"
-        >
-            <td>${escapeHTML(group.name || "(Unnamed)")}</td>
-
-            <td class="wnc-number">0</td>
-
-            <td class="wnc-number">0</td>
-
-            <td class="wnc-site-status">
-                <span class="wnc-cross">✕</span>
-            </td>
-
-            <td>—</td>
-
-            <td>—</td>
-
-            <td class="wnc-number">0</td>
-        </tr>
-    `;
-}).join("");
-
-        const otherSection = otherGroups.length
-            ? `
-                <tr
-    class="wnc-collapse-row"
-    data-action="toggle-other-groups"
->
-    <td colspan="7">
-                        <span class="wnc-collapse-arrow">
-                            ${state.showOtherGroups ? "▼" : "▶"}
-                        </span>
-
-                        Other Groups
-                        <span class="wnc-collapse-count">
-                            ${otherGroups.length}
-                        </span>
-                    </td>
-                </tr>
-
-                ${
-                    state.showOtherGroups
-                        ? otherRows
-                        : ""
-                }
-            `
-            : "";
-
-        content.innerHTML = `
-            <section class="wnc-screen">
-                <div class="wnc-section-heading">
-                    <h1>Groups</h1>
-                </div>
-
-                <div class="wnc-table-wrap">
-                    <table class="wnc-table">
-                      <thead>
-    <tr>
-        <th>Group</th>
-        <th>Rules</th>
-        <th>Matches</th>
-        <th>Sites</th>
-        <th>Top Candidate</th>
-        <th>Rule</th>
-        <th>Total</th>
-    </tr>
-</thead>
-
-                        <tbody>
-                            ${
-                                rows || !otherSection
-                                    ? rows
-                                    : ""
-                            }
-
-                            ${
-                                !rows && !otherSection
-                                    ? `
-                                        <tr>
-                                            <td
-                                                colspan="7"
-                                                class="wnc-empty"
-                                            >
-                                                No groups
-                                            </td>
-                                        </tr>
-                                    `
-                                    : ""
-                            }
-
-                            ${otherSection}
-
-<tr
-    class="wnc-clickable-row wnc-unmatched-row"
-    data-action="open-unmatched"
->
-    <td>Unmatched</td>
-
-    <td></td>
-
-    <td class="wnc-number">
-        ${state.candidates.length}
-    </td>
-
-    <td></td>
-
-    <td></td>
-
-    <td></td>
-
-    <td></td>
-</tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
+                <td class="wnc-number">
+                    ${
+                        topCandidate
+                            ? topCandidate.total
+                            : 0
+                    }
+                </td>
+            </tr>
         `;
-    }
+    }).join("");
 
-    function countGroupMatches(group) {
-        const text = getPageText();
+    const otherRows = otherGroups.map(item => {
+        const {
+            group,
+            index
+        } = item;
 
-        if (!text) {
-            return 0;
-        }
+        return `
+            <tr
+                class="wnc-clickable-row"
+                data-action="open-group"
+                data-group-index="${index}"
+            >
+                <td>
+                    ${escapeHTML(group.name || "(Unnamed)")}
+                </td>
 
-        let total = 0;
+                <td class="wnc-number">0</td>
 
-        for (const rule of group.substitutions) {
-            if (!rule.enabled) {
-                continue;
+                <td class="wnc-number">0</td>
+
+                <td class="wnc-site-status">
+                    <span class="wnc-cross">✕</span>
+                </td>
+
+                <td>—</td>
+
+                <td>—</td>
+
+                <td>—</td>
+
+                <td class="wnc-number">0</td>
+            </tr>
+        `;
+    }).join("");
+
+    const otherSection = otherGroups.length
+        ? `
+            <tr
+                class="wnc-collapse-row"
+                data-action="toggle-other-groups"
+            >
+                <td colspan="8">
+                    <span class="wnc-collapse-arrow">
+                        ${state.showOtherGroups ? "▼" : "▶"}
+                    </span>
+
+                    Other Groups
+
+                    <span class="wnc-collapse-count">
+                        ${otherGroups.length}
+                    </span>
+                </td>
+            </tr>
+
+            ${
+                state.showOtherGroups
+                    ? otherRows
+                    : ""
             }
+        `
+        : "";
 
-            total += countRuleMatches(rule, text);
-        }
+    content.innerHTML = `
+        <section class="wnc-screen">
 
-        return total;
-    }
+            <div class="wnc-section-heading">
+                <h1>Groups</h1>
+            </div>
+
+            <div class="wnc-table-wrap wnc-groups-table-wrap">
+                <table class="wnc-table wnc-groups-table">
+
+                    <thead>
+                        <tr>
+                            <th>Group</th>
+                            <th>R#</th>
+                            <th>M#</th>
+                            <th>S</th>
+                            <th>Candidate</th>
+                            <th>Replace</th>
+                            <th>With</th>
+                            <th>T#</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${
+                            rows || !otherSection
+                                ? rows
+                                : ""
+                        }
+
+                        ${
+                            !rows && !otherSection
+                                ? `
+                                    <tr>
+                                        <td
+                                            colspan="8"
+                                            class="wnc-empty"
+                                        >
+                                            No groups
+                                        </td>
+                                    </tr>
+                                `
+                                : ""
+                        }
+
+                        ${otherSection}
+
+                        <tr
+                            class="wnc-clickable-row wnc-unmatched-row"
+                            data-action="open-unmatched"
+                        >
+                            <td>Unmatched</td>
+                            <td></td>
+
+                            <td class="wnc-number">
+                                ${state.candidates.length}
+                            </td>
+
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                        </tr>
+                    </tbody>
+
+                </table>
+            </div>
+
+        </section>
+    `;
+}
 
     // ---------------------------------------------------------------------
     // Group workspace
@@ -1590,16 +1724,7 @@ const otherRows = otherGroups.map(item => {
     function renderRules(container, group) {
         const text = getPageText();
 
-        const visibleRules = sortedRules(group)
-            .filter(({ rule }) => {
-                if (!rule.enabled || !rule.input) {
-                    return false;
-                }
-
-                return ruleMatchesText(rule, text);
-            });
-
-        const rows = visibleRules.map(({ rule, index }) => {
+          const rows = group.substitutions.map((rule, index) => {
             const matches = countRuleMatches(rule, text);
 
             return `
@@ -1621,24 +1746,56 @@ const otherRows = otherGroups.map(item => {
                     </td>
 
                     <td>
-                        <select
-                            class="wnc-cell-select"
-                            data-field="inputType"
-                        >
-                            <option
-                                value="text"
-                                ${rule.inputType === "text" ? "selected" : ""}
-                            >Text</option>
-
-                            <option
-                                value="regexp"
-                                ${
-                                    rule.inputType === "regexp"
-                                        ? "selected"
+                        <div class="wnc-choice-group wnc-rule-type">
+                            <button
+                                type="button"
+                                class="wnc-choice ${
+                                    rule.inputType === "text"
+                                        ? "active"
                                         : ""
-                                }
-                            >Regexp</option>
-                        </select>
+                                }"
+                                data-action="rule-type"
+                                data-rule-index="${index}"
+                                data-type="text"
+                            >Text</button>
+
+                            <button
+                                type="button"
+                                class="wnc-choice ${
+                                    rule.inputType === "whole"
+                                        ? "active"
+                                        : ""
+                                }"
+                                data-action="rule-type"
+                                data-rule-index="${index}"
+                                data-type="whole"
+                            >Whole</button>
+
+                            <button
+                                type="button"
+                                class="wnc-choice ${
+                                    rule.inputType === "regexp"
+                                        ? "active"
+                                        : ""
+                                }"
+                                data-action="rule-type"
+                                data-rule-index="${index}"
+                                data-type="regexp"
+                            >Regex</button>
+                        </div>
+                    </td>
+
+                    <td class="wnc-center">
+                        <button
+                            type="button"
+                            class="wnc-choice"
+                            data-action="rule-output-type"
+                            data-rule-index="${index}"
+                        >${
+                            Number(rule.outputType) === 1
+                                ? "Function"
+                                : "Text"
+                        }</button>
                     </td>
 
                     <td class="wnc-center">
@@ -1654,14 +1811,6 @@ const otherRows = otherGroups.map(item => {
                             type="checkbox"
                             data-field="enabled"
                             ${rule.enabled ? "checked" : ""}
-                        >
-                    </td>
-
-                    <td>
-                        <input
-                            class="wnc-cell-input"
-                            data-field="html"
-                            value="${escapeHTML(rule.html)}"
                         >
                     </td>
 
@@ -1685,23 +1834,48 @@ const otherRows = otherGroups.map(item => {
             <div class="wnc-table-wrap">
                 <table class="wnc-table wnc-rules-table">
                     <thead>
-                        <tr>
-                            <th>Input</th>
-                            <th>Output</th>
-                            <th>Type</th>
-                            <th>Case</th>
-                            <th>Enabled</th>
-                            <th>HTML</th>
-                            <th>Matches</th>
-                            <th></th>
-                        </tr>
-                    </thead>
+    <tr>
+<th
+    data-action="sort-rules"
+    data-sort-field="input"
+>Replace</th>
+
+<th
+    data-action="sort-rules"
+    data-sort-field="output"
+>With</th>
+
+        <th
+            data-action="sort-rules"
+            data-sort-field="inputType"
+        >Type</th>
+
+        <th>Output</th>
+
+        <th
+            data-action="sort-rules"
+            data-sort-field="caseSensitive"
+        >Case</th>
+
+<th
+    data-action="sort-rules"
+    data-sort-field="enabled"
+>Enable</th>
+
+        <th
+            data-action="sort-rules"
+            data-sort-field="matches"
+        >Matches</th>
+
+        <th></th>
+    </tr>
+</thead>
 
                     <tbody>
                         ${rows || `
                             <tr>
                                 <td colspan="8" class="wnc-empty">
-                                    No rules from this group match this page
+                                    No rules in this group
                                 </td>
                             </tr>
                         `}
@@ -1725,120 +1899,125 @@ const otherRows = otherGroups.map(item => {
     // ---------------------------------------------------------------------
 
     function renderSites(container, group) {
-        const rows = group.urls.map((url, index) => `
-            <tr>
-                <td>
-                    <input
-                        class="wnc-cell-input"
-                        data-site-index="${index}"
-                        data-field="url"
-                        value="${escapeHTML(url)}"
-                    >
-                </td>
+    const rows = group.urls.map((url, index) => `
+        <tr>
+            <td>
+                <input
+                    class="wnc-cell-input"
+                    data-site-index="${index}"
+                    data-field="url"
+                    value="${escapeHTML(url)}"
+                >
+            </td>
 
-                <td class="wnc-site-match">
+            <td class="wnc-site-match">
+                ${
+                    urlPatternMatches(url)
+                        ? `<span class="wnc-check">✓</span>`
+                        : `<span class="wnc-cross">✕</span>`
+                }
+            </td>
+
+            <td class="wnc-delete-cell">
+                <button
+                    class="wnc-delete"
+                    data-action="delete-site"
+                    data-site-index="${index}"
+                    title="Delete URL"
+                >×</button>
+            </td>
+        </tr>
+    `).join("");
+
+    container.innerHTML = `
+        <div class="wnc-table-wrap">
+            <table class="wnc-table wnc-sites-table">
+
+                <thead>
+                    <tr>
+                        <th>URL Pattern</th>
+                        <th>Current Site</th>
+                        <th></th>
+                    </tr>
+                </thead>
+
+                <tbody>
                     ${
-                        urlPatternMatches(url)
-                            ? `<span class="wnc-check">✓</span>`
-                            : `<span class="wnc-cross">✕</span>`
-                    }
-                </td>
-
-                <td class="wnc-delete-cell">
-                    <button
-                        class="wnc-delete"
-                        data-action="delete-site"
-                        data-site-index="${index}"
-                        title="Delete URL"
-                    >×</button>
-                </td>
-            </tr>
-        `).join("");
-
-        container.innerHTML = `
-            <div class="wnc-table-wrap">
-                <table class="wnc-table">
-                    <thead>
-                        <tr>
-                            <th>URL Pattern</th>
-                            <th>Current Site</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-
-                    <tbody>
-                        ${rows || `
+                        rows || `
                             <tr>
                                 <td colspan="3" class="wnc-empty">
                                     No URL patterns
                                 </td>
                             </tr>
-                        `}
+                        `
+                    }
 
-                        <tr class="wnc-add-row">
-                            <td colspan="3">
-                                <button
-                                    class="wnc-add-button"
-                                    data-action="add-site"
-                                >+ Add URL pattern</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
+                    <tr class="wnc-add-row">
+                        <td colspan="3">
+                            <button
+                                class="wnc-add-button"
+                                data-action="add-site"
+                            >+ Add URL pattern</button>
+                        </td>
+                    </tr>
+                </tbody>
 
-            <div class="wnc-group-options">
-                <table class="wnc-table">
-                    <tbody>
-                        <tr>
-                            <td>Enabled</td>
-                            <td>
-                                <input
-                                    type="checkbox"
-                                    data-group-field="enabled"
-                                    ${
-                                        group.enabled
-                                            ? "checked"
-                                            : ""
-                                    }
-                                >
-                            </td>
-                        </tr>
+            </table>
+        </div>
 
-                        <tr>
-                            <td>Page Load</td>
-                            <td>
-                                <input
-                                    type="checkbox"
-                                    data-group-field="pageLoad"
-                                    ${
-                                        group.pageLoad
-                                            ? "checked"
-                                            : ""
-                                    }
-                                >
-                            </td>
-                        </tr>
+        <div class="wnc-group-options">
+            <table class="wnc-table">
+                <tbody>
 
-                        <tr>
-                            <td>Auto</td>
-                            <td>
-                                <input
-                                    type="checkbox"
-                                    data-group-field="auto"
-                                    ${
-                                        group.auto
-                                            ? "checked"
-                                            : ""
-                                    }
-                                >
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
+                    <tr>
+                        <td>Enabled</td>
+                        <td>
+                            <input
+                                type="checkbox"
+                                data-group-field="enabled"
+                                ${group.enabled ? "checked" : ""}
+                            >
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td>Page Load</td>
+                        <td>
+                            <input
+                                type="checkbox"
+                                data-group-field="pageLoad"
+                                ${group.pageLoad ? "checked" : ""}
+                            >
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td>Auto</td>
+                        <td>
+                            <input
+                                type="checkbox"
+                                data-group-field="auto"
+                                ${group.auto ? "checked" : ""}
+                            >
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td>HTML</td>
+                        <td>
+                            <button
+                                type="button"
+                                class="wnc-html-button"
+                                data-action="cycle-group-html"
+                            >${escapeHTML(getHTMLModeLabel(group.html))}</button>
+                        </td>
+                    </tr>
+
+                </tbody>
+            </table>
+        </div>
+    `;
+}
 
     // ---------------------------------------------------------------------
     // Unmatched screen
@@ -1935,92 +2114,118 @@ const otherRows = otherGroups.map(item => {
                         }
                     </select>
 
-                    <select
-                        class="wnc-control-select"
-                        data-unmatched-control="type"
-                    >
-                        <option
-                            value="text"
-                            ${
+                    <div class="wnc-choice-group">
+                        <button
+                            type="button"
+                            class="wnc-choice ${
                                 state.candidateType === "text"
-                                    ? "selected"
+                                    ? "active"
                                     : ""
-                            }
-                        >text</option>
+                            }"
+                            data-action="unmatched-type"
+                            data-type="text"
+                        >Text</button>
 
-                        <option
-                            value="regexp"
-                            ${
+                        <button
+                            type="button"
+                            class="wnc-choice ${
+                                state.candidateType === "whole"
+                                    ? "active"
+                                    : ""
+                            }"
+                            data-action="unmatched-type"
+                            data-type="whole"
+                        >Whole</button>
+
+                        <button
+                            type="button"
+                            class="wnc-choice ${
                                 state.candidateType === "regexp"
-                                    ? "selected"
+                                    ? "active"
                                     : ""
-                            }
-                        >regexp</option>
-                    </select>
+                            }"
+                            data-action="unmatched-type"
+                            data-type="regexp"
+                        >Regex</button>
+                    </div>
 
-                    <select
-                        class="wnc-control-select"
-                        data-unmatched-control="template"
-                        ${
-                            state.candidateType !== "regexp"
-                                ? "disabled"
-                                : ""
-                        }
-                    >
-                        <option
-                            value="Korean"
-                            ${
+                    <div class="wnc-choice-group">
+                        <button
+                            type="button"
+                            class="wnc-choice ${
                                 state.candidateTemplate === "Korean"
-                                    ? "selected"
+                                    ? "active"
+                                    : ""
+                            }"
+                            data-action="unmatched-template"
+                            data-template="Korean"
+                            ${
+                                state.candidateType !== "regexp"
+                                    ? "disabled"
                                     : ""
                             }
-                        >Korean</option>
+                        >Korean</button>
 
-                        <option
-                            value="Japanese"
-                            ${
+                        <button
+                            type="button"
+                            class="wnc-choice ${
                                 state.candidateTemplate === "Japanese"
-                                    ? "selected"
+                                    ? "active"
+                                    : ""
+                            }"
+                            data-action="unmatched-template"
+                            data-template="Japanese"
+                            ${
+                                state.candidateType !== "regexp"
+                                    ? "disabled"
                                     : ""
                             }
-                        >Japanese</option>
+                        >Japanese</button>
 
-                        <option
-                            value="Other"
-                            ${
+                        <button
+                            type="button"
+                            class="wnc-choice ${
                                 state.candidateTemplate === "Other"
-                                    ? "selected"
+                                    ? "active"
+                                    : ""
+                            }"
+                            data-action="unmatched-template"
+                            data-template="Other"
+                            ${
+                                state.candidateType !== "regexp"
+                                    ? "disabled"
                                     : ""
                             }
-                        >Other</option>
-                    </select>
+                        >Other</button>
+                    </div>
 
-                    <select
-                        class="wnc-control-select"
-                        data-unmatched-control="case"
-                    >
-                        <option
-                            value="false"
-                            ${
+                    <div class="wnc-choice-group">
+                        <button
+                            type="button"
+                            class="wnc-choice ${
                                 !state.candidateCaseSensitive
-                                    ? "selected"
+                                    ? "active"
                                     : ""
-                            }
-                        >No</option>
+                            }"
+                            data-action="unmatched-case"
+                            data-case="false"
+                        >No</button>
 
-                        <option
-                            value="true"
-                            ${
+                        <button
+                            type="button"
+                            class="wnc-choice ${
                                 state.candidateCaseSensitive
-                                    ? "selected"
+                                    ? "active"
                                     : ""
-                            }
-                        >Yes</option>
-                    </select>
+                            }"
+                            data-action="unmatched-case"
+                            data-case="true"
+                        >Yes</button>
+                    </div>
 
                     <button
                         class="wnc-button wnc-apply"
-                        data-action="apply-checked"
+                        data-action="apply"
                         ${
                             !groups.length
                                 ? "disabled"
@@ -2065,97 +2270,136 @@ const otherRows = otherGroups.map(item => {
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
+function handleClick(event) {
+const target = event.target.closest("[data-action]");
+if (!target) {
+    return;
+}
 
-    function handleClick(event) {
-        const target = event.target.closest("[data-action]");
+const action = target.dataset.action;
 
-        if (!target) {
-            return;
-        }
+switch (action) {
+    case "sort-rules":
+    sortRulesByHeader(
+        target.dataset.sortField
+    );
+    break;
+    case "rule-type":
+        setRuleType(
+            Number(target.dataset.ruleIndex),
+            target.dataset.type
+        );
+        break;
 
-        const action = target.dataset.action;
+    case "rule-output-type":
+        toggleRuleOutputType(
+            Number(target.dataset.ruleIndex)
+        );
+        break;
 
-        switch (action) {
-            case "create-group":
-                createGroup();
-                break;
+    case "unmatched-type":
+        handleUnmatchedControl(target);
+        break;
 
-            case "import":
-                document
-                    .getElementById("wnc-import-file")
-                    ?.click();
-                break;
+    case "unmatched-template":
+        handleUnmatchedControl(target);
+        break;
 
-            case "export":
-                exportDatabase();
-                break;
+    case "unmatched-case":
+        handleUnmatchedControl(target);
+        break;
 
-            case "close":
-                closeUI();
-                break;
+    case "create-group":
+        createGroup();
+        break;
 
-            case "open-group":
-                openGroup(
-                    Number(target.dataset.groupIndex)
-                );
-                break;
+    case "import":
+        document
+            .getElementById("wnc-import-file")
+            ?.click();
+        break;
 
-            case "open-unmatched":
-                openUnmatched();
-                break;
+    case "export":
+        exportDatabase();
+        break;
 
-            case "groups":
-                state.screen = "groups";
-                state.groupIndex = null;
-                render();
-                break;
+    case "close":
+        closeUI();
+        break;
 
-            case "toggle-other-groups":
-                state.showOtherGroups =
-                    !state.showOtherGroups;
-                render();
-                break;
+    case "open-group":
+        openGroup(
+            Number(target.dataset.groupIndex)
+        );
+        break;
 
-            case "back-groups":
-                state.screen = "groups";
-                state.groupIndex = null;
-                render();
-                break;
+    case "open-unmatched":
+        openUnmatched();
+        break;
 
-            case "group-tab":
-                state.tab = target.dataset.tab;
-                render();
-                break;
+    case "groups":
+        state.screen = "groups";
+        state.groupIndex = null;
+        render();
+        break;
 
-            case "add-rule":
-                addRule();
-                break;
+    case "toggle-other-groups":
+        state.showOtherGroups =
+            !state.showOtherGroups;
+        render();
+        break;
 
-            case "delete-rule":
-                deleteRule(
-                    Number(target.dataset.ruleIndex)
-                );
-                break;
+    case "back-groups":
+        state.screen = "groups";
+        state.groupIndex = null;
+        render();
+        break;
 
-            case "add-site":
-                addSite();
-                break;
+    case "group-tab":
+        state.tab = target.dataset.tab;
+        render();
+        break;
+case "cycle-group-html":
+    cycleGroupHTML();
+    break;
+    case "add-rule":
+        addRule();
+        break;
 
-            case "delete-site":
-                deleteSite(
-                    Number(target.dataset.siteIndex)
-                );
-                break;
+    case "delete-rule":
+        deleteRule(
+            Number(target.dataset.ruleIndex)
+        );
+        break;
 
-            case "apply-checked":
-                applyCheckedCandidates();
-                break;
-        }
+    case "add-site":
+        addSite();
+        break;
+
+    case "delete-site":
+        deleteSite(
+            Number(target.dataset.siteIndex)
+        );
+        break;
+
+    case "apply":
+        applyCandidates();
+        break;
     }
+}
 
-    function handleChange(event) {
+function handleChange(event) {
         const target = event.target;
 
+        // Unmatched target group.
+        if (
+            target.matches(
+                '[data-unmatched-control="targetGroup"]'
+            )
+        ) {
+            handleUnmatchedControl(target);
+            return;
+        }
         // Import.
         if (target.id === "wnc-import-file") {
             importFile(target.files?.[0]);
@@ -2173,12 +2417,6 @@ const otherRows = otherGroups.map(item => {
                 state.selectedCandidates.delete(index);
             }
 
-            return;
-        }
-
-        // Unmatched global controls.
-        if (target.matches("[data-unmatched-control]")) {
-            handleUnmatchedControl(target);
             return;
         }
 
@@ -2273,7 +2511,91 @@ const otherRows = otherGroups.map(item => {
             handleSiteField(target);
         }
     }
+    function handleUnmatchedControl(target) {
+        const control =
+            target.dataset.unmatchedControl ||
+            target.dataset.action;
 
+        switch (control) {
+            case "targetGroup":
+                state.targetGroup = Number(target.value);
+                break;
+
+            case "unmatched-type":
+                if (
+                    !["text", "whole", "regexp"].includes(
+                        target.dataset.type
+                    )
+                ) {
+                    return;
+                }
+
+                state.candidateType =
+                    target.dataset.type;
+
+                if (state.candidateType !== "regexp") {
+                    state.candidateTemplate = "Other";
+                }
+                break;
+
+            case "unmatched-template":
+                if (
+                    state.candidateType !== "regexp" ||
+                    !["Korean", "Japanese", "Other"].includes(
+                        target.dataset.template
+                    )
+                ) {
+                    return;
+                }
+
+                state.candidateTemplate =
+                    target.dataset.template;
+                break;
+
+            case "unmatched-case":
+                state.candidateCaseSensitive =
+                    target.dataset.case === "true";
+                break;
+
+            default:
+                return;
+        }
+
+        render();
+    }
+
+    function setRuleType(index, type) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group || !group.substitutions[index]) {
+            return;
+        }
+
+        if (!["text", "whole", "regexp"].includes(type)) {
+            return;
+        }
+
+        group.substitutions[index].inputType = type;
+
+        saveDatabase();
+        render();
+    }
+
+    function toggleRuleOutputType(index) {
+        const group = db.groups[state.groupIndex];
+
+        if (!group || !group.substitutions[index]) {
+            return;
+        }
+
+        group.substitutions[index].outputType =
+            Number(group.substitutions[index].outputType) === 1
+                ? 0
+                : 1;
+
+        saveDatabase();
+        render();
+    }
     // ---------------------------------------------------------------------
     // Group actions
     // ---------------------------------------------------------------------
@@ -2338,35 +2660,32 @@ const otherRows = otherGroups.map(item => {
     // ---------------------------------------------------------------------
 
     function addRule() {
-        const group = db.groups[state.groupIndex];
+    const group = db.groups[state.groupIndex];
 
-        if (!group) {
-            return;
-        }
-
-        const rule = createNativeRule();
-
-        group.substitutions.push(rule);
-
-        saveDatabase();
-
-        render();
-
-        /*
-         * Focus the new row's Input cell if possible.
-         */
-        requestAnimationFrame(() => {
-            const rows = document.querySelectorAll(
-                ".wnc-rules-table tbody tr[data-rule-index]"
-            );
-
-            const last = rows[rows.length - 1];
-
-            last
-                ?.querySelector('[data-field="input"]')
-                ?.focus();
-        });
+    if (!group) {
+        return;
     }
+
+    const rule = createNativeRule();
+
+    group.substitutions.push(rule);
+
+    const newRuleIndex =
+        group.substitutions.length - 1;
+
+    saveDatabase();
+    render();
+
+    requestAnimationFrame(() => {
+        const row = document.querySelector(
+            `.wnc-rules-table tbody tr[data-rule-index="${newRuleIndex}"]`
+        );
+
+        row
+            ?.querySelector('[data-field="input"]')
+            ?.focus();
+    });
+}
 
     function deleteRule(index) {
         const group = db.groups[state.groupIndex];
@@ -2493,55 +2812,10 @@ const otherRows = otherGroups.map(item => {
     }
 
     // ---------------------------------------------------------------------
-    // Unmatched controls
+    // Apply
     // ---------------------------------------------------------------------
 
-    function handleUnmatchedControl(target) {
-        const control = target.dataset.unmatchedControl;
-
-        switch (control) {
-            case "targetGroup":
-                state.targetGroup = Number(target.value);
-                break;
-
-            case "type":
-                state.candidateType = target.value;
-
-                /*
-                 * Type change only changes the global setting.
-                 * Existing Input edits are not destroyed.
-                 */
-                break;
-
-            case "template":
-                state.candidateTemplate = target.value;
-                break;
-
-            case "case":
-                state.candidateCaseSensitive =
-                    target.value === "true";
-                break;
-        }
-
-        /*
-         * Re-render only for controls whose visual state depends on the
-         * selected value.
-         */
-        if (
-            control === "type" ||
-            control === "template" ||
-            control === "case" ||
-            control === "targetGroup"
-        ) {
-            render();
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Apply Checked
-    // ---------------------------------------------------------------------
-
-    function applyCheckedCandidates() {
+    function applyCandidates() {
         const group = db.groups[state.targetGroup];
 
         if (!group) {
@@ -2593,28 +2867,7 @@ const otherRows = otherGroups.map(item => {
                 state.candidateCaseSensitive;
             rule.enabled = true;
 
-            /*
-             * Native FoxReplace default.
-             */
-            rule.html = "none";
-
-            /*
-             * Avoid creating an exact duplicate substitution in the target
-             * group. If an exact same rule already exists, the candidate is
-             * still considered handled.
-             */
-            const duplicate = group.substitutions.some(existing =>
-                existing.input === rule.input &&
-                existing.output === rule.output &&
-                existing.inputType === rule.inputType &&
-                existing.caseSensitive === rule.caseSensitive &&
-                existing.enabled === rule.enabled &&
-                existing.html === rule.html
-            );
-
-            if (!duplicate) {
-                group.substitutions.push(rule);
-            }
+            group.substitutions.push(rule);
 
             /*
              * Remove from Unmatched.
@@ -2671,10 +2924,11 @@ const otherRows = otherGroups.map(item => {
              * Import replaces only the canonical FoxReplace database.
              * Unmatched remains transient.
              */
-            state.candidates = [];
-            state.selectedCandidates.clear();
+           state.candidates = [];
+state.selectedCandidates.clear();
+state.unmatchedInitialized = false;
 
-            render();
+render();
 
         } catch (error) {
             console.error("WNC import error:", error);
@@ -2691,611 +2945,45 @@ const otherRows = otherGroups.map(item => {
     // ---------------------------------------------------------------------
 
     function exportDatabase() {
-        /*
-         * Build a fresh native FoxReplace object.
-         *
-         * WNC-specific state is intentionally absent.
-         */
         const exported = {
-            groups: sortedGroups().map(({ group }) => {
-                const outputGroup = {
-                    name: group.name,
-                    urls: [...group.urls],
-                    enabled: group.enabled,
-                    pageLoad: group.pageLoad,
-                    auto: group.auto,
-                    substitutions: sortedRules(group)
-                        .map(({ rule }) => ({
-                            input: rule.input,
-                            output: rule.output,
-                            inputType: rule.inputType,
-                            caseSensitive: rule.caseSensitive,
-                            enabled: rule.enabled,
-                            html: rule.html
-                        }))
-                };
-
-                return outputGroup;
-            })
+            ...db,
+            groups: db.groups.map(group => ({
+                ...group,
+                urls: Array.isArray(group.urls)
+                    ? [...group.urls]
+                    : [],
+                substitutions: Array.isArray(group.substitutions)
+                    ? group.substitutions.map(rule => ({
+                        ...rule,
+                    inputType:
+                        rule.inputType === "whole"
+                            ? 1
+                            : rule.inputType === "regexp"
+                                ? 2
+                                : 0,
+                    outputType:
+                        Number(rule.outputType) === 1
+                            ? 1
+                            : 0
+                    }))
+                    : []
+            }))
         };
 
-        const json = JSON.stringify(exported, null, 2);
-
         const blob = new Blob(
-            [json],
-            {
-                type: "application/json"
-            }
+            [JSON.stringify(exported, null, 2)],
+            { type: "application/json" }
         );
 
         const url = URL.createObjectURL(blob);
 
-        const anchor = document.createElement("a");
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "foxreplace.json";
 
-        anchor.href = url;
-        anchor.download = "foxreplace.json";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
 
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-
-        setTimeout(() => {
-            URL.revokeObjectURL(url);
-        }, 1000);
+        URL.revokeObjectURL(url);
     }
-
-    // ---------------------------------------------------------------------
-    // Styles
-    // ---------------------------------------------------------------------
-
-    function injectStyles() {
-        if (document.getElementById("wnc-styles")) {
-            return;
-        }
-
-        const style = document.createElement("style");
-
-        style.id = "wnc-styles";
-
-        style.textContent = `
-#wnc-root {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 2147483647;
-
-    width: min(1000px, 92vw);
-    height: min(720px, 82vh);
-
-    background: #111214;
-    color: #e8e8e8;
-
-    font-family:
-        Inter,
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        sans-serif;
-
-    font-size: 13px;
-    line-height: 1.35;
-
-    border: 1px solid #303236;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
-}
-
-.wnc-shell {
-    width: 100%;
-    height: 100%;
-    min-height: 0;
-
-    display: flex;
-    flex-direction: column;
-
-    background: #111214;
-}
-
-.wnc-header {
-    height: 48px;
-    min-height: 48px;
-
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    padding: 0 12px;
-
-    border-bottom: 1px solid #303236;
-    background: #17181a;
-}
-
-.wnc-brand {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: .04em;
-    color: #f0f0f0;
-}
-
-.wnc-header-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-}
-
-.wnc-search {
-    width: 240px;
-    height: 30px;
-    min-width: 120px;
-    padding: 2px 8px;
-    border: 1px solid #383a3e;
-    border-radius: 2px;
-    outline: none;
-    background: #1c1e21;
-    color: #e2e2e2;
-    font: inherit;
-}
-
-.wnc-search::placeholder {
-    color: #73767b;
-}
-
-.wnc-search:focus {
-    border-color: #60636a;
-    background: #202226;
-}
-
-.wnc-button {
-    height: 30px;
-    padding: 0 11px;
-    border: 1px solid #414348;
-    border-radius: 3px;
-    background: #222428;
-    color: #e7e7e7;
-    font: inherit;
-    cursor: pointer;
-}
-
-.wnc-button:hover:not(:disabled) {
-    background: #292b2f;
-    border-color: #55585d;
-}
-
-.wnc-button:disabled {
-    opacity: .45;
-    cursor: default;
-}
-
-.wnc-primary {
-    background: #25272a;
-}
-
-.wnc-apply {
-    white-space: nowrap;
-}
-
-.wnc-screen {
-    width: 100%;
-    height: 100%;
-    min-height: 0;
-
-    display: flex;
-    flex-direction: column;
-
-    overflow: hidden;
-    padding: 14px;
-}
-
-#wnc-content {
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-}
-
-.wnc-section-heading,
-.wnc-workspace-heading {
-    height: 34px;
-    display: flex;
-    align-items: center;
-    margin-bottom: 8px;
-}
-
-.wnc-section-heading h1,
-.wnc-workspace-heading h1 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    color: #eeeeee;
-}
-
-.wnc-workspace-heading {
-    gap: 7px;
-}
-
-.wnc-back {
-    width: 27px;
-    height: 27px;
-    padding: 0;
-    border: 1px solid #3d3f43;
-    border-radius: 3px;
-    background: #202226;
-    color: #e8e8e8;
-    font-size: 21px;
-    line-height: 20px;
-    cursor: pointer;
-}
-
-.wnc-back:hover {
-    background: #292b2f;
-}
-
-.wnc-tabs {
-    display: flex;
-    height: 32px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid #34363a;
-}
-
-.wnc-tab {
-    min-width: 70px;
-    height: 31px;
-    padding: 0 12px;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: #8f9298;
-    font: inherit;
-    cursor: pointer;
-}
-
-.wnc-tab:hover {
-    color: #d8d8d8;
-}
-
-.wnc-tab.active {
-    border-bottom-color: #d4d4d4;
-    color: #f0f0f0;
-}
-
-.wnc-table-wrap {
-    width: 100%;
-    flex: 1;
-    min-height: 0;
-
-    overflow: auto;
-
-    border: 1px solid #303236;
-    background: #151618;
-}
-
-.wnc-table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-}
-
-.wnc-table th,
-.wnc-table td {
-    height: 31px;
-    padding: 0 7px;
-    border-right: 1px solid #303236;
-    border-bottom: 1px solid #303236;
-    vertical-align: middle;
-    text-align: left;
-    overflow: hidden;
-}
-
-.wnc-table th:last-child,
-.wnc-table td:last-child {
-    border-right: 0;
-}
-
-.wnc-table th {
-    height: 29px;
-    background: #1c1e21;
-    color: #9da0a5;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: none;
-    white-space: nowrap;
-}
-
-.wnc-table td {
-    background: #151618;
-    color: #dedede;
-}
-
-.wnc-table tbody tr:hover td {
-    background: #1a1c1f;
-}
-
-.wnc-clickable-row {
-    cursor: pointer;
-}
-
-.wnc-clickable-row:hover td {
-    background: #202226;
-}
-
-.wnc-unmatched-row td {
-    color: #d6d6d6;
-}
-
-.wnc-collapse-row {
-    cursor: pointer;
-}
-
-.wnc-collapse-row td {
-    height: 30px;
-    background: #191b1e !important;
-    color: #9da0a5 !important;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-.wnc-collapse-row:hover td {
-    background: #202226 !important;
-    color: #d0d2d5 !important;
-}
-
-.wnc-collapse-arrow {
-    display: inline-block;
-    width: 18px;
-    color: #8d9095;
-}
-
-.wnc-collapse-count {
-    margin-left: 5px;
-    color: #696c71;
-    font-weight: 400;
-}
-
-.wnc-number {
-    width: 90px;
-    text-align: right !important;
-    color: #b8bbc0 !important;
-    font-variant-numeric: tabular-nums;
-}
-
-.wnc-site-status {
-    width: 90px;
-    text-align: center !important;
-}
-
-.wnc-check {
-    color: #65c174;
-    font-weight: 700;
-}
-
-.wnc-cross {
-    color: #8c8e93;
-    font-weight: 600;
-}
-
-.wnc-empty {
-    height: 40px !important;
-    text-align: center !important;
-    color: #777a80 !important;
-}
-
-.wnc-cell-input,
-.wnc-cell-select,
-.wnc-control-select {
-    width: 100%;
-    height: 27px;
-    min-width: 0;
-    padding: 2px 5px;
-    border: 1px solid #383a3e;
-    border-radius: 2px;
-    outline: none;
-    background: #1c1e21;
-    color: #e2e2e2;
-    font: inherit;
-}
-
-.wnc-cell-input:focus,
-.wnc-cell-select:focus,
-.wnc-control-select:focus {
-    border-color: #60636a;
-    background: #202226;
-}
-
-.wnc-cell-select {
-    cursor: pointer;
-}
-
-.wnc-center {
-    width: 72px;
-    text-align: center !important;
-}
-
-.wnc-delete-cell {
-    width: 34px;
-    text-align: center !important;
-    padding: 0 !important;
-}
-
-.wnc-delete {
-    width: 25px;
-    height: 25px;
-    border: 0;
-    background: transparent;
-    color: #85878c;
-    font-size: 18px;
-    line-height: 24px;
-    cursor: pointer;
-}
-
-.wnc-delete:hover {
-    color: #d2d2d2;
-    background: #292b2f;
-}
-
-.wnc-add-row td {
-    height: 34px;
-    background: #17191b !important;
-}
-
-.wnc-add-button {
-    height: 26px;
-    padding: 0 7px;
-    border: 1px solid transparent;
-    background: transparent;
-    color: #989ba1;
-    font: inherit;
-    cursor: pointer;
-}
-
-.wnc-add-button:hover {
-    border-color: #3b3d41;
-    background: #222428;
-    color: #e1e1e1;
-}
-
-.wnc-group-options {
-    width: 360px;
-    max-width: 100%;
-    margin-top: 10px;
-}
-
-.wnc-group-options .wnc-table td:first-child {
-    width: 150px;
-    color: #aeb1b6;
-}
-
-.wnc-group-options .wnc-table td:last-child {
-    text-align: left;
-}
-
-/*
- * Unmatched has six controls:
- *
- *   Groups
- *   Target Group
- *   Type
- *   Template
- *   Case
- *   Apply Checked
- *
- * Keep them together on one compact row on normal desktop widths.
- */
-.wnc-unmatched-controls {
-    display: grid;
-    grid-template-columns:
-        auto
-        minmax(150px, 1fr)
-        100px
-        115px
-        80px
-        auto;
-    gap: 5px;
-    margin-bottom: 8px;
-    align-items: center;
-}
-
-.wnc-unmatched-controls .wnc-control-select {
-    height: 30px;
-}
-
-.wnc-unmatched-controls .wnc-button {
-    height: 30px;
-}
-
-.wnc-check-cell {
-    width: 54px;
-    text-align: center !important;
-}
-
-.wnc-unmatched-table th:nth-child(1) {
-    width: 54px;
-}
-
-.wnc-unmatched-table th:nth-child(5) {
-    width: 85px;
-}
-
-.wnc-rules-table th:nth-child(3) {
-    width: 95px;
-}
-
-.wnc-rules-table th:nth-child(4),
-.wnc-rules-table th:nth-child(5) {
-    width: 65px;
-}
-
-.wnc-rules-table th:nth-child(6) {
-    width: 100px;
-}
-
-.wnc-rules-table th:nth-child(7) {
-    width: 75px;
-}
-
-@media (max-width: 800px) {
-    .wnc-unmatched-controls {
-        grid-template-columns:
-            auto
-            1fr
-            1fr
-            1fr
-            1fr
-            auto;
-    }
-
-    .wnc-screen {
-        padding: 8px;
-    }
-
-    .wnc-header {
-        padding: 0 8px;
-    }
-}
-
-@media (max-width: 600px) {
-    .wnc-unmatched-controls {
-        grid-template-columns:
-            1fr
-            1fr
-            1fr;
-    }
-
-    .wnc-unmatched-controls .wnc-button {
-        width: 100%;
-    }
-}
-        `;
-
-        document.head.appendChild(style);
-    }
-
-    function closeUI() {
-        document.getElementById("wnc-root")?.remove();
-    }
-
-    // ---------------------------------------------------------------------
-    // Startup
-    // ---------------------------------------------------------------------
-
-    function openUI() {
-        if (document.readyState === "loading") {
-            document.addEventListener(
-                "DOMContentLoaded",
-                mount,
-                { once: true }
-            );
-        } else {
-            mount();
-        }
-    }
-
-    if (typeof GM_registerMenuCommand === "function") {
-        GM_registerMenuCommand(
-            "WNC — Open Rule Workbench",
-            openUI
-        );
-    }
-
-})();
