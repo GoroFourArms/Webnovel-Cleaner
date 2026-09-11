@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.4
+// @version      6.1.5
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1617,10 +1617,6 @@ function cycleGroupHTML() {
 
         document.head.appendChild(style);
     }
-
-    // ---------------------------------------------------------------------
-    // Root UI
-    // ---------------------------------------------------------------------
 
     function mount() {
         const existing = document.getElementById("wnc-root");
@@ -3444,7 +3440,5 @@ function handleInput(event) {
 GM_registerMenuCommand("Webnovel Cleaner", () => {
     mount();
 });
-
-mount();
 
 })();
