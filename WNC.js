@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.0.17
+// @version      6.0.18
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1442,11 +1442,13 @@ function renderGroups(content) {
         .filter(item => item.searchMatch);
 
     const activeGroups = groups.filter(item =>
-        item.matches > 0 || item.siteMatches
+        item.group.enabled &&
+        (item.matches > 0 || item.siteMatches)
     );
 
     const otherGroups = groups.filter(item =>
-        item.matches === 0 && !item.siteMatches
+        !item.group.enabled ||
+        (item.matches === 0 && !item.siteMatches)
     );
 
     const rows = activeGroups.map(item => {
@@ -1638,18 +1640,23 @@ function renderGroups(content) {
                             class="wnc-clickable-row wnc-unmatched-row"
                             data-action="open-unmatched"
                         >
-                            <td>Unmatched</td>
+                            <td>Candidate</td>
+
+                            <td></td>
+
+                            <td></td>
+
+                            <td></td>
+
+                            <td></td>
+
+                            <td></td>
+
                             <td></td>
 
                             <td class="wnc-number">
                                 ${state.candidates.length}
                             </td>
-
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
                         </tr>
                     </tbody>
 
@@ -2020,7 +2027,7 @@ function renderGroups(content) {
 }
 
     // ---------------------------------------------------------------------
-    // Unmatched screen
+// Candidate screen
     // ---------------------------------------------------------------------
 
     function renderUnmatched(content) {
@@ -2231,7 +2238,7 @@ function renderGroups(content) {
                                 ? "disabled"
                                 : ""
                         }
-                    >Apply Checked</button>
+                    >Apply</button>
 
                 </div>
 
@@ -2255,7 +2262,7 @@ function renderGroups(content) {
                                             colspan="5"
                                             class="wnc-empty"
                                         >
-                                            No unmatched candidates
+                                            No candidates
                                         </td>
                                     </tr>
                                 `
@@ -2497,7 +2504,7 @@ function handleChange(event) {
 
             /*
              * Candidate edits are deliberately not written to the database.
-             * Unmatched is transient WNC state.
+ * Candidate is transient WNC state.
              */
             return;
         }
@@ -2646,10 +2653,10 @@ function handleChange(event) {
     function openUnmatched() {
         state.screen = "unmatched";
 
-        /*
-         * Always rescan when entering Unmatched so the list reflects the
-         * current page and current FoxReplace database.
-         */
+    /*
+     * Always rescan when entering Candidate so the list reflects the
+     * current page and current FoxReplace database.
+     */
         scanCandidates();
 
         render();
@@ -2835,11 +2842,7 @@ function handleChange(event) {
             if (!candidate) {
                 continue;
             }
-
             let input = String(candidate.input ?? "");
-            if (!input.trim()) {
-    continue;
-}
             const output = String(candidate.output ?? "");
 
             /*
@@ -2858,6 +2861,10 @@ function handleChange(event) {
                 );
             }
 
+            if (!input.trim()) {
+                continue;
+            }
+
             const rule = createNativeRule();
 
             rule.input = input;
@@ -2869,9 +2876,9 @@ function handleChange(event) {
 
             group.substitutions.push(rule);
 
-            /*
-             * Remove from Unmatched.
-             */
+        /*
+         * Remove from Candidate.
+         */
             state.candidates.splice(index, 1);
         }
 
@@ -2880,7 +2887,7 @@ function handleChange(event) {
         saveDatabase();
 
         /*
-         * Return to the refreshed Unmatched spreadsheet.
+          * Return to the refreshed Candidate spreadsheet.
          */
         state.screen = "unmatched";
 
@@ -2922,7 +2929,7 @@ function handleChange(event) {
 
             /*
              * Import replaces only the canonical FoxReplace database.
-             * Unmatched remains transient.
+              * Candidate remains transient.
              */
            state.candidates = [];
 state.selectedCandidates.clear();
@@ -2987,3 +2994,5 @@ render();
 
         URL.revokeObjectURL(url);
     }
+
+})();
