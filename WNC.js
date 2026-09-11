@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.0.19
+// @version      6.1.0
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1689,7 +1689,12 @@ function renderGroups(content) {
                         title="Back"
                     >‹</button>
 
-                    <h1>${escapeHTML(group.name || "(Unnamed)")}</h1>
+                   <input
+    class="wnc-group-name"
+    data-field="group-name"
+    value="${escapeHTML(group.name || "")}"
+    placeholder="Group name"
+>
                 </div>
 
                 <div class="wnc-tabs">
@@ -2277,6 +2282,20 @@ function renderGroups(content) {
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
+    function updateCandidateTemplate() {
+    if (state.candidateType !== "regexp") {
+        return;
+    }
+
+    for (const candidate of state.candidates) {
+        if (!candidate._inputEdited) {
+            candidate.input = generateTemplateInput(
+                candidate.candidate,
+                state.candidateTemplate
+            );
+        }
+    }
+}
 function handleClick(event) {
 const target = event.target.closest("[data-action]");
 if (!target) {
@@ -2304,13 +2323,21 @@ switch (action) {
         );
         break;
 
-    case "unmatched-type":
-        handleUnmatchedControl(target);
-        break;
+case "unmatched-type":
+    state.candidateType = event.target.dataset.value;
 
-    case "unmatched-template":
-        handleUnmatchedControl(target);
-        break;
+    if (state.candidateType === "regexp") {
+        updateCandidateTemplate();
+    }
+
+    render();
+    break;
+
+case "unmatched-template":
+    state.candidateTemplate = event.target.dataset.value;
+    updateCandidateTemplate();
+    render();
+    break;
 
     case "unmatched-case":
         handleUnmatchedControl(target);
@@ -2444,7 +2471,18 @@ function handleChange(event) {
             handleGroupField(target);
         }
     }
+const groupNameInput = event.target.closest(".wnc-group-name");
 
+if (groupNameInput) {
+    const group = db.groups[state.groupIndex];
+
+    if (group) {
+        group.name = groupNameInput.value;
+        saveDatabase();
+    }
+
+    return;
+}
     function handleInput(event) {
         const target = event.target;
 
@@ -2996,10 +3034,9 @@ render();
     }
     
 GM_registerMenuCommand("Webnovel Cleaner", () => {
-    state.screen = "groups";
-    state.groupIndex = null;
-    state.tab = "rules";
-    render();
+    mount();
 });
+
+mount();
 
 })();
