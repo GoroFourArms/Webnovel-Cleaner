@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.1
+// @version      6.1.2
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -2940,48 +2940,71 @@ function handleInput(event) {
     // Import
     // ---------------------------------------------------------------------
 
-    async function importFile(file) {
+     function importFile(file) {
         if (!file) {
             return;
         }
 
-        try {
-            const text = await file.text();
-            const parsed = JSON.parse(text);
+        const reader = new FileReader();
 
-            const validated = normalizeDatabase(parsed);
+        reader.onload = () => {
+            try {
+                const text = String(reader.result || "");
+                const parsed = JSON.parse(text);
 
-            if (!validated) {
+                const validated = normalizeDatabase(parsed);
+
+                if (!validated) {
+                    alert(
+                        "Invalid FoxReplace JSON.\n\n" +
+                        "The file must contain a FoxReplace database with a groups array.\n\n" +
+                        "The current WNC database was not changed."
+                    );
+
+                    return;
+                }
+
+                db = validated;
+
+                saveDatabase();
+
+                /*
+                 * Import replaces the canonical FoxReplace database.
+                 * Candidate remains transient.
+                 */
+                state.candidates = [];
+                state.selectedCandidates.clear();
+                state.unmatchedInitialized = false;
+
+                state.screen = "groups";
+                state.groupIndex = null;
+                state.tab = "rules";
+
+                render();
+
+            } catch (error) {
+                console.error("WNC import error:", error);
+
                 alert(
-                    "Invalid FoxReplace JSON.\n\n" +
+                    "The JSON file could not be imported.\n\n" +
                     "The current WNC database was not changed."
                 );
-
-                return;
             }
+        };
 
-            db = validated;
-
-            saveDatabase();
-
-            /*
-             * Import replaces only the canonical FoxReplace database.
-              * Candidate remains transient.
-             */
-           state.candidates = [];
-state.selectedCandidates.clear();
-state.unmatchedInitialized = false;
-
-render();
-
-        } catch (error) {
-            console.error("WNC import error:", error);
+        reader.onerror = () => {
+            console.error(
+                "WNC import read error:",
+                reader.error
+            );
 
             alert(
-                "The JSON file could not be imported.\n\n" +
+                "The JSON file could not be read.\n\n" +
                 "The current WNC database was not changed."
             );
-        }
+        };
+
+        reader.readAsText(file);
     }
 
     // ---------------------------------------------------------------------
