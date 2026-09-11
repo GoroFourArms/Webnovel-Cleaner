@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.0.5
+// @version      6.0.6
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -82,7 +82,8 @@
         selectedCandidates: new Set(),
 
         searchQuery: "",
-        showOtherGroups: false
+        showOtherGroups: false,
+unmatchedInitialized: false
     };
 
     // ---------------------------------------------------------------------
@@ -667,14 +668,15 @@ function addCandidate(map, value) {
         return db.groups.flatMap(group => group.substitutions);
     }
 
-    function candidateCoveredByExistingRule(candidate) {
-        const rules = getAllRules();
+function candidateCoveredByExistingRule(candidate) {
+    const rules = getAllRules();
 
-        for (const rule of rules) {
-            if (!rule.enabled || !rule.input) {
-                continue;
-            }
+    for (const rule of rules) {
+        if (!rule.enabled || !rule.input) {
+            continue;
+        }
 
+        if (rule.inputType === "regexp") {
             const regex = buildRuleRegex(rule);
 
             if (!regex) {
@@ -683,31 +685,45 @@ function addCandidate(map, value) {
 
             regex.lastIndex = 0;
 
-            if (regex.test(candidate)) {
+            const match = regex.exec(candidate);
+
+            if (
+                match &&
+                match.index === 0 &&
+                match[0].length === candidate.length
+            ) {
                 return true;
             }
 
-            /*
-             * Also test the candidate inside the page context.
-             */
-            regex.lastIndex = 0;
-
-            if (ruleMatchesText(rule, candidate)) {
-                return true;
-            }
+            continue;
         }
 
-        return false;
+        const input = rule.caseSensitive
+            ? rule.input
+            : rule.input.toLowerCase();
+
+        const value = rule.caseSensitive
+            ? candidate
+            : candidate.toLowerCase();
+
+        if (input === value) {
+            return true;
+        }
     }
+
+    return false;
+}
 
     function scanCandidates() {
         const text = getPageText();
 
         if (!text) {
-            state.candidates = [];
-            state.selectedCandidates.clear();
-            return;
-        }
+    state.candidates = [];
+    state.selectedCandidates.clear();
+        state.unmatchedInitialized = true;
+}
+    return;
+}
 
         const discovered = extractCandidates(text)
             .filter(item => !candidateCoveredByExistingRule(item.candidate));
@@ -728,7 +744,7 @@ function addCandidate(map, value) {
                 ? groups[0].index
                 : null;
         }
-    }
+    state.unmatchedInitialized = true;}
 
 // ---------------------------------------------------------------------
 // Candidate clustering
@@ -1148,10 +1164,11 @@ function normalizeToken(token) {
         injectStyles();
 
         root.addEventListener("click", handleClick);
-        root.addEventListener("change", handleChange);
-        root.addEventListener("input", handleInput);
+root.addEventListener("change", handleChange);
+root.addEventListener("input", handleInput);
 
-        render();
+scanCandidates();
+render();
     }
 
     // ---------------------------------------------------------------------
@@ -1210,14 +1227,21 @@ function findTopCandidateForGroup(group, text) {
             const candidate = match[0];
 
             if (candidate) {
-                const total =
-                    (counts.get(candidate) || 0) + 1;
+                const total = (counts.get(candidate) || 0) + 1;
 
                 counts.set(candidate, total);
 
                 if (
                     !top ||
-                    total > top.total
+                    total > top.total ||
+                    (
+                        total === top.total &&
+                        candidate.localeCompare(
+                            top.candidate,
+                            undefined,
+                            { sensitivity: "base" }
+                        ) < 0
+                    )
                 ) {
                     top = {
                         candidate,
@@ -1227,9 +1251,6 @@ function findTopCandidateForGroup(group, text) {
                 }
             }
 
-            /*
-             * Avoid an infinite loop on zero-length regexes.
-             */
             if (match[0].length === 0) {
                 regex.lastIndex++;
             }
@@ -1239,12 +1260,12 @@ function findTopCandidateForGroup(group, text) {
     return top;
 }
 
-    function renderGroups(content) {
-        const query = state.searchQuery.trim().toLowerCase();
+function renderGroups(content) {
+    const query = state.searchQuery.trim().toLowerCase();
+    const pageText = getPageText();
 
-        const groups = sortedGroups()
-            .map(({ group, index }) => {
-                const pageText = getPageText();
+    const groups = sortedGroups()
+        .map(({ group, index }) => {
 
 const ruleMatches = group.substitutions
     .map(rule => ({
@@ -1293,7 +1314,7 @@ const siteMatches = groupMatchesCurrentSite(group);
         );
 
         const rows = activeGroups.map(item => {
-      const {
+        const {
     group,
     index,
     ruleCount,
@@ -1301,11 +1322,11 @@ const siteMatches = groupMatchesCurrentSite(group);
     siteMatches
 } = item;
 
-const topCandidate =
-    findTopCandidateForGroup(
+        const topCandidate =
+        findTopCandidateForGroup(
         group,
-        getPageText()
-    );
+        pageText
+        );
 
             return `
                 <tr
@@ -1824,9 +1845,9 @@ const otherRows = otherGroups.map(item => {
     // ---------------------------------------------------------------------
 
     function renderUnmatched(content) {
-        if (!state.candidates.length) {
-            scanCandidates();
-        }
+    if (!state.unmatchedInitialized) {
+        scanCandidates();
+    }
 
         const groups = sortedGroups();
 
@@ -2542,6 +2563,9 @@ const otherRows = otherGroups.map(item => {
             }
 
             let input = String(candidate.input ?? "");
+            if (!input.trim()) {
+    continue;
+}
             const output = String(candidate.output ?? "");
 
             /*
