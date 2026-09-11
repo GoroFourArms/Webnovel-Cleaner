@@ -2994,5 +2994,12 @@ render();
 
         URL.revokeObjectURL(url);
     }
+    
+GM_registerMenuCommand("Webnovel Cleaner", () => {
+    state.screen = "groups";
+    state.groupIndex = null;
+    state.tab = "rules";
+    render();
+});
 
 })();
