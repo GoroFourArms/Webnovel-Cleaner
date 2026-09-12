@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.5
+// @version      6.1.6
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1172,16 +1172,26 @@ function cycleGroupHTML() {
      *
      * No \\s+.
      */
-    function generateJapanesePattern(tokens) {
-        if (tokens.length < 2) {
-            return tokens.join(" ");
-        }
-
-        return [
-            tokens[tokens.length - 1],
-            ...tokens.slice(0, -1)
-        ].join(" ");
+    
+function generateJapanesePattern(tokens) {
+    if (tokens.length < 2) {
+        return {
+            input: tokens.join(" "),
+            output: tokens.join(" ")
+        };
     }
+
+    const leftRight = tokens.join(" ");
+    const rightLeft = [
+        tokens[tokens.length - 1],
+        ...tokens.slice(0, -1)
+    ].join(" ");
+
+    return {
+        input: `${leftRight}|${rightLeft}`,
+        output: tokens[tokens.length - 1]
+    };
+}
 
     /*
      * Other:
@@ -1469,8 +1479,8 @@ function cycleGroupHTML() {
             }
 
             .wnc-cell-input {
-                width: 100%;
-                min-width: 120px;
+                width: auto;
+                min-width: 0;
                 height: 30px;
                 padding: 4px 7px;
                 color: #eee;
@@ -1479,7 +1489,9 @@ function cycleGroupHTML() {
                 border-radius: 4px;
                 font: inherit;
             }
-
+            .wnc-unmatched-table {
+                 width: auto;
+            }
             .wnc-cell-input:focus {
                 border-color: #888;
                 outline: none;
@@ -2625,7 +2637,7 @@ function renderGroups(content) {
                                 ? "disabled"
                                 : ""
                         }
-                    >Apply</button>
+                    >A</button>
 
                 </div>
 
@@ -2633,11 +2645,11 @@ function renderGroups(content) {
                     <table class="wnc-table wnc-unmatched-table">
                         <thead>
                             <tr>
-                                <th>Apply</th>
+                                <th>A</th>
                                 <th>Candidate</th>
                                 <th>Input</th>
                                 <th>Output</th>
-                                <th>Matches</th>
+                                <th>#</th>
                             </tr>
                         </thead>
 
@@ -2664,17 +2676,24 @@ function renderGroups(content) {
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
-    function updateCandidateTemplate() {
+function updateCandidateTemplate() {
     if (state.candidateType !== "regexp") {
         return;
     }
-
     for (const candidate of state.candidates) {
         if (!candidate._inputEdited) {
-            candidate.input = generateTemplateInput(
-                candidate.candidate,
-                state.candidateTemplate
-            );
+            if (state.candidateTemplate === "Japanese") {
+                const pattern = generateJapanesePattern(
+                    tokenizeCandidate(candidate.candidate)
+                );
+                candidate.input = pattern.input;
+                candidate.output = pattern.output;
+            } else {
+                candidate.input = generateTemplateInput(
+                    candidate.candidate,
+                    state.candidateTemplate
+                );
+            }
         }
     }
 }
@@ -2708,7 +2727,15 @@ switch (action) {
 case "unmatched-type":
     state.candidateType = target.dataset.type;
 
-    if (state.candidateType === "regexp") {
+    if (state.candidateType === "text" ||
+        state.candidateType === "whole") {
+        for (const candidate of state.candidates) {
+            if (!candidate._inputEdited) {
+                candidate.input = candidate.candidate;
+            }
+            candidate.output = candidate.candidate;
+        }
+    } else if (state.candidateType === "regexp") {
         updateCandidateTemplate();
     }
 
@@ -2740,8 +2767,8 @@ case "unmatched-template":
         break;
 
     case "close":
-        closeUI();
-        break;
+    document.getElementById("wnc-root")?.remove();
+    break;
 
     case "open-group":
         openGroup(
