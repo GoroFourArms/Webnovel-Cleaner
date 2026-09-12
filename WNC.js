@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.9
+// @version      6.1.10
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -962,16 +962,85 @@ function candidatesShareToken(a, b) {
     return false;
 }
 
+
 function clusterAndSortCandidates(candidates) {
-const sorted = [...candidates].sort((a, b) => {
-if (b.matches !== a.matches) {
-return b.matches - a.matches;
+    const sorted = [...candidates].sort((a, b) => {
+        if (b.matches !== a.matches) {
+            return b.matches - a.matches;
+        }
+
+        return compareNames(
+            a.candidate,
+            b.candidate
+        );
+    });
+
+    const clusters = [];
+    const processed = new Set();
+
+    for (let i = 0; i < sorted.length; i++) {
+        if (processed.has(i)) {
+            continue;
+        }
+
+        const distances = new Map();
+        const queue = [i];
+
+        distances.set(i, 0);
+
+        while (queue.length) {
+            const sourceIndex = queue.shift();
+
+            for (let j = 0; j < sorted.length; j++) {
+                if (distances.has(j)) {
+                    continue;
+                }
+
+                if (
+                    candidatesShareToken(
+                        sorted[sourceIndex].candidate,
+                        sorted[j].candidate
+                    )
+                ) {
+                    distances.set(
+                        j,
+                        distances.get(sourceIndex) + 1
+                    );
+
+                    queue.push(j);
+                }
+            }
+        }
+
+        for (const index of distances.keys()) {
+            processed.add(index);
+        }
+
+        const cluster = [];
+
+        for (const [index, distance] of distances.entries()) {
+            if (distance <= 2) {
+                cluster.push(sorted[index]);
+            }
+        }
+
+        if (!cluster.length) {
+            continue;
+        }
+
+        const maxMatches = sorted[0]?.matches || 0;
+
+        if (
+            cluster.length > 1 ||
+            cluster[0].matches >=
+                maxMatches * UNCLUSTERED_FREQUENCY_RATIO
+        ) {
+            clusters.push(cluster);
+        }
+    }
+
+    return clusters.flat();
 }
-    return compareNames(
-        a.candidate,
-        b.candidate
-    );
-});
 
 const clusters = [];
 const assigned = new Set();
@@ -1065,6 +1134,8 @@ function normalizeToken(token) {
         .toLowerCase()
         .replace(/[’']/g, "'")
         .replace(/[–—]/g, "-")
+        .replace(/'s$/g, "")
+        .replace(/s$/g, "")
         .replace(/-/g, "");
 }
 
