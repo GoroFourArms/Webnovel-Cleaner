@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.7
+// @version      6.1.8
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -2517,40 +2517,11 @@ function renderGroups(content) {
                         }
                     </select>
 
-                    <div class="wnc-choice-group">
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                state.candidateType === "text"
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-type"
-                            data-type="text"
-                        >Text</button>
-
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                state.candidateType === "whole"
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-type"
-                            data-type="whole"
-                        >Whole</button>
-
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                state.candidateType === "regexp"
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-type"
-                            data-type="regexp"
-                        >Regex</button>
-                    </div>
+     <button
+    type="button"
+    class="wnc-choice"
+    data-action="unmatched-type-cycle"
+>${state.candidateType === "text" ? "Txt" : state.candidateType === "whole" ? "Wh" : "Rx"}</button>
 
                     <div class="wnc-choice-group">
                         <button
@@ -2721,8 +2692,13 @@ switch (action) {
         );
         break;
 
-case "unmatched-type":
-    state.candidateType = target.dataset.type;
+case "unmatched-type-cycle":
+    state.candidateType =
+        state.candidateType === "text"
+            ? "whole"
+            : state.candidateType === "whole"
+                ? "regexp"
+                : "text";
 
     if (state.candidateType === "text" ||
         state.candidateType === "whole") {
@@ -2732,7 +2708,7 @@ case "unmatched-type":
             }
             candidate.output = candidate.candidate;
         }
-    } else if (state.candidateType === "regexp") {
+    } else {
         updateCandidateTemplate();
     }
 
