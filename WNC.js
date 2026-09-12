@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.6
+// @version      6.1.7
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1286,8 +1286,8 @@ function generateJapanesePattern(tokens) {
             .wnc-header {
                 display: flex;
                 align-items: center;
-                gap: 10px;
-                padding: 10px 14px;
+                gap: 5px;
+                padding: 4px 6px;
                 background: #222;
                 border-bottom: 1px solid #444;
             }
@@ -1302,9 +1302,9 @@ function generateJapanesePattern(tokens) {
             .wnc-header-actions {
                 display: flex;
                 align-items: center;
-                gap: 8px;
-                flex-wrap: wrap;
-                width: 100%;
+                gap: 3px;
+                flex: 1;
+                min-width: 0;
             }
 
             .wnc-search {
@@ -1340,8 +1340,8 @@ function generateJapanesePattern(tokens) {
             }
 
             .wnc-button {
-                min-height: 34px;
-                padding: 6px 12px;
+                min-height: 24px;
+                padding: 2px 6px;
                 white-space: nowrap;
             }
 
@@ -1642,40 +1642,38 @@ function generateJapanesePattern(tokens) {
 
         root.innerHTML = `
             <div class="wnc-shell">
+            
                 <header class="wnc-header">
                     <div class="wnc-brand">WNC</div>
 
                     <div class="wnc-header-actions">
-
                         <input
                             id="wnc-search"
                             class="wnc-search"
                             type="search"
-                            placeholder="Search..."
+                            placeholder="Group..."
                             autocomplete="off"
                             spellcheck="false"
                             value="${escapeHTML(state.searchQuery)}"
                         >
 
                         <button
-                            class="wnc-button wnc-primary"
-                            data-action="create-group"
-                        >Create New Group</button>
-
-                        <button
                             class="wnc-button"
                             data-action="import"
-                        >Import</button>
+                            title="Import"
+                        >Imp</button>
 
                         <button
                             class="wnc-button"
                             data-action="export"
-                        >Export</button>
+                            title="Export"
+                        >Exp</button>
 
                         <button
                             class="wnc-button"
                             data-action="close"
-                        >Close</button>
+                            title="Close"
+                        >×</button>
 
                         <input
                             id="wnc-import-file"
@@ -1685,7 +1683,6 @@ function generateJapanesePattern(tokens) {
                         >
                     </div>
                 </header>
-
                 <main id="wnc-content"></main>
             </div>
         `;
