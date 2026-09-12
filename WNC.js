@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.8
+// @version      6.1.9
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -2523,79 +2523,22 @@ function renderGroups(content) {
     data-action="unmatched-type-cycle"
 >${state.candidateType === "text" ? "Txt" : state.candidateType === "whole" ? "Wh" : "Rx"}</button>
 
-                    <div class="wnc-choice-group">
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                state.candidateTemplate === "Korean"
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-template"
-                            data-template="Korean"
-                            ${
-                                state.candidateType !== "regexp"
-                                    ? "disabled"
-                                    : ""
-                            }
-                        >Korean</button>
+<button
+    type="button"
+    class="wnc-choice"
+    data-action="unmatched-template-cycle"
+    ${
+        state.candidateType !== "regexp"
+            ? "disabled"
+            : ""
+    }
+>${state.candidateTemplate === "Korean" ? "Kor" : state.candidateTemplate === "Japanese" ? "Jap" : "Oth"}</button>
 
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                state.candidateTemplate === "Japanese"
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-template"
-                            data-template="Japanese"
-                            ${
-                                state.candidateType !== "regexp"
-                                    ? "disabled"
-                                    : ""
-                            }
-                        >Japanese</button>
-
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                state.candidateTemplate === "Other"
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-template"
-                            data-template="Other"
-                            ${
-                                state.candidateType !== "regexp"
-                                    ? "disabled"
-                                    : ""
-                            }
-                        >Other</button>
-                    </div>
-
-                    <div class="wnc-choice-group">
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                !state.candidateCaseSensitive
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-case"
-                            data-case="false"
-                        >No</button>
-
-                        <button
-                            type="button"
-                            class="wnc-choice ${
-                                state.candidateCaseSensitive
-                                    ? "active"
-                                    : ""
-                            }"
-                            data-action="unmatched-case"
-                            data-case="true"
-                        >Yes</button>
-                    </div>
+<button
+    type="button"
+    class="wnc-choice"
+    data-action="unmatched-case-cycle"
+>${state.candidateCaseSensitive ? "Y" : "N"}</button>
 
                     <button
                         class="wnc-button wnc-apply"
@@ -2715,15 +2658,23 @@ case "unmatched-type-cycle":
     render();
     break;
 
-case "unmatched-template":
-    state.candidateTemplate = target.dataset.template;
+case "unmatched-template-cycle":
+    state.candidateTemplate =
+        state.candidateTemplate === "Korean"
+            ? "Japanese"
+            : state.candidateTemplate === "Japanese"
+                ? "Other"
+                : "Korean";
+
     updateCandidateTemplate();
     render();
     break;
         
-    case "unmatched-case":
-        handleUnmatchedControl(target);
-        break;
+case "unmatched-case-cycle":
+    state.candidateCaseSensitive =
+        !state.candidateCaseSensitive;
+    render();
+    break;
 
     case "create-group":
         createGroup();
@@ -2978,10 +2929,10 @@ function handleInput(event) {
                     target.dataset.template;
                 break;
 
-            case "unmatched-case":
-                state.candidateCaseSensitive =
-                    target.dataset.case === "true";
-                break;
+case "unmatched-case-cycle":
+    state.candidateCaseSensitive = !state.candidateCaseSensitive;
+    render();
+    break;
 
             default:
                 return;
