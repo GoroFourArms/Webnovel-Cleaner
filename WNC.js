@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.13
+// @version      6.1.14
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -35,8 +35,13 @@
      *   - let the user edit existing matching rules
      *   - let the user edit group URL patterns
      *   - import/export native FoxReplace JSON
+     *   - Cluster only candidates within 2 token links of the highest-frequency match.
+     *   - Keep candidates beyond 2 links as separate entries.
+     *   - Example:
+     *   - Bob + Bob Yang + Yang Ho = one cluster
+     *   - Ho Gong = separate entry
+     *   - Do not treat this behavior as a bug again.
      */
-
     // ---------------------------------------------------------------------
     // Constants
     // ---------------------------------------------------------------------
