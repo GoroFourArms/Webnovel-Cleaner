@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.12
+// @version      6.1.13
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -963,6 +963,7 @@ function candidatesShareToken(a, b) {
 }
 
 
+
 function clusterAndSortCandidates(candidates) {
     const sorted = [...candidates].sort((a, b) => {
         if (b.matches !== a.matches) {
@@ -975,38 +976,29 @@ function clusterAndSortCandidates(candidates) {
         );
     });
 
-const clusters = [];
-const assigned = new Set();
+    const clusters = [];
+    const assigned = new Set();
 
-for (let i = 0; i < sorted.length; i++) {
-    if (assigned.has(i)) {
-        continue;
-    }
+    for (let i = 0; i < sorted.length; i++) {
+        if (assigned.has(i)) {
+            continue;
+        }
 
-    const clusterIndexes = new Set([i]);
+        const clusterIndexes = new Set([i]);
+        const distances = new Map();
+        const queue = [i];
 
-    /*
-     * Breadth-first search with a maximum depth of 2.
-     *
-     * Degree 0:
-     *   Bob
-     *
-     * Degree 1:
-     *   Bob Yang
-     *
-     * Degree 2:
-     *   Yang Ho
-     *
-     * Degree 3 is never explored.
-     */
-    let frontier = [i];
+        distances.set(i, 0);
 
-    for (let depth = 0; depth < 2; depth++) {
-        const nextFrontier = [];
+        /*
+         * Find the full connected chain so distant candidates
+         * are marked as processed but remain available separately.
+         */
+        while (queue.length) {
+            const sourceIndex = queue.shift();
 
-        for (const sourceIndex of frontier) {
             for (let j = 0; j < sorted.length; j++) {
-                if (clusterIndexes.has(j) || assigned.has(j)) {
+                if (distances.has(j)) {
                     continue;
                 }
 
@@ -1016,44 +1008,54 @@ for (let i = 0; i < sorted.length; i++) {
                         sorted[j].candidate
                     )
                 ) {
-                    clusterIndexes.add(j);
-                    nextFrontier.push(j);
+                    distances.set(
+                        j,
+                        distances.get(sourceIndex) + 1
+                    );
+
+                    queue.push(j);
                 }
             }
         }
 
-        frontier = nextFrontier;
+        /*
+         * Only cluster candidates within 2 degrees.
+         * Candidates beyond degree 2 remain separate.
+         */
+        for (const [index, distance] of distances.entries()) {
+            if (distance <= 2) {
+                clusterIndexes.add(index);
+            }
+        }
 
-        if (!frontier.length) {
-            break;
+        const cluster = [];
+
+        for (const index of clusterIndexes) {
+            cluster.push(sorted[index]);
+            assigned.add(index);
+        }
+
+        const maxMatches = sorted[0]?.matches || 0;
+
+        if (
+            cluster.length > 1 ||
+            cluster[0].matches >=
+                maxMatches * UNCLUSTERED_FREQUENCY_RATIO
+        ) {
+            clusters.push(cluster);
         }
     }
 
-    const cluster = [];
-
-    for (const index of clusterIndexes) {
-        cluster.push(sorted[index]);
-        assigned.add(index);
-    }
-
     /*
-     * Keep the cluster only when:
-     *
-     * 1. It contains multiple candidates, or
-     * 2. Its candidate has at least 5% of the maximum frequency.
+     * Add candidates beyond degree 2 as separate entries.
      */
-    const maxMatches = sorted[0]?.matches || 0;
-
-    if (
-        cluster.length > 1 ||
-        cluster[0].matches >=
-            maxMatches * UNCLUSTERED_FREQUENCY_RATIO
-    ) {
-        clusters.push(cluster);
+    for (let i = 0; i < sorted.length; i++) {
+        if (!assigned.has(i)) {
+            clusters.push([sorted[i]]);
+        }
     }
-}
 
-return clusters.flat();
+    return clusters.flat();
 }
 function tokenizeCandidate(value) {
     return String(value)
