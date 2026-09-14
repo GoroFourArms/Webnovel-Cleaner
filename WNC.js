@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.11
+// @version      6.1.12
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -975,73 +975,6 @@ function clusterAndSortCandidates(candidates) {
         );
     });
 
-    const clusters = [];
-    const processed = new Set();
-
-    for (let i = 0; i < sorted.length; i++) {
-        if (processed.has(i)) {
-            continue;
-        }
-
-        const distances = new Map();
-        const queue = [i];
-
-        distances.set(i, 0);
-
-        while (queue.length) {
-            const sourceIndex = queue.shift();
-
-            for (let j = 0; j < sorted.length; j++) {
-                if (distances.has(j)) {
-                    continue;
-                }
-
-                if (
-                    candidatesShareToken(
-                        sorted[sourceIndex].candidate,
-                        sorted[j].candidate
-                    )
-                ) {
-                    distances.set(
-                        j,
-                        distances.get(sourceIndex) + 1
-                    );
-
-                    queue.push(j);
-                }
-            }
-        }
-
-        for (const index of distances.keys()) {
-            processed.add(index);
-        }
-
-        const cluster = [];
-
-        for (const [index, distance] of distances.entries()) {
-            if (distance <= 2) {
-                cluster.push(sorted[index]);
-            }
-        }
-
-        if (!cluster.length) {
-            continue;
-        }
-
-        const maxMatches = sorted[0]?.matches || 0;
-
-        if (
-            cluster.length > 1 ||
-            cluster[0].matches >=
-                maxMatches * UNCLUSTERED_FREQUENCY_RATIO
-        ) {
-            clusters.push(cluster);
-        }
-    }
-
-    return clusters.flat();
-}
-
 const clusters = [];
 const assigned = new Set();
 
@@ -1135,7 +1068,7 @@ function normalizeToken(token) {
         .replace(/[’']/g, "'")
         .replace(/[–—]/g, "-")
         .replace(/'s$/g, "")
-        .replace(/s$/g, "")
+        .replace(/s'$/g, "")
         .replace(/-/g, "");
 }
 
@@ -1328,9 +1261,11 @@ function generateJapanesePattern(tokens) {
     #wnc-root {
         position: fixed;
         top: 0;
-        left: 0;
-        right: 0;
-        width: 100%;
+        left: 50%;
+        right: auto;
+        width: fit-content;
+        max-width: 95vw;
+        transform: translateX(-50%);
         max-height: 90vh;
         z-index: 2147483647;
         overflow: auto;
