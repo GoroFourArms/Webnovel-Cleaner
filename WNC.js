@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.14
+// @version      6.1.15
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -213,14 +213,48 @@ return normalized;
 
 
 function normalizeRule(rule) {
-    if (!rule || typeof rule !== "object") return null;
+    if (!rule || typeof rule !== "object") {
+        return null;
+    }
 
     const normalized = {
         ...rule
     };
 
-    normalized.input = String(normalized.input ?? "");
-    normalized.output = String(normalized.output ?? "");
+    normalized.input = String(
+        normalized.input ?? ""
+    );
+
+    normalized.output = String(
+        normalized.output ?? ""
+    );
+
+    const inputType = String(
+        normalized.inputType ?? ""
+    )
+        .trim()
+        .toLowerCase();
+
+    if (
+        normalized.inputType === 1 ||
+        inputType === "1" ||
+        inputType === "whole" ||
+        inputType === "whole words" ||
+        inputType === "whole word" ||
+        inputType === "wholeword"
+    ) {
+        normalized.inputType = "whole";
+    } else if (
+        normalized.inputType === 2 ||
+        inputType === "2" ||
+        inputType === "regexp" ||
+        inputType === "regex" ||
+        inputType === "regular expression"
+    ) {
+        normalized.inputType = "regexp";
+    } else {
+        normalized.inputType = "text";
+    }
 
     if (
         normalized.outputType === 1 ||
@@ -230,21 +264,6 @@ function normalizeRule(rule) {
         normalized.outputType = 1;
     } else {
         normalized.outputType = 0;
-    }
-
-    // WNC uses readable strings internally.
-    if (
-        normalized.inputType === 1 ||
-        normalized.inputType === "1"
-    ) {
-        normalized.inputType = "whole";
-    } else if (
-        normalized.inputType === 2 ||
-        normalized.inputType === "2"
-    ) {
-        normalized.inputType = "regexp";
-    } else {
-        normalized.inputType = "text";
     }
 
     normalized.caseSensitive =
@@ -265,9 +284,10 @@ function normalizeRule(rule) {
                     ? false
                     : Boolean(normalized.enabled);
 
-    // Only normalize html when it actually exists.
     if ("html" in normalized) {
-        normalized.html = String(normalized.html ?? "none");
+        normalized.html = String(
+            normalized.html ?? "none"
+        );
     }
 
     return normalized;
@@ -484,13 +504,20 @@ function normalizeRule(rule) {
         return countRuleMatches(rule, text) > 0;
     }
 
-    function getPageText() {
-        if (!document.body) {
-            return "";
-        }
-
-        return document.body.innerText || "";
+function getPageText() {
+    if (!document.body) {
+        return "";
     }
+
+    const clone = document.body.cloneNode(true);
+    const wncRoot = clone.querySelector("#wnc-root");
+
+    if (wncRoot) {
+        wncRoot.remove();
+    }
+
+    return clone.innerText || "";
+}
 
     // ---------------------------------------------------------------------
     // Candidate scanner
