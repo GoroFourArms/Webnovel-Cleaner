@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.15
+// @version      6.1.16
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1008,86 +1008,93 @@ function clusterAndSortCandidates(candidates) {
         );
     });
 
-    const clusters = [];
-    const assigned = new Set();
+    if (!sorted.length) {
+        return [];
+    }
 
-    for (let i = 0; i < sorted.length; i++) {
-        if (assigned.has(i)) {
+    const result = [];
+    const clustered = new Set();
+
+    /*
+     * The highest-frequency candidate is the root.
+     */
+    const root = sorted[0];
+
+    const rootDistances = new Map();
+    const queue = [0];
+
+    rootDistances.set(0, 0);
+
+    /*
+     * Search only far enough to reach degree 2.
+     */
+    while (queue.length) {
+        const sourceIndex = queue.shift();
+        const sourceDistance =
+            rootDistances.get(sourceIndex);
+
+        if (sourceDistance >= 2) {
             continue;
         }
 
-        const clusterIndexes = new Set([i]);
-        const distances = new Map();
-        const queue = [i];
-
-        distances.set(i, 0);
-
-        /*
-         * Find the full connected chain so distant candidates
-         * are marked as processed but remain available separately.
-         */
-        while (queue.length) {
-            const sourceIndex = queue.shift();
-
-            for (let j = 0; j < sorted.length; j++) {
-                if (distances.has(j)) {
-                    continue;
-                }
-
-                if (
-                    candidatesShareToken(
-                        sorted[sourceIndex].candidate,
-                        sorted[j].candidate
-                    )
-                ) {
-                    distances.set(
-                        j,
-                        distances.get(sourceIndex) + 1
-                    );
-
-                    queue.push(j);
-                }
+        for (let j = 0; j < sorted.length; j++) {
+            if (rootDistances.has(j)) {
+                continue;
             }
-        }
 
-        /*
-         * Only cluster candidates within 2 degrees.
-         * Candidates beyond degree 2 remain separate.
-         */
-        for (const [index, distance] of distances.entries()) {
-            if (distance <= 2) {
-                clusterIndexes.add(index);
+            if (
+                candidatesShareToken(
+                    sorted[sourceIndex].candidate,
+                    sorted[j].candidate
+                )
+            ) {
+                rootDistances.set(
+                    j,
+                    sourceDistance + 1
+                );
+
+                queue.push(j);
             }
-        }
-
-        const cluster = [];
-
-        for (const index of clusterIndexes) {
-            cluster.push(sorted[index]);
-            assigned.add(index);
-        }
-
-        const maxMatches = sorted[0]?.matches || 0;
-
-        if (
-            cluster.length > 1 ||
-            cluster[0].matches >=
-                maxMatches * UNCLUSTERED_FREQUENCY_RATIO
-        ) {
-            clusters.push(cluster);
         }
     }
 
     /*
-     * Add candidates beyond degree 2 as separate entries.
+     * Build the top-frequency cluster.
+     *
+     * Degree 0:
+     *   Bob
+     *
+     * Degree 1:
+     *   Bob Yang
+     *
+     * Degree 2:
+     *   Yang Ho
+     *
+     * Degree 3:
+     *   Ho Gong - separate
      */
-    for (let i = 0; i < sorted.length; i++) {
-        if (!assigned.has(i)) {
-            clusters.push([sorted[i]]);
+    const topCluster = [];
+
+    for (const [index, distance] of rootDistances.entries()) {
+        if (distance <= 2) {
+            topCluster.push(sorted[index]);
+            clustered.add(index);
         }
     }
 
-    return clusters.flat();
+    result.push(...topCluster);
+
+    /*
+     * Every candidate outside the top cluster remains visible
+     * as its own separate entry.
+     */
+    for (let i = 0; i < sorted.length; i++) {
+        if (!clustered.has(i)) {
+            result.push(sorted[i]);
+        }
+    }
+
+    return result;
 }
 function tokenizeCandidate(value) {
     return String(value)
