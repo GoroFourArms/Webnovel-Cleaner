@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.16
+// @version      6.1.17
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -915,20 +915,6 @@ function candidateCoveredByExistingRule(candidate) {
 function scanCandidates() {
     const text = getPageText();
 
-    /*
-     * Default target group to the first alphabetical group.
-     */
-    if (
-        state.targetGroup === null ||
-        !db.groups[state.targetGroup]
-    ) {
-        const groups = sortedGroups();
-
-        state.targetGroup = groups.length
-            ? groups[0].index
-            : null;
-    }
-
     if (!text) {
         state.candidates = [];
         state.selectedCandidates.clear();
@@ -942,9 +928,35 @@ function scanCandidates() {
         );
 
     state.candidates = clusterAndSortCandidates(discovered);
-    state.selectedCandidates.clear();
 
+    state.selectedCandidates.clear();
     state.unmatchedInitialized = true;
+
+    /*
+     * Generate the current FoxReplace Input for every candidate
+     * using the existing WNC template system.
+     *
+     * No group, candidate type, or case-selection state is used.
+     */
+    for (const candidate of state.candidates) {
+        if (!candidate) continue;
+
+        if (state.candidateTemplate === "Japanese") {
+            const pattern = generateJapanesePattern(
+                tokenizeCandidate(candidate.candidate)
+            );
+
+            candidate.input = pattern?.input ?? "";
+            candidate.output = "";
+        } else {
+            candidate.input = generateTemplateInput(
+                candidate.candidate,
+                state.candidateTemplate
+            );
+
+            candidate.output = "";
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1217,7 +1229,7 @@ function cycleGroupHTML() {
      *
      * No \\s+.
      */
-    
+
 function generateJapanesePattern(tokens) {
     if (tokens.length < 2) {
         return {
@@ -1694,7 +1706,7 @@ function generateJapanesePattern(tokens) {
 
         root.innerHTML = `
             <div class="wnc-shell">
-            
+
                 <header class="wnc-header">
                     <div class="wnc-brand">WNC</div>
 
@@ -2478,332 +2490,270 @@ function renderGroups(content) {
 // Candidate screen
     // ---------------------------------------------------------------------
 
-    function renderUnmatched(content) {
+function renderUnmatched(content) {
     if (!state.unmatchedInitialized) {
         scanCandidates();
     }
 
-        const groups = sortedGroups();
+    const getCandidateInput = (candidate) => {
+        if (!candidate) {
+            return "";
+        }
 
-        const targetOptions = groups.map(({ group, index }) => `
-            <option
-                value="${index}"
-                ${
-                    state.targetGroup === index
-                        ? "selected"
-                        : ""
-                }
-            >${escapeHTML(group.name || "(Unnamed)")}</option>
-        `).join("");
+        if (state.candidateTemplate === "Japanese") {
+            const pattern = generateJapanesePattern(
+                tokenizeCandidate(candidate.candidate)
+            );
 
-        const rows = state.candidates.map((item, index) => `
+            return pattern?.input ?? "";
+        }
+
+        return generateTemplateInput(
+            candidate.candidate,
+            state.candidateTemplate
+        );
+    };
+
+    const rows = state.candidates.map((item, index) => {
+        const input = getCandidateInput(item);
+
+        return `
             <tr data-candidate-index="${index}">
-                <td class="wnc-check-cell">
-                    <input
-                        type="checkbox"
-                        data-candidate-check="${index}"
-                        ${
-                            state.selectedCandidates.has(index)
-                                ? "checked"
-                                : ""
-                        }
-                    >
-                </td>
-
                 <td>
-                    <input
-                        class="wnc-cell-input"
-                        data-candidate-field="candidate"
-                        data-candidate-index="${index}"
-                        value="${escapeHTML(item.candidate)}"
-                    >
-                </td>
-
-                <td>
-                    <input
-                        class="wnc-cell-input"
-                        data-candidate-field="input"
-                        data-candidate-index="${index}"
-                        value="${escapeHTML(item.input)}"
-                    >
-                </td>
-
-                <td>
-                    <input
-                        class="wnc-cell-input"
-                        data-candidate-field="output"
-                        data-candidate-index="${index}"
-                        value="${escapeHTML(item.output)}"
-                    >
+                    ${escapeHTML(item.candidate)}
                 </td>
 
                 <td class="wnc-number">
                     ${item.matches}
                 </td>
+
+                <td class="wnc-input-cell">
+                    <span
+                        class="wnc-candidate-input"
+                        title="${escapeHTML(input)}"
+                    >${escapeHTML(input)}</span>
+                </td>
+
+                <td class="wnc-copy-cell">
+                    <button
+                        type="button"
+                        class="wnc-choice"
+                        data-action="copy-candidate-input"
+                        data-candidate-index="${index}"
+                    >Copy</button>
+                </td>
             </tr>
-        `).join("");
-
-        content.innerHTML = `
-            <section class="wnc-screen">
-
-                <div class="wnc-unmatched-controls">
-
-                    <button
-                        class="wnc-button"
-                        data-action="groups"
-                    >Groups</button>
-
-                    <select
-                        class="wnc-control-select"
-                        data-unmatched-control="targetGroup"
-                        ${
-                            groups.length
-                                ? ""
-                                : "disabled"
-                        }
-                    >
-                        ${
-                            groups.length
-                                ? targetOptions
-                                : `<option>No groups</option>`
-                        }
-                    </select>
-
-     <button
-    type="button"
-    class="wnc-choice"
-    data-action="unmatched-type-cycle"
->${state.candidateType === "text" ? "Txt" : state.candidateType === "whole" ? "Wh" : "Rx"}</button>
-
-<button
-    type="button"
-    class="wnc-choice"
-    data-action="unmatched-template-cycle"
-    ${
-        state.candidateType !== "regexp"
-            ? "disabled"
-            : ""
-    }
->${state.candidateTemplate === "Korean" ? "Kor" : state.candidateTemplate === "Japanese" ? "Jap" : "Oth"}</button>
-
-<button
-    type="button"
-    class="wnc-choice"
-    data-action="unmatched-case-cycle"
->${state.candidateCaseSensitive ? "Y" : "N"}</button>
-
-                    <button
-                        class="wnc-button wnc-apply"
-                        data-action="apply"
-                        ${
-                            !groups.length
-                                ? "disabled"
-                                : ""
-                        }
-                    >A</button>
-
-                </div>
-
-                <div class="wnc-table-wrap">
-                    <table class="wnc-table wnc-unmatched-table">
-                        <thead>
-                            <tr>
-                                <th>A</th>
-                                <th>Candidate</th>
-                                <th>Input</th>
-                                <th>Output</th>
-                                <th>#</th>
-                            </tr>
-                        </thead>
-
-                        <tbody>
-                            ${
-                                rows || `
-                                    <tr>
-                                        <td
-                                            colspan="5"
-                                            class="wnc-empty"
-                                        >
-                                            No candidates
-                                        </td>
-                                    </tr>
-                                `
-                            }
-                        </tbody>
-                    </table>
-                </div>
-            </section>
         `;
-    }
+    }).join("");
+
+    content.innerHTML = `
+        <section class="wnc-screen">
+
+            <div class="wnc-unmatched-controls">
+
+                <button
+                    type="button"
+                    class="wnc-button"
+                    data-action="groups"
+                >Groups</button>
+
+                <button
+                    type="button"
+                    class="wnc-choice"
+                    data-action="unmatched-template-cycle"
+                >${
+                    state.candidateTemplate === "Korean"
+                        ? "Kor"
+                        : state.candidateTemplate === "Japanese"
+                            ? "Jap"
+                            : "Oth"
+                }</button>
+
+                <span class="wnc-muted">
+                    ${state.candidates.length} candidates
+                </span>
+
+            </div>
+
+            <div class="wnc-table-wrap">
+                <table class="wnc-table wnc-unmatched-table">
+                    <thead>
+                        <tr>
+                            <th>Candidate</th>
+                            <th class="wnc-number">Matches</th>
+                            <th>Input</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${
+                            rows || `
+                                <tr>
+                                    <td
+                                        colspan="4"
+                                        class="wnc-empty"
+                                    >
+                                        No candidates
+                                    </td>
+                                </tr>
+                            `
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+        </section>
+    `;
+}
 
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
 function updateCandidateTemplate() {
-    if (state.candidateType !== "regexp") {
+    if (!state.candidates.length) {
         return;
     }
+
     for (const candidate of state.candidates) {
-        if (!candidate._inputEdited) {
-            if (state.candidateTemplate === "Japanese") {
-                const pattern = generateJapanesePattern(
-                    tokenizeCandidate(candidate.candidate)
-                );
-                candidate.input = pattern.input;
-                candidate.output = pattern.output;
-            } else {
-                candidate.input = generateTemplateInput(
-                    candidate.candidate,
-                    state.candidateTemplate
-                );
-            }
+        if (!candidate) continue;
+
+        if (state.candidateTemplate === "Japanese") {
+            const pattern = generateJapanesePattern(
+                tokenizeCandidate(candidate.candidate)
+            );
+
+            candidate.input = pattern?.input ?? "";
+            candidate.output = pattern?.output ?? "";
+        } else {
+            candidate.input = generateTemplateInput(
+                candidate.candidate,
+                state.candidateTemplate
+            );
+
+            candidate.output = "";
         }
     }
 }
+
 function handleClick(event) {
-const target = event.target.closest("[data-action]");
-if (!target) {
-    return;
-}
+    const target = event.target.closest("[data-action]");
 
-const action = target.dataset.action;
-
-switch (action) {
-    case "sort-rules":
-    sortRulesByHeader(
-        target.dataset.sortField
-    );
-    break;
-    case "rule-type":
-        setRuleType(
-            Number(target.dataset.ruleIndex),
-            target.dataset.type
-        );
-        break;
-
-    case "rule-output-type":
-        toggleRuleOutputType(
-            Number(target.dataset.ruleIndex)
-        );
-        break;
-
-case "unmatched-type-cycle":
-    state.candidateType =
-        state.candidateType === "text"
-            ? "whole"
-            : state.candidateType === "whole"
-                ? "regexp"
-                : "text";
-
-    if (state.candidateType === "text" ||
-        state.candidateType === "whole") {
-        for (const candidate of state.candidates) {
-            if (!candidate._inputEdited) {
-                candidate.input = candidate.candidate;
-            }
-            candidate.output = candidate.candidate;
-        }
-    } else {
-        updateCandidateTemplate();
+    if (!target) {
+        return;
     }
 
-    render();
-    break;
+    const action = target.dataset.action;
 
-case "unmatched-template-cycle":
-    state.candidateTemplate =
-        state.candidateTemplate === "Korean"
-            ? "Japanese"
-            : state.candidateTemplate === "Japanese"
-                ? "Other"
-                : "Korean";
+    switch (action) {
 
-    updateCandidateTemplate();
-    render();
-    break;
-        
-case "unmatched-case-cycle":
-    state.candidateCaseSensitive =
-        !state.candidateCaseSensitive;
-    render();
-    break;
+        case "sort-rules":
+            sortRulesByHeader(
+                target.dataset.sortField
+            );
+            break;
 
-    case "create-group":
-        createGroup();
-        break;
+        case "rule-type":
+            setRuleType(
+                Number(target.dataset.ruleIndex),
+                target.dataset.type
+            );
+            break;
 
-    case "import":
-        document
-            .getElementById("wnc-import-file")
-            ?.click();
-        break;
+        case "rule-output-type":
+            toggleRuleOutputType(
+                Number(target.dataset.ruleIndex)
+            );
+            break;
 
-    case "export":
-        exportDatabase();
-        break;
+        case "unmatched-template-cycle":
+            state.candidateTemplate =
+                state.candidateTemplate === "Korean"
+                    ? "Japanese"
+                    : state.candidateTemplate === "Japanese"
+                        ? "Other"
+                        : "Korean";
 
-    case "close":
-    document.getElementById("wnc-root")?.remove();
-    break;
+            updateCandidateTemplate();
+            render();
+            break;
 
-    case "open-group":
-        openGroup(
-            Number(target.dataset.groupIndex)
-        );
-        break;
+        case "create-group":
+            createGroup();
+            break;
 
-    case "open-unmatched":
-        openUnmatched();
-        break;
+        case "import":
+            document
+                .getElementById("wnc-import-file")
+                ?.click();
+            break;
 
-    case "groups":
-        state.screen = "groups";
-        state.groupIndex = null;
-        render();
-        break;
+        case "export":
+            exportDatabase();
+            break;
 
-    case "toggle-other-groups":
-        state.showOtherGroups =
-            !state.showOtherGroups;
-        render();
-        break;
+        case "close":
+            document
+                .getElementById("wnc-root")
+                ?.remove();
+            break;
 
-    case "back-groups":
-        state.screen = "groups";
-        state.groupIndex = null;
-        render();
-        break;
+        case "open-group":
+            openGroup(
+                Number(target.dataset.groupIndex)
+            );
+            break;
 
-    case "group-tab":
-        state.tab = target.dataset.tab;
-        render();
-        break;
-case "cycle-group-html":
-    cycleGroupHTML();
-    break;
-    case "add-rule":
-        addRule();
-        break;
+        case "open-unmatched":
+            openUnmatched();
+            break;
 
-    case "delete-rule":
-        deleteRule(
-            Number(target.dataset.ruleIndex)
-        );
-        break;
+        case "groups":
+            state.screen = "groups";
+            state.groupIndex = null;
+            render();
+            break;
 
-    case "add-site":
-        addSite();
-        break;
+        case "toggle-other-groups":
+            state.showOtherGroups =
+                !state.showOtherGroups;
+            render();
+            break;
 
-    case "delete-site":
-        deleteSite(
-            Number(target.dataset.siteIndex)
-        );
-        break;
+        case "back-groups":
+            state.screen = "groups";
+            state.groupIndex = null;
+            render();
+            break;
 
-    case "apply":
-        applyCandidates();
-        break;
+        case "group-tab":
+            state.tab = target.dataset.tab;
+            render();
+            break;
+
+        case "cycle-group-html":
+            cycleGroupHTML();
+            break;
+
+        case "add-rule":
+            addRule();
+            break;
+
+        case "delete-rule":
+            deleteRule(
+                Number(target.dataset.ruleIndex)
+            );
+            break;
+
+        case "add-site":
+            addSite();
+            break;
+
+        case "delete-site":
+            deleteSite(
+                Number(target.dataset.siteIndex)
+            );
+            break;
     }
 }
 
@@ -3439,7 +3389,7 @@ function handleInput(event) {
 
         URL.revokeObjectURL(url);
     }
-    
+
 GM_registerMenuCommand("Webnovel Cleaner", () => {
     mount();
 });
