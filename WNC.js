@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.21
+// @version      6.1.22
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -62,15 +62,6 @@ const DEFAULT_GROUP = {
     auto: true,
     html: 0,
     substitutions: []
-};
-
-const DEFAULT_RULE = {
-    input: "",
-    output: "",
-    inputType: "text",
-    outputType: 0,
-    caseSensitive: false,
-    enabled: true
 };
 
     let db = loadDatabase();
@@ -137,10 +128,6 @@ let state = {
 
         return normalized;
     }
-
-    function saveDatabase() {
-    writeStorage(DB_KEY, db);
-}
 
     // ---------------------------------------------------------------------
     // Native FoxReplace normalization
@@ -1184,36 +1171,7 @@ function normalizeToken(token) {
     // ---------------------------------------------------------------------
     // Template helpers
     // ---------------------------------------------------------------------
-function getHTMLModeLabel(mode) {
-    switch (Number(mode)) {
-        case 1:
-            return "Output only";
 
-        case 2:
-            return "Input & Output";
-
-        default:
-            return "No";
-    }
-}
-
-function cycleGroupHTML() {
-    const group = db.groups[state.groupIndex];
-
-    if (!group) {
-        return;
-    }
-
-    const current =
-        Number.isInteger(Number(group.html))
-            ? Number(group.html)
-            : 0;
-
-    group.html = (current + 1) % 3;
-
-    saveDatabase();
-    render();
-}
 
 function generateTemplateInput(candidate, template) {
     const tokens = tokenizeCandidate(candidate);
@@ -1345,11 +1303,6 @@ function generateJapanesePattern(tokens) {
             .replace(/'/g, "&#039;");
     }
 
-    function createNativeRule() {
-        return {
-            ...DEFAULT_RULE
-        };
-    }
 
 
     // ---------------------------------------------------------------------
@@ -2742,8 +2695,6 @@ function handleInput(event) {
                 }
 
                 db = validated;
-
-                saveDatabase();
 
                 /*
                  * Import replaces the canonical FoxReplace database.
