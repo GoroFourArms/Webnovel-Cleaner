@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.18
+// @version      6.1.19
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -15,33 +15,35 @@
 (() => {
     "use strict";
 
-    /*
-     * WNC 6
-     *
-     * PURPOSE
-     * -------
-     * WNC is a FoxReplace rule workbench.
-     *
-     * It does NOT:
-     *   - replace text on the page
-     *   - use MutationObserver
-     *   - automatically clean pages
-     *   - act as a second FoxReplace runtime
-     *
-     * It DOES:
-     *   - hold native FoxReplace JSON
-     *   - scan the current page for unmatched capitalized words/phrases
-     *   - let the user edit candidates into FoxReplace rules
-     *   - let the user edit existing matching rules
-     *   - let the user edit group URL patterns
-     *   - import/export native FoxReplace JSON
-     *   - Cluster only candidates within 2 token links of the highest-frequency match.
-     *   - Keep candidates beyond 2 links as separate entries.
-     *   - Example:
-     *   - Bob + Bob Yang + Yang Ho = one cluster
-     *   - Ho Gong = separate entry
-     *   - Do not treat this behavior as a bug again.
-     */
+/*
+ * WNC 6
+ *
+ * PURPOSE
+ * -------
+ * WNC is a FoxReplace companion/workbench.
+ *
+ * It does NOT:
+ *   - replace text on the page
+ *   - use MutationObserver
+ *   - automatically clean pages
+ *   - act as a second FoxReplace runtime
+ *   - export FoxReplace JSON
+ *   - apply generated candidates as FoxReplace rules
+ *
+ * It DOES:
+ *   - import native FoxReplace JSON
+ *   - inspect FoxReplace groups and rules
+ *   - scan the current page for unmatched capitalized words/phrases
+ *   - cluster candidates within 2 token links
+ *   - generate FoxReplace-ready Input patterns
+ *   - let the user copy generated Input values
+ *
+ * Clustering:
+ *   - highest-frequency candidate becomes the first cluster root
+ *   - subsequent highest-frequency unclustered candidates become roots
+ *   - candidates within 2 token links belong to the same cluster
+ *   - unclustered candidates below 5% of the maximum frequency are hidden
+ */
     // ---------------------------------------------------------------------
     // Constants
     // ---------------------------------------------------------------------
@@ -73,26 +75,20 @@ const DEFAULT_RULE = {
 
     let db = loadDatabase();
 
-    let state = {
-        screen: "groups",
-        groupIndex: null,
-        tab: "rules",
+let state = {
+    screen: "groups",
+    groupIndex: null,
+    tab: "rules",
+    candidates: [],
 
-        candidates: [],
+    candidateTemplate: "Other",
 
-        targetGroup: null,
-        candidateType: "text",
-        candidateTemplate: "Other",
-        candidateCaseSensitive: false,
-
-        selectedCandidates: new Set(),
-
-searchQuery: "",
-showOtherGroups: false,
-unmatchedInitialized: false,
-ruleSortField: null,
-ruleSortDirection: 1
-    };
+    searchQuery: "",
+    showOtherGroups: false,
+    unmatchedInitialized: false,
+    ruleSortField: null,
+    ruleSortDirection: 1
+};
 
     // ---------------------------------------------------------------------
     // Storage
@@ -917,7 +913,6 @@ function scanCandidates() {
 
     if (!text) {
         state.candidates = [];
-        state.selectedCandidates.clear();
         state.unmatchedInitialized = true;
         return;
     }
@@ -929,7 +924,6 @@ function scanCandidates() {
 
     state.candidates = clusterAndSortCandidates(discovered);
 
-    state.selectedCandidates.clear();
     state.unmatchedInitialized = true;
 
     /*
@@ -1156,13 +1150,81 @@ function tokenizeCandidate(value) {
 }
 
 function normalizeToken(token) {
-    return token
+    let value = String(token ?? "")
         .toLowerCase()
         .replace(/[’']/g, "'")
         .replace(/[–—]/g, "-")
         .replace(/'s$/g, "")
         .replace(/s'$/g, "")
         .replace(/-/g, "");
+
+    /*
+     * Normalize common English plural forms so singular and
+     * plural candidates can participate in the same cluster.
+     *
+     * Examples:
+     *   Knight  -> knight
+     *   Knights -> knight
+     *   Lady    -> lady
+     *   Ladies  -> lady
+     *   Box     -> box
+     *   Boxes   -> box
+     *
+     * Do not strip a final "s" from very short words because
+     * that would incorrectly turn words such as "is" into "i".
+     */
+
+    if (value.length > 3) {
+        if (
+            value.endsWith("ies") &&
+            value.length > 4
+        ) {
+            value =
+                value.slice(0, -3) + "y";
+        } else if (
+            value.endsWith("ves") &&
+            value.length > 4
+        ) {
+            /*
+             * wolves -> wolf
+             * wives  -> wife
+             *
+             * Keep this conservative because English "-ves"
+             * plurals are not completely regular.
+             */
+            const base = value.slice(0, -3);
+
+            if (
+                base.endsWith("i") ||
+                base.endsWith("o") ||
+                base.endsWith("a") ||
+                base.endsWith("e")
+            ) {
+                value = base + "fe";
+            } else {
+                value = base + "f";
+            }
+        } else if (
+            value.endsWith("es") &&
+            value.length > 4 &&
+            (
+                value.endsWith("ses") ||
+                value.endsWith("xes") ||
+                value.endsWith("zes") ||
+                value.endsWith("ches") ||
+                value.endsWith("shes")
+            )
+        ) {
+            value = value.slice(0, -2);
+        } else if (
+            value.endsWith("s") &&
+            !value.endsWith("ss")
+        ) {
+            value = value.slice(0, -1);
+        }
+    }
+
+    return value;
 }
 
     // ---------------------------------------------------------------------
@@ -1774,12 +1836,6 @@ function generateJapanesePattern(tokens) {
 
                         <button
                             class="wnc-button"
-                            data-action="export"
-                            title="Export"
-                        >Exp</button>
-
-                        <button
-                            class="wnc-button"
                             data-action="close"
                             title="Close"
                         >×</button>
@@ -1839,7 +1895,8 @@ render();
     // ---------------------------------------------------------------------
 
 function findTopCandidateForGroup(group, text) {
-    let top = null;
+    let topCandidate = null;
+    let topRule = null;
 
     for (const rule of group.substitutions) {
         if (!rule.enabled || !rule.input) {
@@ -1852,6 +1909,7 @@ function findTopCandidateForGroup(group, text) {
             continue;
         }
 
+        let ruleTotal = 0;
         const counts = new Map();
 
         while (true) {
@@ -1864,23 +1922,33 @@ function findTopCandidateForGroup(group, text) {
             const candidate = match[0];
 
             if (candidate) {
-                const total = (counts.get(candidate) || 0) + 1;
+                ruleTotal++;
+
+                const total =
+                    (counts.get(candidate) || 0) + 1;
 
                 counts.set(candidate, total);
 
+                /*
+                 * Candidate / Replace / With are based on the
+                 * most frequently matched candidate string.
+                 *
+                 * This is independent of T#, which is based
+                 * on the total matches of the top rule.
+                 */
                 if (
-                    !top ||
-                    total > top.total ||
+                    !topCandidate ||
+                    total > topCandidate.total ||
                     (
-                        total === top.total &&
+                        total === topCandidate.total &&
                         candidate.localeCompare(
-                            top.candidate,
+                            topCandidate.candidate,
                             undefined,
                             { sensitivity: "base" }
                         ) < 0
                     )
                 ) {
-                    top = {
+                    topCandidate = {
                         candidate,
                         replace: rule.input,
                         with: rule.output,
@@ -1893,9 +1961,43 @@ function findTopCandidateForGroup(group, text) {
                 regex.lastIndex++;
             }
         }
+
+        /*
+         * T# is the total number of matches made by the
+         * single rule with the highest match count.
+         */
+        if (
+            ruleTotal > 0 &&
+            (
+                !topRule ||
+                ruleTotal > topRule.total ||
+                (
+                    ruleTotal === topRule.total &&
+                    String(rule.input).localeCompare(
+                        String(topRule.rule.input),
+                        undefined,
+                        { sensitivity: "base" }
+                    ) < 0
+                )
+            )
+        ) {
+            topRule = {
+                rule,
+                total: ruleTotal
+            };
+        }
     }
 
-    return top;
+    if (!topCandidate && !topRule) {
+        return null;
+    }
+
+    return {
+        candidate: topCandidate?.candidate ?? "—",
+        replace: topCandidate?.replace ?? "—",
+        with: topCandidate?.with ?? "—",
+        total: topRule?.total ?? 0
+    };
 }
 
 function renderGroups(content) {
@@ -1910,20 +2012,30 @@ function renderGroups(content) {
                     matches: rule.enabled
                         ? countRuleMatches(rule, pageText)
                         : 0
-                }))
-                .filter(item => item.matches > 0);
+                }));
 
-            const matches = ruleMatches.reduce(
-                (total, item) => total + item.matches,
+            const matchingRules =
+                ruleMatches.filter(
+                    item => item.matches > 0
+                );
+
+            const matches = matchingRules.reduce(
+                (total, item) =>
+                    total + item.matches,
                 0
             );
 
-            const ruleCount = ruleMatches.length;
-            const siteMatches = groupMatchesCurrentSite(group);
+            const ruleCount =
+                matchingRules.length;
+
+            const siteMatches =
+                groupMatchesCurrentSite(group);
 
             const searchMatch =
                 !query ||
-                group.name.toLowerCase().includes(query) ||
+                group.name
+                    .toLowerCase()
+                    .includes(query) ||
                 group.substitutions.some(rule =>
                     String(rule.input)
                         .toLowerCase()
@@ -1943,15 +2055,25 @@ function renderGroups(content) {
 
     const activeGroups = groups.filter(item =>
         item.group.enabled &&
-        (item.matches > 0 || item.siteMatches)
+        (
+            item.matches > 0 ||
+            item.siteMatches
+        )
     );
 
     const otherGroups = groups.filter(item =>
         !item.group.enabled ||
-        (item.matches === 0 && !item.siteMatches)
+        (
+            item.matches === 0 &&
+            !item.siteMatches
+        )
     );
 
-    const rows = activeGroups.map(item => {
+    /*
+     * Render a group row using the same statistics regardless
+     * of whether the group is active or inside Other Groups.
+     */
+    const renderGroupRow = item => {
         const {
             group,
             index,
@@ -1973,7 +2095,9 @@ function renderGroups(content) {
                 data-group-index="${index}"
             >
                 <td>
-                    ${escapeHTML(group.name || "(Unnamed)")}
+                    ${escapeHTML(
+                        group.name || "(Unnamed)"
+                    )}
                 </td>
 
                 <td class="wnc-number">
@@ -1995,7 +2119,9 @@ function renderGroups(content) {
                 <td>
                     ${
                         topCandidate
-                            ? escapeHTML(topCandidate.candidate)
+                            ? escapeHTML(
+                                topCandidate.candidate
+                            )
                             : "—"
                     }
                 </td>
@@ -2003,7 +2129,9 @@ function renderGroups(content) {
                 <td>
                     ${
                         topCandidate
-                            ? escapeHTML(topCandidate.replace)
+                            ? escapeHTML(
+                                topCandidate.replace
+                            )
                             : "—"
                     }
                 </td>
@@ -2011,7 +2139,9 @@ function renderGroups(content) {
                 <td>
                     ${
                         topCandidate
-                            ? escapeHTML(topCandidate.with)
+                            ? escapeHTML(
+                                topCandidate.with
+                            )
                             : "—"
                     }
                 </td>
@@ -2025,42 +2155,15 @@ function renderGroups(content) {
                 </td>
             </tr>
         `;
-    }).join("");
+    };
 
-    const otherRows = otherGroups.map(item => {
-        const {
-            group,
-            index
-        } = item;
+    const rows = activeGroups
+        .map(renderGroupRow)
+        .join("");
 
-        return `
-            <tr
-                class="wnc-clickable-row"
-                data-action="open-group"
-                data-group-index="${index}"
-            >
-                <td>
-                    ${escapeHTML(group.name || "(Unnamed)")}
-                </td>
-
-                <td class="wnc-number">0</td>
-
-                <td class="wnc-number">0</td>
-
-                <td class="wnc-site-status">
-                    <span class="wnc-cross">✕</span>
-                </td>
-
-                <td>—</td>
-
-                <td>—</td>
-
-                <td>—</td>
-
-                <td class="wnc-number">0</td>
-            </tr>
-        `;
-    }).join("");
+    const otherRows = otherGroups
+        .map(renderGroupRow)
+        .join("");
 
     const otherSection = otherGroups.length
         ? `
@@ -2070,7 +2173,11 @@ function renderGroups(content) {
             >
                 <td colspan="8">
                     <span class="wnc-collapse-arrow">
-                        ${state.showOtherGroups ? "▼" : "▶"}
+                        ${
+                            state.showOtherGroups
+                                ? "▼"
+                                : "▶"
+                        }
                     </span>
 
                     Other Groups
@@ -2113,14 +2220,17 @@ function renderGroups(content) {
                     </thead>
 
                     <tbody>
+
                         ${
-                            rows || !otherSection
+                            rows ||
+                            !otherSection
                                 ? rows
                                 : ""
                         }
 
                         ${
-                            !rows && !otherSection
+                            !rows &&
+                            !otherSection
                                 ? `
                                     <tr>
                                         <td
@@ -2141,23 +2251,18 @@ function renderGroups(content) {
                             data-action="open-unmatched"
                         >
                             <td>Candidate</td>
-
                             <td></td>
-
                             <td></td>
-
                             <td></td>
-
                             <td></td>
-
                             <td></td>
-
                             <td></td>
 
                             <td class="wnc-number">
                                 ${state.candidates.length}
                             </td>
                         </tr>
+
                     </tbody>
 
                 </table>
@@ -2171,63 +2276,116 @@ function renderGroups(content) {
     // Group workspace
     // ---------------------------------------------------------------------
 
-    function renderGroup(content) {
-        const group = db.groups[state.groupIndex];
+function renderGroup(content) {
+    const group = db.groups[state.groupIndex];
 
-        if (!group) {
-            state.screen = "groups";
-            render();
-            return;
-        }
-
-        content.innerHTML = `
-            <section class="wnc-screen">
-                <div class="wnc-workspace-heading">
-                    <button
-                        class="wnc-back"
-                        data-action="back-groups"
-                        title="Back"
-                    >‹</button>
-
-                   <input
-    class="wnc-group-name"
-    data-field="group-name"
-    value="${escapeHTML(group.name || "")}"
-    placeholder="Group name"
->
-                </div>
-
-                <div class="wnc-tabs">
-                    <button
-                        class="wnc-tab ${
-                            state.tab === "rules" ? "active" : ""
-                        }"
-                        data-action="group-tab"
-                        data-tab="rules"
-                    >Rules</button>
-
-                    <button
-                        class="wnc-tab ${
-                            state.tab === "sites" ? "active" : ""
-                        }"
-                        data-action="group-tab"
-                        data-tab="sites"
-                    >Sites</button>
-                </div>
-
-                <div id="wnc-group-workspace"></div>
-            </section>
-        `;
-
-        const workspace =
-            document.getElementById("wnc-group-workspace");
-
-        if (state.tab === "rules") {
-            renderRules(workspace, group);
-        } else {
-            renderSites(workspace, group);
-        }
+    if (!group) {
+        state.screen = "groups";
+        render();
+        return;
     }
+
+    content.innerHTML = `
+        <section class="wnc-screen">
+            <div class="wnc-workspace-heading">
+                <button
+                    class="wnc-back"
+                    data-action="back-groups"
+                    title="Back"
+                >‹</button>
+
+                <h1>
+                    ${escapeHTML(group.name || "(Unnamed)")}
+                </h1>
+            </div>
+
+            <div class="wnc-table-wrap">
+                <table class="wnc-table wnc-rules-table">
+                    <thead>
+                        <tr>
+                            <th>Replace</th>
+                            <th>With</th>
+                            <th>Type</th>
+                            <th>Output</th>
+                            <th>Case</th>
+                            <th>Enable</th>
+                            <th>Matches</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${
+                            group.substitutions.length
+                                ? group.substitutions.map(rule => {
+                                    const matches =
+                                        countRuleMatches(
+                                            rule,
+                                            getPageText()
+                                        );
+
+                                    return `
+                                        <tr>
+                                            <td>
+                                                ${escapeHTML(
+                                                    rule.input
+                                                )}
+                                            </td>
+                                            <td>
+                                                ${escapeHTML(
+                                                    rule.output
+                                                )}
+                                            </td>
+                                            <td>
+                                                ${escapeHTML(
+                                                    rule.inputType
+                                                )}
+                                            </td>
+                                            <td>
+                                                ${
+                                                    Number(
+                                                        rule.outputType
+                                                    ) === 1
+                                                        ? "Function"
+                                                        : "Text"
+                                                }
+                                            </td>
+                                            <td class="wnc-center">
+                                                ${
+                                                    rule.caseSensitive
+                                                        ? "Yes"
+                                                        : "No"
+                                                }
+                                            </td>
+                                            <td class="wnc-center">
+                                                ${
+                                                    rule.enabled
+                                                        ? "Yes"
+                                                        : "No"
+                                                }
+                                            </td>
+                                            <td class="wnc-number">
+                                                ${matches}
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join("")
+                                : `
+                                    <tr>
+                                        <td
+                                            colspan="7"
+                                            class="wnc-empty"
+                                        >
+                                            No rules in this group
+                                        </td>
+                                    </tr>
+                                `
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    `;
+}
 
     // ---------------------------------------------------------------------
     // Rules tab
@@ -2655,7 +2813,7 @@ function renderUnmatched(content) {
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
-  
+
 function updateCandidateTemplate() {
     if (!state.candidates.length) {
         return;
@@ -2823,10 +2981,6 @@ function handleClick(event) {
                 ?.click();
             break;
 
-        case "export":
-            exportDatabase();
-            break;
-
         case "close":
             document
                 .getElementById("wnc-root")
@@ -2893,54 +3047,40 @@ function handleClick(event) {
 }
 
 function handleChange(event) {
-        const target = event.target;
+    const target = event.target;
 
-        // Unmatched target group.
-        if (
-            target.matches(
-                '[data-unmatched-control="targetGroup"]'
-            )
-        ) {
-            handleUnmatchedControl(target);
-            return;
-        }
-        // Import.
-        if (target.id === "wnc-import-file") {
-            importFile(target.files?.[0]);
-            target.value = "";
-            return;
-        }
-
-        // Candidate checkboxes.
-        if (target.matches("[data-candidate-check]")) {
-            const index = Number(target.dataset.candidateCheck);
-
-            if (target.checked) {
-                state.selectedCandidates.add(index);
-            } else {
-                state.selectedCandidates.delete(index);
-            }
-
-            return;
-        }
-
-        // Existing rule fields.
-        if (target.matches("[data-field]")) {
-            handleRuleField(target);
-            return;
-        }
-
-        // Site fields.
-        if (target.matches("[data-site-index]")) {
-            handleSiteField(target);
-            return;
-        }
-
-        // Group options.
-        if (target.matches("[data-group-field]")) {
-            handleGroupField(target);
-        }
+    /*
+     * Import.
+     */
+    if (target.id === "wnc-import-file") {
+        importFile(target.files?.[0]);
+        target.value = "";
+        return;
     }
+
+    /*
+     * Existing FoxReplace rule fields.
+     */
+    if (target.matches("[data-field]")) {
+        handleRuleField(target);
+        return;
+    }
+
+    /*
+     * Site fields.
+     */
+    if (target.matches("[data-site-index]")) {
+        handleSiteField(target);
+        return;
+    }
+
+    /*
+     * Group options.
+     */
+    if (target.matches("[data-group-field]")) {
+        handleGroupField(target);
+    }
+}
 function handleInput(event) {
     const target = event.target;
 
@@ -3024,58 +3164,6 @@ function handleInput(event) {
         if (target.matches("[data-site-index]")) {
             handleSiteField(target);
         }
-    }
-    function handleUnmatchedControl(target) {
-        const control =
-            target.dataset.unmatchedControl ||
-            target.dataset.action;
-
-        switch (control) {
-            case "targetGroup":
-                state.targetGroup = Number(target.value);
-                break;
-
-            case "unmatched-type":
-                if (
-                    !["text", "whole", "regexp"].includes(
-                        target.dataset.type
-                    )
-                ) {
-                    return;
-                }
-
-                state.candidateType =
-                    target.dataset.type;
-
-                if (state.candidateType !== "regexp") {
-                    state.candidateTemplate = "Other";
-                }
-                break;
-
-            case "unmatched-template":
-                if (
-                    state.candidateType !== "regexp" ||
-                    !["Korean", "Japanese", "Other"].includes(
-                        target.dataset.template
-                    )
-                ) {
-                    return;
-                }
-
-                state.candidateTemplate =
-                    target.dataset.template;
-                break;
-
-    case "unmatched-case-cycle":
-    state.candidateCaseSensitive = !state.candidateCaseSensitive;
-    render();
-    break;
-
-            default:
-                return;
-        }
-
-        render();
     }
 
     function setRuleType(index, type) {
@@ -3326,87 +3414,6 @@ function handleInput(event) {
     }
 
     // ---------------------------------------------------------------------
-    // Apply
-    // ---------------------------------------------------------------------
-
-    function applyCandidates() {
-        const group = db.groups[state.targetGroup];
-
-        if (!group) {
-            return;
-        }
-
-        const indexes = [...state.selectedCandidates]
-            .sort((a, b) => b - a);
-
-        if (!indexes.length) {
-            return;
-        }
-
-        for (const index of indexes) {
-            const candidate = state.candidates[index];
-
-            if (!candidate) {
-                continue;
-            }
-            let input = String(candidate.input ?? "");
-            const output = String(candidate.output ?? "");
-
-            /*
-             * If regexp is selected, the template provides the initial
-             * generated Input only when the user has not already edited it.
-             *
-             * The actual Input column is authoritative.
-             */
-            if (
-                state.candidateType === "regexp" &&
-                !candidate._inputEdited
-            ) {
-                input = generateTemplateInput(
-                    candidate.candidate,
-                    state.candidateTemplate
-                );
-            }
-
-            if (!input.trim()) {
-                continue;
-            }
-
-            const rule = createNativeRule();
-
-            rule.input = input;
-            rule.output = output;
-            rule.inputType = state.candidateType;
-            rule.caseSensitive =
-                state.candidateCaseSensitive;
-            rule.enabled = true;
-
-            group.substitutions.push(rule);
-
-        /*
-         * Remove from Candidate.
-         */
-            state.candidates.splice(index, 1);
-        }
-
-        state.selectedCandidates.clear();
-
-        saveDatabase();
-
-        /*
-          * Return to the refreshed Candidate spreadsheet.
-         */
-        state.screen = "unmatched";
-
-        /*
-         * Do not scan immediately because the candidate list is already
-         * updated and should not unexpectedly reintroduce rows during this
-         * operation.
-         */
-        render();
-    }
-
-    // ---------------------------------------------------------------------
     // Import
     // ---------------------------------------------------------------------
 
@@ -3443,7 +3450,6 @@ function handleInput(event) {
                  * Candidate remains transient.
                  */
                 state.candidates = [];
-                state.selectedCandidates.clear();
                 state.unmatchedInitialized = false;
 
                 state.screen = "groups";
@@ -3475,54 +3481,6 @@ function handleInput(event) {
         };
 
         reader.readAsText(file);
-    }
-
-    // ---------------------------------------------------------------------
-    // Export
-    // ---------------------------------------------------------------------
-
-    function exportDatabase() {
-        const exported = {
-            ...db,
-            groups: db.groups.map(group => ({
-                ...group,
-                urls: Array.isArray(group.urls)
-                    ? [...group.urls]
-                    : [],
-                substitutions: Array.isArray(group.substitutions)
-                    ? group.substitutions.map(rule => ({
-                        ...rule,
-                    inputType:
-                        rule.inputType === "whole"
-                            ? 1
-                            : rule.inputType === "regexp"
-                                ? 2
-                                : 0,
-                    outputType:
-                        Number(rule.outputType) === 1
-                            ? 1
-                            : 0
-                    }))
-                    : []
-            }))
-        };
-
-        const blob = new Blob(
-            [JSON.stringify(exported, null, 2)],
-            { type: "application/json" }
-        );
-
-        const url = URL.createObjectURL(blob);
-
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "foxreplace.json";
-
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-
-        URL.revokeObjectURL(url);
     }
 
 GM_registerMenuCommand("Webnovel Cleaner", () => {
