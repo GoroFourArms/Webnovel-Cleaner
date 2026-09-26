@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.19
+// @version      6.1.20
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -2859,7 +2859,6 @@ function handleClick(event) {
     const action = target.dataset.action;
 
     switch (action) {
-
         case "copy-candidate-input": {
             const index = Number(
                 target.dataset.candidateIndex
@@ -2903,7 +2902,6 @@ function handleClick(event) {
                         textarea.style.opacity = "0";
 
                         document.body.appendChild(textarea);
-
                         textarea.focus();
                         textarea.select();
 
@@ -2940,25 +2938,6 @@ function handleClick(event) {
             break;
         }
 
-        case "sort-rules":
-            sortRulesByHeader(
-                target.dataset.sortField
-            );
-            break;
-
-        case "rule-type":
-            setRuleType(
-                Number(target.dataset.ruleIndex),
-                target.dataset.type
-            );
-            break;
-
-        case "rule-output-type":
-            toggleRuleOutputType(
-                Number(target.dataset.ruleIndex)
-            );
-            break;
-
         case "unmatched-template-cycle":
             state.candidateTemplate =
                 state.candidateTemplate === "Korean"
@@ -2969,10 +2948,6 @@ function handleClick(event) {
 
             updateCandidateTemplate();
             render();
-            break;
-
-        case "create-group":
-            createGroup();
             break;
 
         case "import":
@@ -3014,35 +2989,6 @@ function handleClick(event) {
             state.groupIndex = null;
             render();
             break;
-
-        case "group-tab":
-            state.tab = target.dataset.tab;
-            render();
-            break;
-
-        case "cycle-group-html":
-            cycleGroupHTML();
-            break;
-
-        case "add-rule":
-            addRule();
-            break;
-
-        case "delete-rule":
-            deleteRule(
-                Number(target.dataset.ruleIndex)
-            );
-            break;
-
-        case "add-site":
-            addSite();
-            break;
-
-        case "delete-site":
-            deleteSite(
-                Number(target.dataset.siteIndex)
-            );
-            break;
     }
 }
 
@@ -3055,30 +3001,6 @@ function handleChange(event) {
     if (target.id === "wnc-import-file") {
         importFile(target.files?.[0]);
         target.value = "";
-        return;
-    }
-
-    /*
-     * Existing FoxReplace rule fields.
-     */
-    if (target.matches("[data-field]")) {
-        handleRuleField(target);
-        return;
-    }
-
-    /*
-     * Site fields.
-     */
-    if (target.matches("[data-site-index]")) {
-        handleSiteField(target);
-        return;
-    }
-
-    /*
-     * Group options.
-     */
-    if (target.matches("[data-group-field]")) {
-        handleGroupField(target);
     }
 }
 function handleInput(event) {
@@ -3166,38 +3088,6 @@ function handleInput(event) {
         }
     }
 
-    function setRuleType(index, type) {
-        const group = db.groups[state.groupIndex];
-
-        if (!group || !group.substitutions[index]) {
-            return;
-        }
-
-        if (!["text", "whole", "regexp"].includes(type)) {
-            return;
-        }
-
-        group.substitutions[index].inputType = type;
-
-        saveDatabase();
-        render();
-    }
-
-    function toggleRuleOutputType(index) {
-        const group = db.groups[state.groupIndex];
-
-        if (!group || !group.substitutions[index]) {
-            return;
-        }
-
-        group.substitutions[index].outputType =
-            Number(group.substitutions[index].outputType) === 1
-                ? 0
-                : 1;
-
-        saveDatabase();
-        render();
-    }
     // ---------------------------------------------------------------------
     // Group actions
     // ---------------------------------------------------------------------
@@ -3255,162 +3145,6 @@ function handleInput(event) {
         scanCandidates();
 
         render();
-    }
-
-    // ---------------------------------------------------------------------
-    // Rule actions
-    // ---------------------------------------------------------------------
-
-    function addRule() {
-    const group = db.groups[state.groupIndex];
-
-    if (!group) {
-        return;
-    }
-
-    const rule = createNativeRule();
-
-    group.substitutions.push(rule);
-
-    const newRuleIndex =
-        group.substitutions.length - 1;
-
-    saveDatabase();
-    render();
-
-    requestAnimationFrame(() => {
-        const row = document.querySelector(
-            `.wnc-rules-table tbody tr[data-rule-index="${newRuleIndex}"]`
-        );
-
-        row
-            ?.querySelector('[data-field="input"]')
-            ?.focus();
-    });
-}
-
-    function deleteRule(index) {
-        const group = db.groups[state.groupIndex];
-
-        if (!group || !group.substitutions[index]) {
-            return;
-        }
-
-        group.substitutions.splice(index, 1);
-
-        saveDatabase();
-        render();
-    }
-
-    function handleRuleField(target) {
-        const group = db.groups[state.groupIndex];
-
-        if (!group) {
-            return;
-        }
-
-        const row = target.closest("tr");
-
-        if (!row) {
-            return;
-        }
-
-        const index = Number(row.dataset.ruleIndex);
-
-        if (!group.substitutions[index]) {
-            return;
-        }
-
-        const rule = group.substitutions[index];
-        const field = target.dataset.field;
-
-        if (target.type === "checkbox") {
-            rule[field] = target.checked;
-        } else {
-            rule[field] = target.value;
-        }
-
-        saveDatabase();
-
-        /*
-         * Rule visibility depends on matching the current page.
-         * Re-render after the user leaves an Input field rather than during
-         * every keystroke.
-         */
-        if (
-            field === "input" ||
-            field === "inputType" ||
-            field === "caseSensitive" ||
-            field === "enabled"
-        ) {
-            /*
-             * Do not immediately re-render text input while the user is typing.
-             * The database is already updated. The next explicit UI action
-             * refreshes the visible match list.
-             */
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Site actions
-    // ---------------------------------------------------------------------
-
-    function addSite() {
-        const group = db.groups[state.groupIndex];
-
-        if (!group) {
-            return;
-        }
-
-        group.urls.push("");
-
-        saveDatabase();
-        render();
-    }
-
-    function deleteSite(index) {
-        const group = db.groups[state.groupIndex];
-
-        if (!group || index < 0 || index >= group.urls.length) {
-            return;
-        }
-
-        group.urls.splice(index, 1);
-
-        saveDatabase();
-        render();
-    }
-
-    function handleSiteField(target) {
-        const group = db.groups[state.groupIndex];
-
-        if (!group) {
-            return;
-        }
-
-        const index = Number(target.dataset.siteIndex);
-
-        if (index < 0 || index >= group.urls.length) {
-            return;
-        }
-
-        group.urls[index] = target.value;
-
-        saveDatabase();
-    }
-
-    function handleGroupField(target) {
-        const group = db.groups[state.groupIndex];
-
-        if (!group) {
-            return;
-        }
-
-        const field = target.dataset.groupField;
-
-        group[field] = target.checked;
-
-        saveDatabase();
     }
 
     // ---------------------------------------------------------------------
