@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.20
+// @version      6.1.21
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -86,8 +86,6 @@ let state = {
     searchQuery: "",
     showOtherGroups: false,
     unmatchedInitialized: false,
-    ruleSortField: null,
-    ruleSortDirection: 1
 };
 
     // ---------------------------------------------------------------------
@@ -309,50 +307,6 @@ function normalizeRule(rule) {
             .map((group, index) => ({ group, index }))
             .sort((a, b) => compareNames(a.group.name, b.group.name));
     }
-
-    function sortRulesByHeader(field) {
-    const group = db.groups[state.groupIndex];
-
-    if (!group || !group.substitutions.length) {
-        return;
-    }
-
-    if (state.ruleSortField === field) {
-        state.ruleSortDirection *= -1;
-    } else {
-        state.ruleSortField = field;
-        state.ruleSortDirection = 1;
-    }
-
-    const pageText = getPageText();
-
-    group.substitutions.sort((a, b) => {
-        let comparison = 0;
-
-        if (field === "matches") {
-            comparison =
-                countRuleMatches(a, pageText) -
-                countRuleMatches(b, pageText);
-        } else if (
-            field === "caseSensitive" ||
-            field === "enabled"
-        ) {
-            comparison =
-                Number(a[field]) -
-                Number(b[field]);
-        } else {
-            comparison = compareNames(
-                a[field],
-                b[field]
-            );
-        }
-
-        return comparison * state.ruleSortDirection;
-    });
-
-    saveDatabase();
-    render();
-}
 
     // ---------------------------------------------------------------------
     // Current site matching
@@ -1397,13 +1351,6 @@ function generateJapanesePattern(tokens) {
         };
     }
 
-    function createNativeGroup() {
-        return {
-            ...DEFAULT_GROUP,
-            urls: [],
-            substitutions: []
-        };
-    }
 
     // ---------------------------------------------------------------------
     // Styles
@@ -2388,308 +2335,6 @@ function renderGroup(content) {
 }
 
     // ---------------------------------------------------------------------
-    // Rules tab
-    // ---------------------------------------------------------------------
-
-    function renderRules(container, group) {
-        const text = getPageText();
-
-          const rows = group.substitutions.map((rule, index) => {
-            const matches = countRuleMatches(rule, text);
-
-            return `
-                <tr data-rule-index="${index}">
-                    <td>
-                        <input
-                            class="wnc-cell-input"
-                            data-field="input"
-                            value="${escapeHTML(rule.input)}"
-                        >
-                    </td>
-
-                    <td>
-                        <input
-                            class="wnc-cell-input"
-                            data-field="output"
-                            value="${escapeHTML(rule.output)}"
-                        >
-                    </td>
-
-                    <td>
-                        <div class="wnc-choice-group wnc-rule-type">
-                            <button
-                                type="button"
-                                class="wnc-choice ${
-                                    rule.inputType === "text"
-                                        ? "active"
-                                        : ""
-                                }"
-                                data-action="rule-type"
-                                data-rule-index="${index}"
-                                data-type="text"
-                            >Text</button>
-
-                            <button
-                                type="button"
-                                class="wnc-choice ${
-                                    rule.inputType === "whole"
-                                        ? "active"
-                                        : ""
-                                }"
-                                data-action="rule-type"
-                                data-rule-index="${index}"
-                                data-type="whole"
-                            >Whole</button>
-
-                            <button
-                                type="button"
-                                class="wnc-choice ${
-                                    rule.inputType === "regexp"
-                                        ? "active"
-                                        : ""
-                                }"
-                                data-action="rule-type"
-                                data-rule-index="${index}"
-                                data-type="regexp"
-                            >Regex</button>
-                        </div>
-                    </td>
-
-                    <td class="wnc-center">
-                        <button
-                            type="button"
-                            class="wnc-choice"
-                            data-action="rule-output-type"
-                            data-rule-index="${index}"
-                        >${
-                            Number(rule.outputType) === 1
-                                ? "Function"
-                                : "Text"
-                        }</button>
-                    </td>
-
-                    <td class="wnc-center">
-                        <input
-                            type="checkbox"
-                            data-field="caseSensitive"
-                            ${rule.caseSensitive ? "checked" : ""}
-                        >
-                    </td>
-
-                    <td class="wnc-center">
-                        <input
-                            type="checkbox"
-                            data-field="enabled"
-                            ${rule.enabled ? "checked" : ""}
-                        >
-                    </td>
-
-                    <td class="wnc-number">
-                        ${matches}
-                    </td>
-
-                    <td class="wnc-delete-cell">
-                        <button
-                            class="wnc-delete"
-                            data-action="delete-rule"
-                            data-rule-index="${index}"
-                            title="Delete rule"
-                        >×</button>
-                    </td>
-                </tr>
-            `;
-        }).join("");
-
-        container.innerHTML = `
-            <div class="wnc-table-wrap">
-                <table class="wnc-table wnc-rules-table">
-                    <thead>
-    <tr>
-<th
-    data-action="sort-rules"
-    data-sort-field="input"
->Replace</th>
-
-<th
-    data-action="sort-rules"
-    data-sort-field="output"
->With</th>
-
-        <th
-            data-action="sort-rules"
-            data-sort-field="inputType"
-        >Type</th>
-
-        <th>Output</th>
-
-        <th
-            data-action="sort-rules"
-            data-sort-field="caseSensitive"
-        >Case</th>
-
-<th
-    data-action="sort-rules"
-    data-sort-field="enabled"
->Enable</th>
-
-        <th
-            data-action="sort-rules"
-            data-sort-field="matches"
-        >Matches</th>
-
-        <th></th>
-    </tr>
-</thead>
-
-                    <tbody>
-                        ${rows || `
-                            <tr>
-                                <td colspan="8" class="wnc-empty">
-                                    No rules in this group
-                                </td>
-                            </tr>
-                        `}
-
-                        <tr class="wnc-add-row">
-                            <td colspan="8">
-                                <button
-                                    class="wnc-add-button"
-                                    data-action="add-rule"
-                                >+ Add rule</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-
-    // ---------------------------------------------------------------------
-    // Sites tab
-    // ---------------------------------------------------------------------
-
-    function renderSites(container, group) {
-    const rows = group.urls.map((url, index) => `
-        <tr>
-            <td>
-                <input
-                    class="wnc-cell-input"
-                    data-site-index="${index}"
-                    data-field="url"
-                    value="${escapeHTML(url)}"
-                >
-            </td>
-
-            <td class="wnc-site-match">
-                ${
-                    urlPatternMatches(url)
-                        ? `<span class="wnc-check">✓</span>`
-                        : `<span class="wnc-cross">✕</span>`
-                }
-            </td>
-
-            <td class="wnc-delete-cell">
-                <button
-                    class="wnc-delete"
-                    data-action="delete-site"
-                    data-site-index="${index}"
-                    title="Delete URL"
-                >×</button>
-            </td>
-        </tr>
-    `).join("");
-
-    container.innerHTML = `
-        <div class="wnc-table-wrap">
-            <table class="wnc-table wnc-sites-table">
-
-                <thead>
-                    <tr>
-                        <th>URL Pattern</th>
-                        <th>Current Site</th>
-                        <th></th>
-                    </tr>
-                </thead>
-
-                <tbody>
-                    ${
-                        rows || `
-                            <tr>
-                                <td colspan="3" class="wnc-empty">
-                                    No URL patterns
-                                </td>
-                            </tr>
-                        `
-                    }
-
-                    <tr class="wnc-add-row">
-                        <td colspan="3">
-                            <button
-                                class="wnc-add-button"
-                                data-action="add-site"
-                            >+ Add URL pattern</button>
-                        </td>
-                    </tr>
-                </tbody>
-
-            </table>
-        </div>
-
-        <div class="wnc-group-options">
-            <table class="wnc-table">
-                <tbody>
-
-                    <tr>
-                        <td>Enabled</td>
-                        <td>
-                            <input
-                                type="checkbox"
-                                data-group-field="enabled"
-                                ${group.enabled ? "checked" : ""}
-                            >
-                        </td>
-                    </tr>
-
-                    <tr>
-                        <td>Page Load</td>
-                        <td>
-                            <input
-                                type="checkbox"
-                                data-group-field="pageLoad"
-                                ${group.pageLoad ? "checked" : ""}
-                            >
-                        </td>
-                    </tr>
-
-                    <tr>
-                        <td>Auto</td>
-                        <td>
-                            <input
-                                type="checkbox"
-                                data-group-field="auto"
-                                ${group.auto ? "checked" : ""}
-                            >
-                        </td>
-                    </tr>
-
-                    <tr>
-                        <td>HTML</td>
-                        <td>
-                            <button
-                                type="button"
-                                class="wnc-html-button"
-                                data-action="cycle-group-html"
-                            >${escapeHTML(getHTMLModeLabel(group.html))}</button>
-                        </td>
-                    </tr>
-
-                </tbody>
-            </table>
-        </div>
-    `;
-}
-
-    // ---------------------------------------------------------------------
 // Candidate screen
     // ---------------------------------------------------------------------
 
@@ -3006,122 +2651,43 @@ function handleChange(event) {
 function handleInput(event) {
     const target = event.target;
 
-    if (target.matches(".wnc-group-name")) {
-        const group = db.groups[state.groupIndex];
-
-        if (group) {
-            group.name = target.value;
-            saveDatabase();
-        }
-
+    if (target.id !== "wnc-search") {
         return;
     }
 
-        if (target.id === "wnc-search") {
-            state.searchQuery = target.value;
+    state.searchQuery = target.value;
 
-            if (state.screen === "groups") {
-                const cursorStart = target.selectionStart;
-                const cursorEnd = target.selectionEnd;
-
-                const content =
-                    document.getElementById("wnc-content");
-
-                if (content) {
-                    renderGroups(content);
-                }
-
-                requestAnimationFrame(() => {
-                    const search =
-                        document.getElementById("wnc-search");
-
-                    if (search) {
-                        search.focus();
-                        search.setSelectionRange(
-                            cursorStart,
-                            cursorEnd
-                        );
-                    }
-                });
-            }
-
-            return;
-        }
-
-        if (target.matches("[data-candidate-field]")) {
-            const index =
-                Number(target.dataset.candidateIndex);
-
-            const field =
-                target.dataset.candidateField;
-
-            if (!state.candidates[index]) {
-                return;
-            }
-
-            state.candidates[index][field] = target.value;
-
-            /*
-             * IMPORTANT:
-             *
-             * If the user manually changes the Input column, remember that
-             * the generated regexp template must not overwrite that edit.
-             */
-            if (field === "input") {
-                state.candidates[index]._inputEdited = true;
-            }
-
-            /*
-             * Candidate edits are deliberately not written to the database.
- * Candidate is transient WNC state.
-             */
-            return;
-        }
-
-        if (target.matches("[data-field]")) {
-            handleRuleField(target);
-            return;
-        }
-
-        if (target.matches("[data-site-index]")) {
-            handleSiteField(target);
-        }
+    if (state.screen !== "groups") {
+        return;
     }
+
+    const cursorStart = target.selectionStart;
+    const cursorEnd = target.selectionEnd;
+
+    const content =
+        document.getElementById("wnc-content");
+
+    if (content) {
+        renderGroups(content);
+    }
+
+    requestAnimationFrame(() => {
+        const search =
+            document.getElementById("wnc-search");
+
+        if (search) {
+            search.focus();
+            search.setSelectionRange(
+                cursorStart,
+                cursorEnd
+            );
+        }
+    });
+}
 
     // ---------------------------------------------------------------------
     // Group actions
     // ---------------------------------------------------------------------
-
-    function createGroup() {
-        const group = createNativeGroup();
-
-        let number = 1;
-        let name = "New Group";
-
-        while (
-            db.groups.some(
-                existing => existing.name === name
-            )
-        ) {
-            number++;
-            name = `New Group ${number}`;
-        }
-
-        group.name = name;
-
-        db.groups.push(group);
-
-        saveDatabase();
-
-        /*
-         * Open the new group immediately.
-         */
-        state.groupIndex = db.groups.length - 1;
-        state.screen = "group";
-        state.tab = "rules";
-
-        render();
-    }
 
     function openGroup(index) {
         if (!db.groups[index]) {
