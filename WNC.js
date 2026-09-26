@@ -1024,90 +1024,134 @@ function clusterAndSortCandidates(candidates) {
         return [];
     }
 
+    const maxFrequency = sorted[0].matches;
+    const minimumUnclusteredFrequency =
+        maxFrequency * UNCLUSTERED_FREQUENCY_RATIO;
+
     const result = [];
     const clustered = new Set();
 
     /*
-     * The highest-frequency candidate is the root.
+     * Build clusters hierarchically.
+     *
+     * The highest-frequency candidate that has not already been
+     * consumed by an earlier cluster becomes the next root.
      */
-    const root = sorted[0];
+    for (let rootIndex = 0; rootIndex < sorted.length; rootIndex++) {
 
-    const rootDistances = new Map();
-    const queue = [0];
-
-    rootDistances.set(0, 0);
-
-    /*
-     * Search only far enough to reach degree 2.
-     */
-    while (queue.length) {
-        const sourceIndex = queue.shift();
-        const sourceDistance =
-            rootDistances.get(sourceIndex);
-
-        if (sourceDistance >= 2) {
+        if (clustered.has(rootIndex)) {
             continue;
         }
 
-        for (let j = 0; j < sorted.length; j++) {
-            if (rootDistances.has(j)) {
+        const root = sorted[rootIndex];
+
+        const distances = new Map();
+        const queue = [rootIndex];
+
+        distances.set(rootIndex, 0);
+
+        /*
+         * Search only to degree 2 from this root.
+         *
+         * Degree means graph distance:
+         *
+         *   Bob
+         *     |
+         *   Bob Ho       degree 1
+         *     |
+         *   Ho Gang      degree 2
+         *     |
+         *   Gang Lee     degree 3 -> NOT included
+         */
+        while (queue.length) {
+            const sourceIndex = queue.shift();
+            const sourceDistance =
+                distances.get(sourceIndex);
+
+            if (sourceDistance >= 2) {
                 continue;
             }
 
-            if (
-                candidatesShareToken(
-                    sorted[sourceIndex].candidate,
-                    sorted[j].candidate
-                )
+            for (
+                let candidateIndex = 0;
+                candidateIndex < sorted.length;
+                candidateIndex++
             ) {
-                rootDistances.set(
-                    j,
-                    sourceDistance + 1
-                );
+                if (clustered.has(candidateIndex)) {
+                    continue;
+                }
 
-                queue.push(j);
+                if (distances.has(candidateIndex)) {
+                    continue;
+                }
+
+                if (
+                    candidatesShareToken(
+                        sorted[sourceIndex],
+                        sorted[candidateIndex]
+                    )
+                ) {
+                    distances.set(
+                        candidateIndex,
+                        sourceDistance + 1
+                    );
+
+                    queue.push(candidateIndex);
+                }
             }
         }
-    }
 
-    /*
-     * Build the top-frequency cluster.
-     *
-     * Degree 0:
-     *   Bob
-     *
-     * Degree 1:
-     *   Bob Yang
-     *
-     * Degree 2:
-     *   Yang Ho
-     *
-     * Degree 3:
-     *   Ho Gong - separate
-     */
-    const topCluster = [];
+        const clusterIndexes = [...distances.keys()]
+            .sort((a, b) => {
+                /*
+                 * Keep the root first, then preserve the global
+                 * frequency hierarchy within the cluster.
+                 */
+                const distanceA = distances.get(a);
+                const distanceB = distances.get(b);
 
-    for (const [index, distance] of rootDistances.entries()) {
-        if (distance <= 2) {
-            topCluster.push(sorted[index]);
-            clustered.add(index);
+                if (distanceA !== distanceB) {
+                    return distanceA - distanceB;
+                }
+
+                if (
+                    sorted[b].matches !==
+                    sorted[a].matches
+                ) {
+                    return (
+                        sorted[b].matches -
+                        sorted[a].matches
+                    );
+                }
+
+                return compareNames(
+                    sorted[a].candidate,
+                    sorted[b].candidate
+                );
+            });
+
+        /*
+         * A cluster containing only the root is an unclustered
+         * candidate. Hide it when its frequency is below 5%
+         * of the maximum candidate frequency.
+         */
+        if (
+            clusterIndexes.length === 1 &&
+            root.matches < minimumUnclusteredFrequency
+        ) {
+            clustered.add(rootIndex);
+            continue;
         }
-    }
 
-    result.push(...topCluster);
-
-    /*
-     * Every candidate outside the top cluster remains visible
-     * as its own separate entry.
-     */
-    for (let i = 0; i < sorted.length; i++) {
-        if (!clustered.has(i)) {
-            result.push(sorted[i]);
+        for (const index of clusterIndexes) {
+            clustered.add(index);
+            result.push(sorted[index]);
         }
     }
 
     return result;
 }
+  
 function tokenizeCandidate(value) {
     return String(value)
         .trim()
