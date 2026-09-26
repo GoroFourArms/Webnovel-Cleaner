@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.17
+// @version      6.1.18
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1006,8 +1006,6 @@ function candidatesShareToken(a, b) {
     return false;
 }
 
-
-
 function clusterAndSortCandidates(candidates) {
     const sorted = [...candidates].sort((a, b) => {
         if (b.matches !== a.matches) {
@@ -1024,26 +1022,27 @@ function clusterAndSortCandidates(candidates) {
         return [];
     }
 
-    const maxFrequency = sorted[0].matches;
+    const maximumFrequency = sorted[0].matches;
     const minimumUnclusteredFrequency =
-        maxFrequency * UNCLUSTERED_FREQUENCY_RATIO;
+        maximumFrequency * UNCLUSTERED_FREQUENCY_RATIO;
 
     const result = [];
     const clustered = new Set();
 
     /*
-     * Build clusters hierarchically.
+     * Process candidates in frequency order.
      *
-     * The highest-frequency candidate that has not already been
-     * consumed by an earlier cluster becomes the next root.
+     * The highest-frequency candidate that has not already
+     * been consumed by an earlier cluster becomes the next root.
      */
-    for (let rootIndex = 0; rootIndex < sorted.length; rootIndex++) {
-
+    for (
+        let rootIndex = 0;
+        rootIndex < sorted.length;
+        rootIndex++
+    ) {
         if (clustered.has(rootIndex)) {
             continue;
         }
-
-        const root = sorted[rootIndex];
 
         const distances = new Map();
         const queue = [rootIndex];
@@ -1051,17 +1050,17 @@ function clusterAndSortCandidates(candidates) {
         distances.set(rootIndex, 0);
 
         /*
-         * Search only to degree 2 from this root.
+         * Maximum graph distance is 2.
          *
-         * Degree means graph distance:
+         * Example:
          *
-         *   Bob
-         *     |
-         *   Bob Ho       degree 1
-         *     |
-         *   Ho Gang      degree 2
-         *     |
-         *   Gang Lee     degree 3 -> NOT included
+         * Bob
+         *  |
+         * Bob Ho       degree 1
+         *  |
+         * Ho Gang     degree 2
+         *  |
+         * Gang Lee    degree 3 -> excluded
          */
         while (queue.length) {
             const sourceIndex = queue.shift();
@@ -1103,10 +1102,6 @@ function clusterAndSortCandidates(candidates) {
 
         const clusterIndexes = [...distances.keys()]
             .sort((a, b) => {
-                /*
-                 * Keep the root first, then preserve the global
-                 * frequency hierarchy within the cluster.
-                 */
                 const distanceA = distances.get(a);
                 const distanceB = distances.get(b);
 
@@ -1131,13 +1126,14 @@ function clusterAndSortCandidates(candidates) {
             });
 
         /*
-         * A cluster containing only the root is an unclustered
+         * A root with no connected candidates is an unclustered
          * candidate. Hide it when its frequency is below 5%
          * of the maximum candidate frequency.
          */
         if (
             clusterIndexes.length === 1 &&
-            root.matches < minimumUnclusteredFrequency
+            sorted[rootIndex].matches <
+                minimumUnclusteredFrequency
         ) {
             clustered.add(rootIndex);
             continue;
@@ -1151,7 +1147,7 @@ function clusterAndSortCandidates(candidates) {
 
     return result;
 }
-  
+
 function tokenizeCandidate(value) {
     return String(value)
         .trim()
@@ -1202,25 +1198,30 @@ function cycleGroupHTML() {
     saveDatabase();
     render();
 }
-    function generateTemplateInput(candidate, template) {
-        const tokens = tokenizeCandidate(candidate);
 
-        if (!tokens.length) {
-            return candidate;
-        }
+function generateTemplateInput(candidate, template) {
+    const tokens = tokenizeCandidate(candidate);
 
-        switch (template) {
-            case "Korean":
-                return generateKoreanRegex(tokens);
-
-            case "Japanese":
-                return generateJapanesePattern(tokens);
-
-            case "Other":
-            default:
-                return generateOtherRegex(tokens);
-        }
+    if (!tokens.length) {
+        return String(candidate ?? "");
     }
+
+    switch (template) {
+        case "Korean":
+            return generateKoreanRegex(tokens);
+
+        case "Japanese": {
+            const pattern =
+                generateJapanesePattern(tokens);
+
+            return pattern?.input ?? "";
+        }
+
+        case "Other":
+        default:
+            return generateOtherRegex(tokens);
+    }
+}
 
     /*
      * Korean:
@@ -2654,26 +2655,36 @@ function renderUnmatched(content) {
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
+  
 function updateCandidateTemplate() {
     if (!state.candidates.length) {
         return;
     }
 
     for (const candidate of state.candidates) {
-        if (!candidate) continue;
+        if (!candidate) {
+            continue;
+        }
 
         if (state.candidateTemplate === "Japanese") {
-            const pattern = generateJapanesePattern(
-                tokenizeCandidate(candidate.candidate)
-            );
+            const pattern =
+                generateJapanesePattern(
+                    tokenizeCandidate(
+                        candidate.candidate
+                    )
+                );
 
-            candidate.input = pattern?.input ?? "";
-            candidate.output = pattern?.output ?? "";
+            candidate.input =
+                pattern?.input ?? "";
+
+            candidate.output =
+                pattern?.output ?? "";
         } else {
-            candidate.input = generateTemplateInput(
-                candidate.candidate,
-                state.candidateTemplate
-            );
+            candidate.input =
+                generateTemplateInput(
+                    candidate.candidate,
+                    state.candidateTemplate
+                );
 
             candidate.output = "";
         }
@@ -2690,6 +2701,86 @@ function handleClick(event) {
     const action = target.dataset.action;
 
     switch (action) {
+
+        case "copy-candidate-input": {
+            const index = Number(
+                target.dataset.candidateIndex
+            );
+
+            const candidate = state.candidates[index];
+
+            if (!candidate) {
+                return;
+            }
+
+            const input = String(
+                generateTemplateInput(
+                    candidate.candidate,
+                    state.candidateTemplate
+                ) ?? ""
+            );
+
+            if (!input) {
+                return;
+            }
+
+            const copy = async () => {
+                try {
+                    await navigator.clipboard.writeText(input);
+                    return true;
+                } catch {
+                    try {
+                        const textarea =
+                            document.createElement("textarea");
+
+                        textarea.value = input;
+                        textarea.setAttribute(
+                            "readonly",
+                            ""
+                        );
+
+                        textarea.style.position = "fixed";
+                        textarea.style.left = "-9999px";
+                        textarea.style.top = "0";
+                        textarea.style.opacity = "0";
+
+                        document.body.appendChild(textarea);
+
+                        textarea.focus();
+                        textarea.select();
+
+                        const copied =
+                            document.execCommand("copy");
+
+                        textarea.remove();
+
+                        return copied;
+                    } catch {
+                        return false;
+                    }
+                }
+            };
+
+            copy().then(copied => {
+                if (!copied || !target.isConnected) {
+                    return;
+                }
+
+                const original =
+                    target.textContent;
+
+                target.textContent = "Copied";
+
+                setTimeout(() => {
+                    if (target.isConnected) {
+                        target.textContent =
+                            original;
+                    }
+                }, 800);
+            });
+
+            break;
+        }
 
         case "sort-rules":
             sortRulesByHeader(
