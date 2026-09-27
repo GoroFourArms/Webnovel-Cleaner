@@ -438,14 +438,205 @@ function normalizeRule(rule) {
     function ruleMatchesText(rule, text) {
         return countRuleMatches(rule, text) > 0;
     }
+const CHAPTER_SELECTOR_KEY = "wnc-chapter-selector";
+
+const DEFAULT_CHAPTER_SELECTORS = [
+    ".entry-content",
+    ".text-left",
+    ".prose",
+    ".chapter-content",
+    ".chapter-content2",
+    ".chapter-content3",
+    ".chapter_content",
+    ".chapter-body",
+    ".chapter-text",
+    ".chapter-body-content",
+    ".read-content",
+    ".reading-content",
+    ".reader-content",
+    ".novel-content",
+    ".novel-body",
+    ".story-content",
+    ".story-body",
+    ".book-content",
+    ".post-content",
+    ".content-area",
+    "article",
+    "main",
+    "#chapter-content",
+    "#chapter-body",
+    "#read-content",
+    "#reading-content",
+    "#reader-content",
+    "#novel-content"
+];
+
+function getChapterSelector() {
+    const hostname = location.hostname;
+
+    return String(
+        GM_getValue(
+            `${CHAPTER_SELECTOR_KEY}:${hostname}`,
+            ""
+        )
+    ).trim();
+}
+
+function saveChapterSelector(selector) {
+    const hostname = location.hostname;
+
+    GM_setValue(
+        `${CHAPTER_SELECTOR_KEY}:${hostname}`,
+        String(selector ?? "").trim()
+    );
+}
+
+function findChapterContainer() {
+    const savedSelector =
+        getChapterSelector();
+
+    /*
+     * Site-specific selector has priority.
+     */
+    if (savedSelector) {
+        try {
+            const saved =
+                document.querySelector(savedSelector);
+
+            if (saved) {
+                return saved;
+            }
+        } catch (error) {
+            /*
+             * Invalid selector.
+             * Continue with automatic detection.
+             */
+        }
+    }
+
+    const candidates = [];
+    const seen = new Set();
+
+    for (
+        let i = 0;
+        i < DEFAULT_CHAPTER_SELECTORS.length;
+        i++
+    ) {
+        const selector =
+            DEFAULT_CHAPTER_SELECTORS[i];
+
+        let elements;
+
+        try {
+            elements =
+                document.querySelectorAll(selector);
+        } catch (error) {
+            continue;
+        }
+
+        for (const element of elements) {
+            if (seen.has(element)) {
+                continue;
+            }
+
+            seen.add(element);
+
+            const text =
+                element.innerText?.trim() || "";
+
+            if (text.length < 300) {
+                continue;
+            }
+
+            candidates.push({
+                element,
+                priority: i
+            });
+        }
+    }
+
+    if (!candidates.length) {
+        return null;
+    }
+
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (const candidate of candidates) {
+        const element = candidate.element;
+        const text =
+            element.innerText.trim();
+
+        const paragraphs =
+            element.querySelectorAll("p").length;
+
+        const headings =
+            element.querySelectorAll(
+                "h1, h2, h3, h4"
+            ).length;
+
+        const links =
+            element.querySelectorAll("a").length;
+
+        const buttons =
+            element.querySelectorAll(
+                "button, input, select"
+            ).length;
+
+        const navigation =
+            element.querySelectorAll(
+                "nav, header, footer"
+            ).length;
+
+        const comments =
+            element.querySelectorAll(
+                "[class*='comment'], [id*='comment']"
+            ).length;
+
+        let score =
+            Math.min(text.length, 50000) / 100 +
+            paragraphs * 80 +
+            headings * 10;
+
+        score += Math.max(
+            0,
+            30 - candidate.priority
+        );
+
+        score -= links * 2;
+        score -= buttons * 10;
+        score -= navigation * 100;
+        score -= comments * 50;
+
+        if (
+            text.length > 0 &&
+            links > text.length / 100
+        ) {
+            score -= 100;
+        }
+
+        if (score > bestScore) {
+            best = element;
+            bestScore = score;
+        }
+    }
+
+    return best;
+}
 
 function getPageText() {
-    if (!document.body) {
+    const chapter =
+        findChapterContainer();
+
+    if (!chapter) {
         return "";
     }
 
-    const clone = document.body.cloneNode(true);
-    const wncRoot = clone.querySelector("#wnc-root");
+    const clone =
+        chapter.cloneNode(true);
+
+    const wncRoot =
+        clone.querySelector("#wnc-root");
 
     if (wncRoot) {
         wncRoot.remove();
@@ -641,6 +832,14 @@ function addCandidate(map, value) {
         ""
     );
 
+    /*
+     * Strip leading context words.
+     *
+     * "Seeing Hyewoo" -> "Hyewoo"
+     * "Looking Jaehyun" -> "Jaehyun"
+     * "Hearing Daon" -> "Daon"
+     * "Clutching Kim Daon" -> "Kim Daon"
+     */
     while (
         candidate &&
         FILTER_CONTEXT.has(
@@ -658,6 +857,9 @@ function addCandidate(map, value) {
         return;
     }
 
+    /*
+     * Ignore single-character candidates.
+     */
     if ([...candidate].length < 2) {
         return;
     }
@@ -665,17 +867,31 @@ function addCandidate(map, value) {
     const normalized =
         candidate.toLowerCase();
 
+    /*
+     * Filter conversational/common words only
+     * when they are the entire candidate.
+     *
+     * "He" -> filtered
+     * "He Tao" -> kept
+     * "Woo" -> kept
+     * "Jin" -> kept
+     */
     if (FILTER_ALONE.has(normalized)) {
         return;
     }
 
     const tokens = candidate.split(/\s+/);
 
+    /*
+     * Filter common function words only when
+     * the entire candidate is that word.
+     *
+     * Multi-word candidates are preserved.
+     */
     if (
-        tokens.some(token =>
-            FILTER_WORDS.has(
-                token.toLowerCase()
-            )
+        tokens.length === 1 &&
+        FILTER_WORDS.has(
+            tokens[0].toLowerCase()
         )
     ) {
         return;
@@ -1481,7 +1697,16 @@ function generateJapanesePattern(tokens) {
         text-align: center;
         background: #181818;
     }
+.wnc-chapter-selector {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+}
 
+#wnc-chapter-selector {
+    flex: 1;
+    min-width: 0;
+}
     .wnc-add-button {
         padding: 6px 12px;
     }
@@ -2259,6 +2484,23 @@ function renderUnmatched(content) {
                 </span>
             </div>
 
+            <div class="wnc-chapter-selector">
+                <input
+                    type="text"
+                    id="wnc-chapter-selector"
+                    value="${escapeHTML(getChapterSelector())}"
+                    placeholder="Chapter container CSS selector"
+                    autocomplete="off"
+                    spellcheck="false"
+                >
+
+                <button
+                    type="button"
+                    class="wnc-button"
+                    data-action="save-chapter-selector"
+                >Save</button>
+            </div>
+
             <div class="wnc-table-wrap">
                 <table class="wnc-table wnc-unmatched-table">
                     <thead>
@@ -2329,147 +2571,110 @@ function updateCandidateTemplate() {
         }
     }
 }
-
 function handleClick(event) {
-    const target = event.target.closest("[data-action]");
+    const target =
+        event.target.closest("[data-action]");
 
     if (!target) {
         return;
     }
 
-    const action = target.dataset.action;
+    const action =
+        target.dataset.action;
 
-    switch (action) {
-        case "copy-candidate-input": {
-            const index = Number(
-                target.dataset.candidateIndex
-            );
+    if (action === "copy-candidate-input") {
+        const index =
+            Number(target.dataset.candidateIndex);
 
-            const candidate = state.candidates[index];
+        const candidate =
+            state.candidates[index];
 
-            if (!candidate) {
-                return;
-            }
-
-            const input = String(
-                generateTemplateInput(
-                    candidate.candidate,
-                    state.candidateTemplate
-                ) ?? ""
-            );
-
-            if (!input) {
-                return;
-            }
-
-            const copy = async () => {
-                try {
-                    await navigator.clipboard.writeText(input);
-                    return true;
-                } catch {
-                    try {
-                        const textarea =
-                            document.createElement("textarea");
-
-                        textarea.value = input;
-                        textarea.setAttribute(
-                            "readonly",
-                            ""
-                        );
-
-                        textarea.style.position = "fixed";
-                        textarea.style.left = "-9999px";
-                        textarea.style.top = "0";
-                        textarea.style.opacity = "0";
-
-                        document.body.appendChild(textarea);
-                        textarea.focus();
-                        textarea.select();
-
-                        const copied =
-                            document.execCommand("copy");
-
-                        textarea.remove();
-
-                        return copied;
-                    } catch {
-                        return false;
-                    }
-                }
-            };
-
-            copy().then(copied => {
-                if (!copied || !target.isConnected) {
-                    return;
-                }
-
-                const original =
-                    target.textContent;
-
-                target.textContent = "Copied";
-
-                setTimeout(() => {
-                    if (target.isConnected) {
-                        target.textContent =
-                            original;
-                    }
-                }, 800);
-            });
-
-            break;
+        if (!candidate) {
+            return;
         }
 
-        case "unmatched-template-cycle":
-            state.candidateTemplate =
-                state.candidateTemplate === "Korean"
-                    ? "Japanese"
-                    : state.candidateTemplate === "Japanese"
-                        ? "Other"
-                        : "Korean";
+        const input =
+            state.candidateTemplate === "Japanese"
+                ? generateJapanesePattern(
+                    tokenizeCandidate(candidate.candidate)
+                )?.input ?? ""
+                : generateTemplateInput(
+                    candidate.candidate,
+                    state.candidateTemplate
+                );
 
-            updateCandidateTemplate();
-            render();
-            break;
+        navigator.clipboard.writeText(input);
 
-        case "import":
-            document
-                .getElementById("wnc-import-file")
-                ?.click();
-            break;
+        return;
+    }
 
-        case "close":
-            document
-                .getElementById("wnc-root")
-                ?.remove();
-            break;
+    if (action === "unmatched-template-cycle") {
+        updateCandidateTemplate();
+        renderUnmatched(content);
+        return;
+    }
 
-        case "open-group":
-            openGroup(
-                Number(target.dataset.groupIndex)
+    if (action === "save-chapter-selector") {
+        const input =
+            document.querySelector(
+                "#wnc-chapter-selector"
             );
-            break;
 
-        case "open-unmatched":
-            openUnmatched();
-            break;
+        saveChapterSelector(
+            input?.value || ""
+        );
 
-        case "groups":
-            state.screen = "groups";
-            state.groupIndex = null;
-            render();
-            break;
+        scanCandidates();
+        renderUnmatched(content);
 
-        case "toggle-other-groups":
-            state.showOtherGroups =
-                !state.showOtherGroups;
-            render();
-            break;
+        return;
+    }
 
-        case "back-groups":
-            state.screen = "groups";
-            state.groupIndex = null;
-            render();
-            break;
+    if (action === "import") {
+        const input =
+            document.querySelector(
+                "#wnc-import-file"
+            );
+
+        input?.click();
+
+        return;
+    }
+
+    if (action === "close") {
+        closeUI();
+        return;
+    }
+
+    if (action === "open-group") {
+        const groupIndex =
+            Number(target.dataset.groupIndex);
+
+        openGroup(groupIndex);
+        return;
+    }
+
+    if (action === "open-unmatched") {
+        renderUnmatched(content);
+        return;
+    }
+
+    if (action === "groups") {
+        renderGroups(content);
+        return;
+    }
+
+    if (action === "toggle-other-groups") {
+        state.showOtherGroups =
+            !state.showOtherGroups;
+
+        renderGroups(content);
+        return;
+    }
+
+    if (action === "back-groups") {
+        renderGroups(content);
+        return;
     }
 }
 
