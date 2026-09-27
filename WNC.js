@@ -2085,6 +2085,7 @@ function renderGroup(content) {
                     data-action="back-groups"
                     title="Back"
                 >‹</button>
+
                 <h1>
                     ${escapeHTML(group.name || "(Unnamed)")}
                 </h1>
@@ -2173,121 +2174,6 @@ function renderGroup(content) {
                                             class="wnc-empty"
                                         >
                                             No matching rules on this page
-                                        </td>
-                                    </tr>
-                                `
-                        }
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    `;
-}
-
-    // ---------------------------------------------------------------------
-    // Group workspace
-    // ---------------------------------------------------------------------
-
-function renderGroup(content) {
-    const group = db.groups[state.groupIndex];
-
-    if (!group) {
-        state.screen = "groups";
-        render();
-        return;
-    }
-
-    content.innerHTML = `
-        <section class="wnc-screen">
-            <div class="wnc-workspace-heading">
-                <button
-                    class="wnc-back"
-                    data-action="back-groups"
-                    title="Back"
-                >‹</button>
-
-                <h1>
-                    ${escapeHTML(group.name || "(Unnamed)")}
-                </h1>
-            </div>
-
-            <div class="wnc-table-wrap">
-                <table class="wnc-table wnc-rules-table">
-                    <thead>
-                        <tr>
-                            <th>Replace</th>
-                            <th>With</th>
-                            <th>Type</th>
-                            <th>Output</th>
-                            <th>Case</th>
-                            <th>Enable</th>
-                            <th>Matches</th>
-                        </tr>
-                    </thead>
-
-                    <tbody>
-                        ${
-                            group.substitutions.length
-                                ? group.substitutions.map(rule => {
-                                    const matches =
-                                        countRuleMatches(
-                                            rule,
-                                            getPageText()
-                                        );
-
-                                    return `
-                                        <tr>
-                                            <td>
-                                                ${escapeHTML(
-                                                    rule.input
-                                                )}
-                                            </td>
-                                            <td>
-                                                ${escapeHTML(
-                                                    rule.output
-                                                )}
-                                            </td>
-                                            <td>
-                                                ${escapeHTML(
-                                                    rule.inputType
-                                                )}
-                                            </td>
-                                            <td>
-                                                ${
-                                                    Number(
-                                                        rule.outputType
-                                                    ) === 1
-                                                        ? "Function"
-                                                        : "Text"
-                                                }
-                                            </td>
-                                            <td class="wnc-center">
-                                                ${
-                                                    rule.caseSensitive
-                                                        ? "Yes"
-                                                        : "No"
-                                                }
-                                            </td>
-                                            <td class="wnc-center">
-                                                ${
-                                                    rule.enabled
-                                                        ? "Yes"
-                                                        : "No"
-                                                }
-                                            </td>
-                                            <td class="wnc-number">
-                                                ${matches}
-                                            </td>
-                                        </tr>
-                                    `;
-                                }).join("")
-                                : `
-                                    <tr>
-                                        <td
-                                            colspan="7"
-                                            class="wnc-empty"
-                                        >
-                                            No rules in this group
                                         </td>
                                     </tr>
                                 `
