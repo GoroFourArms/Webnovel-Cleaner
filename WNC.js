@@ -1037,7 +1037,6 @@ function scanCandidates() {
 // ---------------------------------------------------------------------
 
 /*
-/*
  * Candidates are clustered by shared-token relationships
  * with a maximum traversal depth of 2.
  * Example:
