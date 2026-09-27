@@ -2637,11 +2637,6 @@ function updateCandidateTemplate() {
         }
     }
 }
-  function getUIContent() {
-    return document.getElementById(
-        "wnc-content"
-    );
-}
   function copyTextFallback(text) {
     const textarea =
         document.createElement("textarea");
