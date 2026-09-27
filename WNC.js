@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.22
+// @version      6.1.23
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -44,11 +44,12 @@
  *   - candidates within 2 token links belong to the same cluster
  *   - unclustered candidates below 5% of the maximum frequency are hidden
  */
-    // ---------------------------------------------------------------------
-    // Constants
-    // ---------------------------------------------------------------------
-
-    const DB_KEY = "WNC_FOXREPLACE_DATABASE_V1";
+// ---------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------
+const DB_KEY = "WNC_FOXREPLACE_DATABASE_V1";
+const LAST_IMPORTED_DB_KEY =
+    "WNC_LAST_IMPORTED_DATABASE_V1";
 
     const UI = {
         title: "WNC"
@@ -64,7 +65,9 @@ const DEFAULT_GROUP = {
     substitutions: []
 };
 
-    let db = loadDatabase();
+let db =
+    loadLastImportedDatabase() ||
+    loadDatabase();
 
 let state = {
     screen: "groups",
@@ -106,27 +109,39 @@ let state = {
             console.error("WNC storage error:", error);
         }
     }
+function loadDatabase() {
+    const raw = readStorage(DB_KEY, null);
 
-    function loadDatabase() {
-        const raw = readStorage(DB_KEY, null);
-
-        if (!raw) {
-            return {
-                groups: []
-            };
-        }
-
-        const normalized = normalizeDatabase(raw);
-
-        if (!normalized) {
-            return {
-                groups: []
-            };
-        }
-
-        return normalized;
+    if (!raw) {
+        return {
+            groups: []
+        };
     }
 
+    const normalized = normalizeDatabase(raw);
+
+    if (!normalized) {
+        return {
+            groups: []
+        };
+    }
+
+    return normalized;
+}
+
+function loadLastImportedDatabase() {
+    const raw =
+        readStorage(LAST_IMPORTED_DB_KEY, null);
+
+    if (!raw) {
+        return null;
+    }
+
+    const normalized =
+        normalizeDatabase(raw);
+
+    return normalized || null;
+}
     // ---------------------------------------------------------------------
     // Native FoxReplace normalization
     // ---------------------------------------------------------------------
@@ -175,9 +190,32 @@ let state = {
             .map(normalizeRule)
             .filter(Boolean);
 
-        normalized.enabled = Boolean(normalized.enabled);
-        normalized.pageLoad = Boolean(normalized.pageLoad);
-        normalized.auto = Boolean(normalized.auto);
+normalized.enabled =
+    typeof normalized.enabled === "boolean"
+        ? normalized.enabled
+        : normalized.enabled === "true"
+            ? true
+            : normalized.enabled === "false"
+                ? false
+                : Boolean(normalized.enabled);
+
+normalized.pageLoad =
+    typeof normalized.pageLoad === "boolean"
+        ? normalized.pageLoad
+        : normalized.pageLoad === "true"
+            ? true
+            : normalized.pageLoad === "false"
+                ? false
+                : Boolean(normalized.pageLoad);
+
+normalized.auto =
+    typeof normalized.auto === "boolean"
+        ? normalized.auto
+        : normalized.auto === "true"
+            ? true
+            : normalized.auto === "false"
+                ? false
+                : Boolean(normalized.auto);
         normalized.html =
         normalized.html === 1 ||
         normalized.html === "1"
@@ -907,17 +945,23 @@ function addCandidate(map, value) {
     // Existing-rule exclusion
     // ---------------------------------------------------------------------
 
-    function getAllRules() {
-        return db.groups.flatMap(group => group.substitutions);
-    }
+function getCurrentSiteRules() {
+    return db.groups
+        .filter(group =>
+            group.enabled &&
+            groupMatchesCurrentSite(group)
+        )
+        .flatMap(group => group.substitutions)
+        .filter(rule =>
+            rule.enabled &&
+            rule.input
+        );
+}
 
 function candidateCoveredByExistingRule(candidate) {
-    const rules = getAllRules();
+const rules = getCurrentSiteRules();
 
-    for (const rule of rules) {
-        if (!rule.enabled || !rule.input) {
-            continue;
-        }
+for (const rule of rules) {
 
         const regex = buildRuleRegex(rule);
 
@@ -993,8 +1037,9 @@ function scanCandidates() {
 // ---------------------------------------------------------------------
 
 /*
- * Candidates are clustered by connected shared-token relationships.
- *
+/*
+ * Candidates are clustered by shared-token relationships
+ * with a maximum traversal depth of 2.
  * Example:
  *
  *   Fred        59
@@ -1006,7 +1051,7 @@ function scanCandidates() {
  *   Fred <-> Fred Smith <-> Smith John
  *
  * Candidates do not need to share a token directly with every member
- * of the cluster. A chain of shared tokens is enough.
+ * of the cluster. A chain of shared tokens is allowed up to 2 links.
  *
  * Unclustered candidates whose frequency is below 5% of the maximum
  * candidate frequency are hidden.
@@ -2017,13 +2062,21 @@ function renderGroups(content) {
 
     const groups = sortedGroups()
         .map(({ group, index }) => {
-            const ruleMatches = group.substitutions
-                .map(rule => ({
+const siteMatches =
+    groupMatchesCurrentSite(group);
+
+const ruleMatches =
+    siteMatches
+        ? group.substitutions.map(rule => ({
+            rule,
+            matches: rule.enabled
+                ? countRuleMatches(
                     rule,
-                    matches: rule.enabled
-                        ? countRuleMatches(rule, pageText)
-                        : 0
-                }));
+                    pageText
+                )
+                : 0
+        }))
+        : [];
 
             const matchingRules =
                 ruleMatches.filter(
@@ -2038,9 +2091,6 @@ function renderGroups(content) {
 
             const ruleCount =
                 matchingRules.length;
-
-            const siteMatches =
-                groupMatchesCurrentSite(group);
 
             const searchMatch =
                 !query ||
@@ -2538,16 +2588,32 @@ function renderUnmatched(content) {
     // ---------------------------------------------------------------------
 
 function updateCandidateTemplate() {
-    if (!state.candidates.length) {
-        return;
-    }
+    const templates = [
+        "Other",
+        "Korean",
+        "Japanese"
+    ];
+
+    const currentIndex =
+        templates.indexOf(
+            state.candidateTemplate
+        );
+
+    state.candidateTemplate =
+        templates[
+            (currentIndex + 1) %
+            templates.length
+        ];
 
     for (const candidate of state.candidates) {
         if (!candidate) {
             continue;
         }
 
-        if (state.candidateTemplate === "Japanese") {
+        if (
+            state.candidateTemplate ===
+            "Japanese"
+        ) {
             const pattern =
                 generateJapanesePattern(
                     tokenizeCandidate(
@@ -2571,6 +2637,43 @@ function updateCandidateTemplate() {
         }
     }
 }
+  function getUIContent() {
+    return document.getElementById(
+        "wnc-content"
+    );
+}
+  function copyTextFallback(text) {
+    const textarea =
+        document.createElement("textarea");
+
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+
+    document.body.appendChild(textarea);
+
+    textarea.focus();
+    textarea.select();
+
+    try {
+        document.execCommand("copy");
+    } catch (error) {
+        console.error(
+            "WNC clipboard error:",
+            error
+        );
+    }
+
+    textarea.remove();
+}
+  function closeUI() {
+    const root =
+        document.getElementById("wnc-root");
+
+    if (root) {
+        root.remove();
+    }
+}
 function handleClick(event) {
     const target =
         event.target.closest("[data-action]");
@@ -2584,7 +2687,9 @@ function handleClick(event) {
 
     if (action === "copy-candidate-input") {
         const index =
-            Number(target.dataset.candidateIndex);
+            Number(
+                target.dataset.candidateIndex
+            );
 
         const candidate =
             state.candidates[index];
@@ -2594,27 +2699,47 @@ function handleClick(event) {
         }
 
         const input =
-            state.candidateTemplate === "Japanese"
+            state.candidateTemplate ===
+            "Japanese"
                 ? generateJapanesePattern(
-                    tokenizeCandidate(candidate.candidate)
+                    tokenizeCandidate(
+                        candidate.candidate
+                    )
                 )?.input ?? ""
                 : generateTemplateInput(
                     candidate.candidate,
                     state.candidateTemplate
                 );
 
-        navigator.clipboard.writeText(input);
+        if (
+            navigator.clipboard &&
+            navigator.clipboard.writeText
+        ) {
+            navigator.clipboard
+                .writeText(input)
+                .catch(() => {
+                    copyTextFallback(input);
+                });
+        } else {
+            copyTextFallback(input);
+        }
 
         return;
     }
 
-    if (action === "unmatched-template-cycle") {
+    if (
+        action ===
+        "unmatched-template-cycle"
+    ) {
         updateCandidateTemplate();
-        renderUnmatched(content);
+        render();
         return;
     }
 
-    if (action === "save-chapter-selector") {
+    if (
+        action ===
+        "save-chapter-selector"
+    ) {
         const input =
             document.querySelector(
                 "#wnc-chapter-selector"
@@ -2625,8 +2750,7 @@ function handleClick(event) {
         );
 
         scanCandidates();
-        renderUnmatched(content);
-
+        render();
         return;
     }
 
@@ -2648,32 +2772,40 @@ function handleClick(event) {
 
     if (action === "open-group") {
         const groupIndex =
-            Number(target.dataset.groupIndex);
+            Number(
+                target.dataset.groupIndex
+            );
 
         openGroup(groupIndex);
         return;
     }
 
     if (action === "open-unmatched") {
-        renderUnmatched(content);
+        openUnmatched();
         return;
     }
 
     if (action === "groups") {
-        renderGroups(content);
+        state.screen = "groups";
+        render();
         return;
     }
 
-    if (action === "toggle-other-groups") {
+    if (
+        action ===
+        "toggle-other-groups"
+    ) {
         state.showOtherGroups =
             !state.showOtherGroups;
 
-        renderGroups(content);
+        render();
         return;
     }
 
     if (action === "back-groups") {
-        renderGroups(content);
+        state.screen = "groups";
+        state.groupIndex = null;
+        render();
         return;
     }
 }
@@ -2779,13 +2911,18 @@ function handleInput(event) {
                     return;
                 }
 
-                db = validated;
+db = validated;
 
-                /*
-                 * Import replaces the canonical FoxReplace database.
-                 * Candidate remains transient.
-                 */
-                state.candidates = [];
+/*
+ * Remember only the latest imported database.
+ * This does not overwrite the normal database.
+ */
+writeStorage(
+    LAST_IMPORTED_DB_KEY,
+    validated
+);
+
+state.candidates = [];
                 state.screen = "groups";
                 state.groupIndex = null;
                 render();
