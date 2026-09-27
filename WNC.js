@@ -69,14 +69,12 @@ const DEFAULT_GROUP = {
 let state = {
     screen: "groups",
     groupIndex: null,
-    tab: "rules",
     candidates: [],
 
     candidateTemplate: "Other",
 
     searchQuery: "",
     showOtherGroups: false,
-    unmatchedInitialized: false,
 };
 
     // ---------------------------------------------------------------------
@@ -602,173 +600,59 @@ for (const occurrence of selected) {
     }));
 }
 
-const COMMON_STANDALONE_WORDS = new Set([
-  "And",
-"But",
-"Or",
-"If",
-"So",
-"Yet",
-"For",
-"Nor",
-"Then",
-"Than",
-"That",
-"This",
-"These",
-"Those",
-"The",
-"A",
-"An",
-"I",
-"Am",
-"Is",
-"Are",
-"Was",
-"Were",
-"Be",
-"Been",
-"Being",
-"He",
-"She",
-"It",
-"We",
-"They",
-"You",
-"Me",
-"Him",
-"Her",
-"Us",
-"Them",
-"My",
-"Your",
-"His",
-"Her",
-"Our",
-"Their",
-"Of",
-"In",
-"On",
-"At",
-"To",
-"From",
-"With",
-"By",
-"As",
-"Into",
-"Upon",
-"About",
-"After",
-"Before",
-"Over",
-"Under",
-    "the",
-    "a",
-    "an",
-    "this",
-    "that",
-    "these",
-    "those",
-    "and",
-    "but",
-    "or",
-    "nor",
-    "yet",
-    "so",
-    "he",
-    "she",
-    "it",
-    "they",
-    "we",
-    "i",
-    "you",
-    "his",
-    "her",
-    "its",
-    "their",
-    "our",
-    "your",
-    "my",
-    "then",
-    "now",
-    "just",
-    "still",
-    "also",
-    "even",
-    "only",
-    "already",
-    "finally",
-    "suddenly",
-    "when",
-    "while",
-    "where",
-    "what",
-    "why",
-    "how",
-    "who",
-    "if",
-    "though",
-    "although",
-    "because",
-    "since",
-    "after",
-    "before",
-    "until",
-    "unless",
-    "as",
-    "for",
-    "from",
-    "with",
-    "without",
-    "into",
-    "upon",
-    "over",
-    "under",
-    "through",
-    "there",
-    "here",
-    "however",
-    "therefore",
-    "meanwhile",
-    "instead",
-    "besides",
-    "otherwise",
-    "indeed",
-    "perhaps",
-    "maybe",
-    "certainly",
-    "actually",
-    "apparently",
-    "unfortunately",
-    "fortunately",
-    "to",
-    "of",
-    "in",
-    "on",
-    "at",
-    "by"
+const FILTER_WORDS = new Set([
+    "a", "after", "an", "and", "as", "at", "before", "but",
+    "by", "for", "from", "how", "if", "in", "of", "on",
+    "or", "since", "so", "that", "the", "then", "there",
+    "this", "to", "until", "what", "when", "where", "while",
+    "why", "with"
+]);
+
+const FILTER_ALONE = new Set([
+    "ah", "anyone", "ha", "hehe", "he", "he'd", "he's",
+    "her", "his", "huh", "i", "i'd", "i'll", "i'm", "i've",
+    "it", "it'll", "it's", "just", "maybe", "my", "no",
+    "oh", "okay", "only", "our", "really", "she", "sorry",
+    "thanks", "they", "they're", "we", "we'll", "we're",
+    "we've", "wow", "yeah", "yes", "you", "you'll",
+    "you're", "your"
+]);
+
+const FILTER_CONTEXT = new Set([
+    "acting", "adding", "clutching", "crying", "eating",
+    "filming", "going", "hearing", "ignoring", "judging",
+    "leaving", "listening", "looking", "making", "panting",
+    "praying", "pulling", "regretting", "seeing",
+    "sniffling", "standing", "suppressing", "taking",
+    "thinking", "tilting", "watching"
 ]);
 
 function addCandidate(map, value) {
-    let candidate = value.trim();
+    let candidate = String(value ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
 
     if (!candidate) {
         return;
     }
 
-    /*
-     * Remove leading articles from multi-word candidates.
-     *
-     * "The White Dragon" becomes "White Dragon".
-     *
-     * We only do this for leading articles, so names such as
-     * "He Tao", "Do Hyuk", "Will Smith", and "May Chen"
-     * remain intact.
-     */
     candidate = candidate.replace(
         /^(?:The|A|An)\s+/i,
         ""
     );
+
+    while (
+        candidate &&
+        FILTER_CONTEXT.has(
+            candidate.split(/\s+/)[0].toLowerCase()
+        )
+    ) {
+        candidate = candidate
+            .split(/\s+/)
+            .slice(1)
+            .join(" ")
+            .trim();
+    }
 
     if (!candidate) {
         return;
@@ -778,26 +662,18 @@ function addCandidate(map, value) {
         return;
     }
 
-    /*
-     * Filter common words only when they are standalone.
-     *
-     * This means "He" is filtered, but "He Tao" remains.
-     */
-    if (
-        !/\s/.test(candidate) &&
-        COMMON_STANDALONE_WORDS.has(
-            candidate.toLowerCase()
-        )
-    ) {
+    const normalized =
+        candidate.toLowerCase();
+
+    if (FILTER_ALONE.has(normalized)) {
         return;
     }
 
     const tokens = candidate.split(/\s+/);
 
     if (
-        tokens.length > 1 &&
-        tokens.every(token =>
-            COMMON_STANDALONE_WORDS.has(
+        tokens.some(token =>
+            FILTER_WORDS.has(
                 token.toLowerCase()
             )
         )
@@ -854,7 +730,6 @@ function scanCandidates() {
 
     if (!text) {
         state.candidates = [];
-        state.unmatchedInitialized = true;
         return;
     }
 
@@ -863,31 +738,34 @@ function scanCandidates() {
             !candidateCoveredByExistingRule(item.candidate)
         );
 
-    state.candidates = clusterAndSortCandidates(discovered);
-
-    state.unmatchedInitialized = true;
+    state.candidates =
+        clusterAndSortCandidates(discovered);
 
     /*
-     * Generate the current FoxReplace Input for every candidate
-     * using the existing WNC template system.
-     *
-     * No group, candidate type, or case-selection state is used.
+     * Generate the current FoxReplace Input for every
+     * candidate using the existing template system.
      */
     for (const candidate of state.candidates) {
-        if (!candidate) continue;
+        if (!candidate) {
+            continue;
+        }
 
         if (state.candidateTemplate === "Japanese") {
-            const pattern = generateJapanesePattern(
-                tokenizeCandidate(candidate.candidate)
-            );
+            const pattern =
+                generateJapanesePattern(
+                    tokenizeCandidate(candidate.candidate)
+                );
 
-            candidate.input = pattern?.input ?? "";
+            candidate.input =
+                pattern?.input ?? "";
+
             candidate.output = "";
         } else {
-            candidate.input = generateTemplateInput(
-                candidate.candidate,
-                state.candidateTemplate
-            );
+            candidate.input =
+                generateTemplateInput(
+                    candidate.candidate,
+                    state.candidateTemplate
+                );
 
             candidate.output = "";
         }
@@ -942,142 +820,171 @@ function candidatesShareToken(a, b) {
 }
 
 function clusterAndSortCandidates(candidates) {
-    const sorted = [...candidates].sort((a, b) => {
-        if (b.matches !== a.matches) {
-            return b.matches - a.matches;
-        }
-
-        return compareNames(
-            a.candidate,
-            b.candidate
-        );
-    });
-
-    if (!sorted.length) {
+    if (!candidates?.length) {
         return [];
     }
 
-    const maximumFrequency = sorted[0].matches;
-    const minimumUnclusteredFrequency =
-        maximumFrequency * UNCLUSTERED_FREQUENCY_RATIO;
+    const items = candidates.map(item => ({
+        ...item,
+        tokens: new Set(
+            tokenizeCandidate(item.candidate)
+                .map(normalizeToken)
+                .filter(Boolean)
+        ),
+        cluster: null,
+        degree: Infinity
+    }));
 
-    const result = [];
-    const clustered = new Set();
+    const maxFrequency = Math.max(
+        ...items.map(item => Number(item.count) || 0)
+    );
+
+    if (!maxFrequency) {
+        return [];
+    }
 
     /*
-     * Process candidates in frequency order.
-     *
-     * The highest-frequency candidate that has not already
-     * been consumed by an earlier cluster becomes the next root.
+     * Remove candidates below 5% of the most frequent
+     * candidate only after clustering has been completed.
      */
-    for (
-        let rootIndex = 0;
-        rootIndex < sorted.length;
-        rootIndex++
-    ) {
-        if (clustered.has(rootIndex)) {
-            continue;
-        }
+    const minimumFrequency = maxFrequency * 0.05;
 
-        const distances = new Map();
-        const queue = [rootIndex];
+    const unclustered = new Set(items);
 
-        distances.set(rootIndex, 0);
+    while (unclustered.size) {
+        let root = null;
 
         /*
-         * Maximum graph distance is 2.
-         *
-         * Example:
-         *
-         * Bob
-         *  |
-         * Bob Ho       degree 1
-         *  |
-         * Ho Gang     degree 2
-         *  |
-         * Gang Lee    degree 3 -> excluded
+         * Highest-frequency unclustered candidate becomes
+         * the next cluster root.
          */
-        while (queue.length) {
-            const sourceIndex = queue.shift();
-            const sourceDistance =
-                distances.get(sourceIndex);
+        for (const item of unclustered) {
+            if (
+                !root ||
+                item.count > root.count ||
+                (
+                    item.count === root.count &&
+                    item.candidate.localeCompare(
+                        root.candidate,
+                        undefined,
+                        { sensitivity: "base" }
+                    ) < 0
+                )
+            ) {
+                root = item;
+            }
+        }
 
-            if (sourceDistance >= 2) {
+        if (!root) {
+            break;
+        }
+
+        const cluster = [];
+        const queue = [
+            {
+                item: root,
+                degree: 0
+            }
+        ];
+
+        const visited = new Set([root]);
+        unclustered.delete(root);
+
+        while (queue.length) {
+            const current = queue.shift();
+
+            current.item.cluster = root.candidate;
+            current.item.degree = current.degree;
+            cluster.push(current.item);
+
+            /*
+             * Maximum cluster depth is 2.
+             */
+            if (current.degree >= 2) {
                 continue;
             }
 
-            for (
-                let candidateIndex = 0;
-                candidateIndex < sorted.length;
-                candidateIndex++
-            ) {
-                if (clustered.has(candidateIndex)) {
+            for (const candidate of [...unclustered]) {
+                let sharesToken = false;
+
+                for (const token of current.item.tokens) {
+                    if (candidate.tokens.has(token)) {
+                        sharesToken = true;
+                        break;
+                    }
+                }
+
+                if (!sharesToken) {
                     continue;
                 }
 
-                if (distances.has(candidateIndex)) {
+                const nextDegree = current.degree + 1;
+
+                if (nextDegree > 2) {
                     continue;
                 }
 
-                if (
-                    candidatesShareToken(
-                        sorted[sourceIndex],
-                        sorted[candidateIndex]
-                    )
-                ) {
-                    distances.set(
-                        candidateIndex,
-                        sourceDistance + 1
-                    );
+                visited.add(candidate);
+                unclustered.delete(candidate);
 
-                    queue.push(candidateIndex);
-                }
+                queue.push({
+                    item: candidate,
+                    degree: nextDegree
+                });
             }
         }
 
-        const clusterIndexes = [...distances.keys()]
-            .sort((a, b) => {
-                const distanceA = distances.get(a);
-                const distanceB = distances.get(b);
+        /*
+         * Sort each cluster by frequency first, then name.
+         */
+        cluster.sort((a, b) => {
+            if (b.count !== a.count) {
+                return b.count - a.count;
+            }
 
-                if (distanceA !== distanceB) {
-                    return distanceA - distanceB;
-                }
-
-                if (
-                    sorted[b].matches !==
-                    sorted[a].matches
-                ) {
-                    return (
-                        sorted[b].matches -
-                        sorted[a].matches
-                    );
-                }
-
-                return compareNames(
-                    sorted[a].candidate,
-                    sorted[b].candidate
-                );
-            });
+            return a.candidate.localeCompare(
+                b.candidate,
+                undefined,
+                { sensitivity: "base" }
+            );
+        });
 
         /*
-         * A root with no connected candidates is an unclustered
-         * candidate. Hide it when its frequency is below 5%
-         * of the maximum candidate frequency.
+         * Keep the cluster only if its root meets the
+         * minimum frequency threshold.
          */
-        if (
-            clusterIndexes.length === 1 &&
-            sorted[rootIndex].matches <
-                minimumUnclusteredFrequency
-        ) {
-            clustered.add(rootIndex);
+        if (root.count >= minimumFrequency) {
+            root.clusterItems = cluster;
+        }
+    }
+
+    /*
+     * Flatten clusters in hierarchical root-frequency order.
+     * Candidates that never became part of a qualifying
+     * cluster are removed.
+     */
+    const result = [];
+
+    const roots = items
+        .filter(item => item.cluster === item.candidate)
+        .sort((a, b) => {
+            if (b.count !== a.count) {
+                return b.count - a.count;
+            }
+
+            return a.candidate.localeCompare(
+                b.candidate,
+                undefined,
+                { sensitivity: "base" }
+            );
+        });
+
+    for (const root of roots) {
+        if (!root.clusterItems) {
             continue;
         }
 
-        for (const index of clusterIndexes) {
-            clustered.add(index);
-            result.push(sorted[index]);
-        }
+        result.push(...root.clusterItems);
     }
 
     return result;
@@ -1089,7 +996,6 @@ function tokenizeCandidate(value) {
         .split(/\s+/)
         .filter(Boolean);
 }
-
 function normalizeToken(token) {
     let value = String(token ?? "")
         .toLowerCase()
@@ -1099,65 +1005,32 @@ function normalizeToken(token) {
         .replace(/s'$/g, "")
         .replace(/-/g, "");
 
-    /*
-     * Normalize common English plural forms so singular and
-     * plural candidates can participate in the same cluster.
-     *
-     * Examples:
-     *   Knight  -> knight
-     *   Knights -> knight
-     *   Lady    -> lady
-     *   Ladies  -> lady
-     *   Box     -> box
-     *   Boxes   -> box
-     *
-     * Do not strip a final "s" from very short words because
-     * that would incorrectly turn words such as "is" into "i".
-     */
-
     if (value.length > 3) {
-        if (
-            value.endsWith("ies") &&
-            value.length > 4
-        ) {
-            value =
-                value.slice(0, -3) + "y";
-        } else if (
-            value.endsWith("ves") &&
-            value.length > 4
-        ) {
-            /*
-             * wolves -> wolf
-             * wives  -> wife
-             *
-             * Keep this conservative because English "-ves"
-             * plurals are not completely regular.
-             */
-            const base = value.slice(0, -3);
+        /*
+         * cities -> city
+         */
+        if (value.endsWith("ies")) {
+            value = value.slice(0, -3) + "y";
+        }
 
-            if (
-                base.endsWith("i") ||
-                base.endsWith("o") ||
-                base.endsWith("a") ||
-                base.endsWith("e")
-            ) {
-                value = base + "fe";
-            } else {
-                value = base + "f";
-            }
-        } else if (
-            value.endsWith("es") &&
-            value.length > 4 &&
-            (
-                value.endsWith("ses") ||
-                value.endsWith("xes") ||
-                value.endsWith("zes") ||
-                value.endsWith("ches") ||
-                value.endsWith("shes")
-            )
+        /*
+         * boxes, churches, wishes -> box, church, wish
+         */
+        else if (
+            value.endsWith("xes") ||
+            value.endsWith("ses") ||
+            value.endsWith("zes") ||
+            value.endsWith("ches") ||
+            value.endsWith("shes")
         ) {
             value = value.slice(0, -2);
-        } else if (
+        }
+
+        /*
+         * dogs -> dog
+         * names -> name
+         */
+        else if (
             value.endsWith("s") &&
             !value.endsWith("ss")
         ) {
@@ -2292,9 +2165,8 @@ function renderGroup(content) {
     // ---------------------------------------------------------------------
 
 function renderUnmatched(content) {
-    if (!state.unmatchedInitialized) {
-        scanCandidates();
-    }
+
+    scanCandidates();
 
     const getCandidateInput = (candidate) => {
         if (!candidate) {
@@ -2646,11 +2518,8 @@ function handleInput(event) {
         if (!db.groups[index]) {
             return;
         }
-
         state.groupIndex = index;
         state.screen = "group";
-        state.tab = "rules";
-
         render();
     }
 
@@ -2701,12 +2570,8 @@ function handleInput(event) {
                  * Candidate remains transient.
                  */
                 state.candidates = [];
-                state.unmatchedInitialized = false;
-
                 state.screen = "groups";
                 state.groupIndex = null;
-                state.tab = "rules";
-
                 render();
 
             } catch (error) {
