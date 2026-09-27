@@ -818,7 +818,6 @@ function candidatesShareToken(a, b) {
 
     return false;
 }
-
 function clusterAndSortCandidates(candidates) {
     if (!candidates?.length) {
         return [];
@@ -836,18 +835,15 @@ function clusterAndSortCandidates(candidates) {
     }));
 
     const maxFrequency = Math.max(
-        ...items.map(item => Number(item.count) || 0)
+        ...items.map(item => Number(item.matches) || 0)
     );
 
     if (!maxFrequency) {
         return [];
     }
 
-    /*
-     * Remove candidates below 5% of the most frequent
-     * candidate only after clustering has been completed.
-     */
-    const minimumFrequency = maxFrequency * 0.05;
+    const minimumFrequency =
+        maxFrequency * UNCLUSTERED_FREQUENCY_RATIO;
 
     const unclustered = new Set(items);
 
@@ -855,15 +851,15 @@ function clusterAndSortCandidates(candidates) {
         let root = null;
 
         /*
-         * Highest-frequency unclustered candidate becomes
-         * the next cluster root.
+         * Highest-frequency unclustered candidate
+         * becomes the next cluster root.
          */
         for (const item of unclustered) {
             if (
                 !root ||
-                item.count > root.count ||
+                item.matches > root.matches ||
                 (
-                    item.count === root.count &&
+                    item.matches === root.matches &&
                     item.candidate.localeCompare(
                         root.candidate,
                         undefined,
@@ -880,14 +876,11 @@ function clusterAndSortCandidates(candidates) {
         }
 
         const cluster = [];
-        const queue = [
-            {
-                item: root,
-                degree: 0
-            }
-        ];
+        const queue = [{
+            item: root,
+            degree: 0
+        }];
 
-        const visited = new Set([root]);
         unclustered.delete(root);
 
         while (queue.length) {
@@ -895,6 +888,7 @@ function clusterAndSortCandidates(candidates) {
 
             current.item.cluster = root.candidate;
             current.item.degree = current.degree;
+
             cluster.push(current.item);
 
             /*
@@ -918,13 +912,13 @@ function clusterAndSortCandidates(candidates) {
                     continue;
                 }
 
-                const nextDegree = current.degree + 1;
+                const nextDegree =
+                    current.degree + 1;
 
                 if (nextDegree > 2) {
                     continue;
                 }
 
-                visited.add(candidate);
                 unclustered.delete(candidate);
 
                 queue.push({
@@ -935,11 +929,11 @@ function clusterAndSortCandidates(candidates) {
         }
 
         /*
-         * Sort each cluster by frequency first, then name.
+         * Sort candidates inside the cluster by frequency.
          */
         cluster.sort((a, b) => {
-            if (b.count !== a.count) {
-                return b.count - a.count;
+            if (b.matches !== a.matches) {
+                return b.matches - a.matches;
             }
 
             return a.candidate.localeCompare(
@@ -950,26 +944,26 @@ function clusterAndSortCandidates(candidates) {
         });
 
         /*
-         * Keep the cluster only if its root meets the
-         * minimum frequency threshold.
+         * A cluster is retained when its root reaches
+         * the 5% threshold.
          */
-        if (root.count >= minimumFrequency) {
+        if (root.matches >= minimumFrequency) {
             root.clusterItems = cluster;
         }
     }
 
     /*
-     * Flatten clusters in hierarchical root-frequency order.
-     * Candidates that never became part of a qualifying
-     * cluster are removed.
+     * Return clusters in root-frequency order.
      */
     const result = [];
 
     const roots = items
-        .filter(item => item.cluster === item.candidate)
+        .filter(item =>
+            item.cluster === item.candidate
+        )
         .sort((a, b) => {
-            if (b.count !== a.count) {
-                return b.count - a.count;
+            if (b.matches !== a.matches) {
+                return b.matches - a.matches;
             }
 
             return a.candidate.localeCompare(
@@ -1005,7 +999,7 @@ function normalizeToken(token) {
         .replace(/s'$/g, "")
         .replace(/-/g, "");
 
-    if (value.length > 3) {
+    if (value.length > 4) {
         /*
          * cities -> city
          */
@@ -1014,11 +1008,12 @@ function normalizeToken(token) {
         }
 
         /*
-         * boxes, churches, wishes -> box, church, wish
+         * boxes -> box
+         * churches -> church
+         * wishes -> wish
          */
         else if (
             value.endsWith("xes") ||
-            value.endsWith("ses") ||
             value.endsWith("zes") ||
             value.endsWith("ches") ||
             value.endsWith("shes")
@@ -1027,12 +1022,30 @@ function normalizeToken(token) {
         }
 
         /*
+         * buses -> bus
+         * cases -> case
+         */
+        else if (
+            value.endsWith("ses") &&
+            !value.endsWith("sses")
+        ) {
+            value = value.slice(0, -1);
+        }
+
+        /*
          * dogs -> dog
          * names -> name
+         *
+         * Avoid common name endings such as:
+         * James, Chris, Lucas, Thomas, etc.
          */
         else if (
             value.endsWith("s") &&
-            !value.endsWith("ss")
+            !value.endsWith("ss") &&
+            !value.endsWith("us") &&
+            !value.endsWith("is") &&
+            !value.endsWith("as") &&
+            !value.endsWith("es")
         ) {
             value = value.slice(0, -1);
         }
@@ -2163,20 +2176,17 @@ function renderGroup(content) {
     // ---------------------------------------------------------------------
 // Candidate screen
     // ---------------------------------------------------------------------
-
 function renderUnmatched(content) {
-
-    scanCandidates();
-
     const getCandidateInput = (candidate) => {
         if (!candidate) {
             return "";
         }
 
         if (state.candidateTemplate === "Japanese") {
-            const pattern = generateJapanesePattern(
-                tokenizeCandidate(candidate.candidate)
-            );
+            const pattern =
+                generateJapanesePattern(
+                    tokenizeCandidate(candidate.candidate)
+                );
 
             return pattern?.input ?? "";
         }
@@ -2187,43 +2197,45 @@ function renderUnmatched(content) {
         );
     };
 
-    const rows = state.candidates.map((item, index) => {
-        const input = getCandidateInput(item);
+    const rows = state.candidates
+        .map((item, index) => {
+            const input =
+                getCandidateInput(item);
 
-        return `
-            <tr data-candidate-index="${index}">
-                <td>
-                    ${escapeHTML(item.candidate)}
-                </td>
+            return `
+                <tr data-candidate-index="${index}">
+                    <td>
+                        ${escapeHTML(item.candidate)}
+                    </td>
 
-                <td class="wnc-number">
-                    ${item.matches}
-                </td>
+                    <td class="wnc-number">
+                        ${item.matches}
+                    </td>
 
-                <td class="wnc-input-cell">
-                    <span
-                        class="wnc-candidate-input"
-                        title="${escapeHTML(input)}"
-                    >${escapeHTML(input)}</span>
-                </td>
+                    <td class="wnc-input-cell">
+                        <span
+                            class="wnc-candidate-input"
+                            title="${escapeHTML(input)}"
+                        >${escapeHTML(input)}</span>
+                    </td>
 
-                <td class="wnc-copy-cell">
-                    <button
-                        type="button"
-                        class="wnc-choice"
-                        data-action="copy-candidate-input"
-                        data-candidate-index="${index}"
-                    >Copy</button>
-                </td>
-            </tr>
-        `;
-    }).join("");
+                    <td class="wnc-copy-cell">
+                        <button
+                            type="button"
+                            class="wnc-choice"
+                            data-action="copy-candidate-input"
+                            data-candidate-index="${index}"
+                        >Copy</button>
+                    </td>
+                </tr>
+            `;
+        })
+        .join("");
 
     content.innerHTML = `
         <section class="wnc-screen">
 
             <div class="wnc-unmatched-controls">
-
                 <button
                     type="button"
                     class="wnc-button"
@@ -2245,7 +2257,6 @@ function renderUnmatched(content) {
                 <span class="wnc-muted">
                     ${state.candidates.length} candidates
                 </span>
-
             </div>
 
             <div class="wnc-table-wrap">
