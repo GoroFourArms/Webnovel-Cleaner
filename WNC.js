@@ -680,7 +680,11 @@ function getPageText() {
         wncRoot.remove();
     }
 
-    return clone.innerText || "";
+    return (
+        clone.innerText ||
+        clone.textContent ||
+        ""
+    ).trim();
 }
 
     // ---------------------------------------------------------------------
