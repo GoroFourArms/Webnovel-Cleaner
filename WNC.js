@@ -2055,279 +2055,131 @@ function findTopCandidateForGroup(group, text) {
     };
 }
 
-function renderGroups(content) {
-    const query = state.searchQuery.trim().toLowerCase();
+function renderGroup(content) {
+    const group = db.groups[state.groupIndex];
+
+    if (!group) {
+        state.screen = "groups";
+        render();
+        return;
+    }
+
     const pageText = getPageText();
 
-    const groups = sortedGroups()
-        .map(({ group, index }) => {
-const siteMatches =
-    groupMatchesCurrentSite(group);
-
-const ruleMatches =
-    siteMatches
-        ? group.substitutions.map(rule => ({
-            rule,
-            matches: rule.enabled
-                ? countRuleMatches(
+    const visibleRules =
+        groupMatchesCurrentSite(group)
+            ? group.substitutions.filter(rule =>
+                rule.enabled &&
+                countRuleMatches(
                     rule,
                     pageText
-                )
-                : 0
-        }))
-        : [];
-
-            const matchingRules =
-                ruleMatches.filter(
-                    item => item.matches > 0
-                );
-
-            const matches = matchingRules.reduce(
-                (total, item) =>
-                    total + item.matches,
-                0
-            );
-
-            const ruleCount =
-                matchingRules.length;
-
-            const searchMatch =
-                !query ||
-                group.name
-                    .toLowerCase()
-                    .includes(query) ||
-                group.substitutions.some(rule =>
-                    String(rule.input)
-                        .toLowerCase()
-                        .includes(query)
-                );
-
-            return {
-                group,
-                index,
-                ruleCount,
-                matches,
-                siteMatches,
-                searchMatch
-            };
-        })
-        .filter(item => item.searchMatch);
-
-    const activeGroups = groups.filter(item =>
-        item.group.enabled &&
-        (
-            item.matches > 0 ||
-            item.siteMatches
-        )
-    );
-
-    const otherGroups = groups.filter(item =>
-        !item.group.enabled ||
-        (
-            item.matches === 0 &&
-            !item.siteMatches
-        )
-    );
-
-    /*
-     * Render a group row using the same statistics regardless
-     * of whether the group is active or inside Other Groups.
-     */
-    const renderGroupRow = item => {
-        const {
-            group,
-            index,
-            ruleCount,
-            matches,
-            siteMatches
-        } = item;
-
-        const topCandidate =
-            findTopCandidateForGroup(
-                group,
-                pageText
-            );
-
-        return `
-            <tr
-                class="wnc-clickable-row"
-                data-action="open-group"
-                data-group-index="${index}"
-            >
-                <td>
-                    ${escapeHTML(
-                        group.name || "(Unnamed)"
-                    )}
-                </td>
-
-                <td class="wnc-number">
-                    ${ruleCount}
-                </td>
-
-                <td class="wnc-number">
-                    ${matches}
-                </td>
-
-                <td class="wnc-site-status">
-                    ${
-                        siteMatches
-                            ? `<span class="wnc-check">✓</span>`
-                            : `<span class="wnc-cross">✕</span>`
-                    }
-                </td>
-
-                <td>
-                    ${
-                        topCandidate
-                            ? escapeHTML(
-                                topCandidate.candidate
-                            )
-                            : "—"
-                    }
-                </td>
-
-                <td>
-                    ${
-                        topCandidate
-                            ? escapeHTML(
-                                topCandidate.replace
-                            )
-                            : "—"
-                    }
-                </td>
-
-                <td>
-                    ${
-                        topCandidate
-                            ? escapeHTML(
-                                topCandidate.with
-                            )
-                            : "—"
-                    }
-                </td>
-
-                <td class="wnc-number">
-                    ${
-                        topCandidate
-                            ? topCandidate.total
-                            : 0
-                    }
-                </td>
-            </tr>
-        `;
-    };
-
-    const rows = activeGroups
-        .map(renderGroupRow)
-        .join("");
-
-    const otherRows = otherGroups
-        .map(renderGroupRow)
-        .join("");
-
-    const otherSection = otherGroups.length
-        ? `
-            <tr
-                class="wnc-collapse-row"
-                data-action="toggle-other-groups"
-            >
-                <td colspan="8">
-                    <span class="wnc-collapse-arrow">
-                        ${
-                            state.showOtherGroups
-                                ? "▼"
-                                : "▶"
-                        }
-                    </span>
-
-                    Other Groups
-
-                    <span class="wnc-collapse-count">
-                        ${otherGroups.length}
-                    </span>
-                </td>
-            </tr>
-
-            ${
-                state.showOtherGroups
-                    ? otherRows
-                    : ""
-            }
-        `
-        : "";
+                ) > 0
+            )
+            : [];
 
     content.innerHTML = `
         <section class="wnc-screen">
-
-            <div class="wnc-section-heading">
-                <h1>Groups</h1>
+            <div class="wnc-workspace-heading">
+                <button
+                    class="wnc-back"
+                    data-action="back-groups"
+                    title="Back"
+                >‹</button>
+                <h1>
+                    ${escapeHTML(group.name || "(Unnamed)")}
+                </h1>
             </div>
 
-            <div class="wnc-table-wrap wnc-groups-table-wrap">
-                <table class="wnc-table wnc-groups-table">
-
+            <div class="wnc-table-wrap">
+                <table class="wnc-table wnc-rules-table">
                     <thead>
                         <tr>
-                            <th>Group</th>
-                            <th>R#</th>
-                            <th>M#</th>
-                            <th>S</th>
-                            <th>Candidate</th>
                             <th>Replace</th>
                             <th>With</th>
-                            <th>T#</th>
+                            <th>Type</th>
+                            <th>Output</th>
+                            <th>Case</th>
+                            <th>Enable</th>
+                            <th>Matches</th>
                         </tr>
                     </thead>
 
                     <tbody>
-
                         ${
-                            rows ||
-                            !otherSection
-                                ? rows
-                                : ""
-                        }
+                            visibleRules.length
+                                ? visibleRules.map(rule => {
+                                    const matches =
+                                        countRuleMatches(
+                                            rule,
+                                            pageText
+                                        );
 
-                        ${
-                            !rows &&
-                            !otherSection
-                                ? `
+                                    return `
+                                        <tr>
+                                            <td>
+                                                ${escapeHTML(
+                                                    rule.input
+                                                )}
+                                            </td>
+
+                                            <td>
+                                                ${escapeHTML(
+                                                    rule.output
+                                                )}
+                                            </td>
+
+                                            <td>
+                                                ${escapeHTML(
+                                                    rule.inputType
+                                                )}
+                                            </td>
+
+                                            <td>
+                                                ${
+                                                    Number(
+                                                        rule.outputType
+                                                    ) === 1
+                                                        ? "Function"
+                                                        : "Text"
+                                                }
+                                            </td>
+
+                                            <td class="wnc-center">
+                                                ${
+                                                    rule.caseSensitive
+                                                        ? "Yes"
+                                                        : "No"
+                                                }
+                                            </td>
+
+                                            <td class="wnc-center">
+                                                ${
+                                                    rule.enabled
+                                                        ? "Yes"
+                                                        : "No"
+                                                }
+                                            </td>
+
+                                            <td class="wnc-number">
+                                                ${matches}
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join("")
+                                : `
                                     <tr>
                                         <td
-                                            colspan="8"
+                                            colspan="7"
                                             class="wnc-empty"
                                         >
-                                            No groups
+                                            No matching rules on this page
                                         </td>
                                     </tr>
                                 `
-                                : ""
                         }
-
-                        ${otherSection}
-
-                        <tr
-                            class="wnc-clickable-row wnc-unmatched-row"
-                            data-action="open-unmatched"
-                        >
-                            <td>Candidate</td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-
-                            <td class="wnc-number">
-                                ${state.candidates.length}
-                            </td>
-                        </tr>
-
                     </tbody>
-
                 </table>
             </div>
-
         </section>
     `;
 }
