@@ -858,6 +858,81 @@ const FILTER_CONTEXT = new Set([
     "sniffling", "standing", "suppressing", "taking",
     "thinking", "tilting", "watching"
 ]);
+    function addCandidate(map, value) {
+    let candidate = String(value ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    if (!candidate) {
+        return;
+    }
+
+    candidate = candidate.replace(
+        /^(?:The|A|An)\s+/i,
+        ""
+    );
+
+    while (
+        candidate &&
+        FILTER_CONTEXT.has(
+            candidate.split(/\s+/)[0].toLowerCase()
+        )
+    ) {
+        candidate = candidate
+            .split(/\s+/)
+            .slice(1)
+            .join(" ")
+            .trim();
+    }
+
+    if (!candidate) {
+        return;
+    }
+
+    if ([...candidate].length < 2) {
+        return;
+    }
+
+    const normalized =
+        candidate.toLowerCase();
+
+    if (FILTER_ALONE.has(normalized)) {
+        return;
+    }
+
+    const tokens = candidate.split(/\s+/);
+
+    if (
+        tokens.length === 1 &&
+        FILTER_WORDS.has(
+            tokens[0].toLowerCase()
+        )
+    ) {
+        return;
+    }
+
+    const mergeKey =
+        candidateMergeKey(candidate);
+
+    for (const [
+        existingCandidate,
+        matches
+    ] of map.entries()) {
+        if (
+            candidateMergeKey(existingCandidate) ===
+            mergeKey
+        ) {
+            map.set(
+                existingCandidate,
+                matches + 1
+            );
+
+            return;
+        }
+    }
+
+    map.set(candidate, 1);
+}
 function candidateMergeKey(candidate) {
     return tokenizeCandidate(candidate)
         .map(normalizeToken)
@@ -1191,10 +1266,9 @@ function normalizeToken(token) {
             value.endsWith("shes")
         ) {
             value = value.slice(0, -2);
-        } else if (
-            value.endsWith("ses") &&
-            !value.endsWith("sses")
-        ) {
+        } else if (value.endsWith("sses")) {
+            value = value.slice(0, -2);
+        } else if (value.endsWith("ses")) {
             value = value.slice(0, -1);
         } else if (
             value.endsWith("s") &&
@@ -1844,7 +1918,181 @@ render();
     // ---------------------------------------------------------------------
     // Groups screen
     // ---------------------------------------------------------------------
+function renderGroups(content) {
+    const query =
+        state.searchQuery.trim().toLowerCase();
 
+    const groups =
+        sortedGroups().filter(({ group }) => {
+            if (!query) {
+                return true;
+            }
+
+            return String(group.name)
+                .toLowerCase()
+                .includes(query);
+        });
+
+    const pageText = getPageText();
+
+    const currentGroups = [];
+    const otherGroups = [];
+
+    for (const entry of groups) {
+        if (
+            groupMatchesCurrentSite(entry.group)
+        ) {
+            currentGroups.push(entry);
+        } else {
+            otherGroups.push(entry);
+        }
+    }
+
+    const renderGroupRow = ({
+        group,
+        index
+    }) => {
+        const summary =
+            groupMatchesCurrentSite(group)
+                ? findTopCandidateForGroup(
+                    group,
+                    pageText
+                )
+                : null;
+
+        return `
+            <tr
+                class="wnc-clickable-row"
+                data-action="open-group"
+                data-group-index="${index}"
+            >
+                <td>
+                    ${escapeHTML(
+                        group.name || "(Unnamed)"
+                    )}
+                </td>
+
+                <td class="wnc-site-match">
+                    ${
+                        groupMatchesCurrentSite(group)
+                            ? "✓"
+                            : "—"
+                    }
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        summary?.candidate ?? "—"
+                    )}
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        summary?.replace ?? "—"
+                    )}
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        summary?.with ?? "—"
+                    )}
+                </td>
+
+                <td class="wnc-number">
+                    ${summary?.total ?? 0}
+                </td>
+            </tr>
+        `;
+    };
+
+    const currentRows =
+        currentGroups
+            .map(renderGroupRow)
+            .join("");
+
+    const otherRows =
+        otherGroups
+            .map(renderGroupRow)
+            .join("");
+
+    content.innerHTML = `
+        <section class="wnc-screen">
+
+            <div class="wnc-section-heading">
+                <h1>Groups</h1>
+
+                <button
+                    type="button"
+                    class="wnc-button wnc-primary"
+                    data-action="open-unmatched"
+                >Candidates</button>
+            </div>
+
+            <div class="wnc-table-wrap">
+                <table class="wnc-table">
+                    <thead>
+                        <tr>
+                            <th>Group</th>
+                            <th>Site</th>
+                            <th>Candidate</th>
+                            <th>Replace</th>
+                            <th>With</th>
+                            <th>T#</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${
+                            currentRows ||
+                            `
+                                <tr>
+                                    <td
+                                        colspan="6"
+                                        class="wnc-empty"
+                                    >
+                                        No matching groups
+                                    </td>
+                                </tr>
+                            `
+                        }
+
+                        ${
+                            otherGroups.length
+                                ? `
+                                    <tr
+                                        class="wnc-collapse-row"
+                                        data-action="toggle-other-groups"
+                                    >
+                                        <td colspan="6">
+                                            <span class="wnc-collapse-arrow">
+                                                ${
+                                                    state.showOtherGroups
+                                                        ? "▼"
+                                                        : "▶"
+                                                }
+                                            </span>
+                                            Other Groups
+                                            <span class="wnc-collapse-count">
+                                                ${otherGroups.length}
+                                            </span>
+                                        </td>
+                                    </tr>
+
+                                    ${
+                                        state.showOtherGroups
+                                            ? otherRows
+                                            : ""
+                                    }
+                                `
+                                : ""
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+        </section>
+    `;
+}
 function findTopCandidateForGroup(group, text) {
     let topCandidate = null;
     let topRule = null;
