@@ -2047,18 +2047,47 @@ function findTopCandidateForGroup(group, text) {
     let topCandidate = null;
     let topRule = null;
 
+    /*
+     * First determine the highest-frequency rule on this page.
+     */
     for (const rule of group.substitutions) {
         if (!rule.enabled || !rule.input) {
             continue;
         }
 
-        const regex = buildRuleRegex(rule);
+        const ruleTotal =
+            countRuleMatches(rule, text);
 
-        if (!regex) {
-            continue;
+        if (
+            !topRule ||
+            ruleTotal > topRule.total ||
+            (
+                ruleTotal === topRule.total &&
+                String(rule.input).localeCompare(
+                    String(topRule.rule.input),
+                    undefined,
+                    { sensitivity: "base" }
+                ) < 0
+            )
+        ) {
+            topRule = {
+                rule,
+                total: ruleTotal
+            };
         }
+    }
 
-        let ruleTotal = 0;
+    if (!topRule) {
+        return null;
+    }
+
+    /*
+     * Find the most frequent actual match of the top rule.
+     */
+    const regex =
+        buildRuleRegex(topRule.rule);
+
+    if (regex) {
         const counts = new Map();
 
         while (true) {
@@ -2068,23 +2097,14 @@ function findTopCandidateForGroup(group, text) {
                 break;
             }
 
-            const candidate = match[0];
-
-            if (candidate) {
-                ruleTotal++;
+            if (match[0]) {
+                const candidate = match[0];
 
                 const total =
                     (counts.get(candidate) || 0) + 1;
 
                 counts.set(candidate, total);
 
-                /*
-                 * Candidate / Replace / With are based on the
-                 * most frequently matched candidate string.
-                 *
-                 * This is independent of T#, which is based
-                 * on the total matches of the top rule.
-                 */
                 if (
                     !topCandidate ||
                     total > topCandidate.total ||
@@ -2099,8 +2119,6 @@ function findTopCandidateForGroup(group, text) {
                 ) {
                     topCandidate = {
                         candidate,
-                        replace: rule.input,
-                        with: rule.output,
                         total
                     };
                 }
@@ -2110,42 +2128,13 @@ function findTopCandidateForGroup(group, text) {
                 regex.lastIndex++;
             }
         }
-
-        /*
-         * T# is the total number of matches made by the
-         * single rule with the highest match count.
-         */
-        if (
-            ruleTotal > 0 &&
-            (
-                !topRule ||
-                ruleTotal > topRule.total ||
-                (
-                    ruleTotal === topRule.total &&
-                    String(rule.input).localeCompare(
-                        String(topRule.rule.input),
-                        undefined,
-                        { sensitivity: "base" }
-                    ) < 0
-                )
-            )
-        ) {
-            topRule = {
-                rule,
-                total: ruleTotal
-            };
-        }
-    }
-
-    if (!topCandidate && !topRule) {
-        return null;
     }
 
     return {
         candidate: topCandidate?.candidate ?? "—",
-        replace: topCandidate?.replace ?? "—",
-        with: topCandidate?.with ?? "—",
-        total: topRule?.total ?? 0
+        replace: topRule.rule.input,
+        with: topRule.rule.output,
+        total: topRule.total
     };
 }
 
