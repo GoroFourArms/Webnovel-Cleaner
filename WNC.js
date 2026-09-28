@@ -1818,29 +1818,30 @@ function generateJapanesePattern(tokens) {
         root.innerHTML = `
             <div class="wnc-shell">
 
-                <header class="wnc-header">
-                    <div class="wnc-brand">WNC</div>
-<div class="wnc-header-actions">
-    <button
-        class="wnc-button"
-        data-action="import"
-        title="Import"
-    >Imp</button>
+<header class="wnc-header">
+    <div class="wnc-brand">WNC</div>
 
-    <button
-        class="wnc-button"
-        data-action="close"
-        title="Close"
-    >×</button>
-</div>
+    <div class="wnc-header-actions">
+        <button
+            class="wnc-button"
+            data-action="import"
+            title="Import"
+        >Imp</button>
 
-<input
-    id="wnc-import-file"
-    type="file"
-    accept=".json,application/json"
-    hidden
->
-                </header>
+        <button
+            class="wnc-button"
+            data-action="close"
+            title="Close"
+        >×</button>
+    </div>
+
+    <input
+        id="wnc-import-file"
+        type="file"
+        accept=".json,application/json"
+        style="display:none"
+    >
+</header>
                 <main id="wnc-content"></main>
             </div>
         `;
@@ -1848,10 +1849,22 @@ function generateJapanesePattern(tokens) {
         document.documentElement.appendChild(root);
 
         injectStyles();
-
-        root.addEventListener("click", handleClick);
-root.addEventListener("change", handleChange);
+        
+root.addEventListener("click", handleClick);
 root.addEventListener("input", handleInput);
+
+const importInput =
+    root.querySelector("#wnc-import-file");
+
+if (importInput) {
+    importInput.addEventListener(
+        "change",
+        () => {
+            importFile(importInput.files?.[0]);
+            importInput.value = "";
+        }
+    );
+}
 
 scanCandidates();
 render();
@@ -2644,17 +2657,6 @@ if (action === "import") {
     }
 }
 
-function handleChange(event) {
-    const target = event.target;
-
-    /*
-     * Import.
-     */
-    if (target.id === "wnc-import-file") {
-        importFile(target.files?.[0]);
-        target.value = "";
-    }
-}
 
 
     // ---------------------------------------------------------------------
