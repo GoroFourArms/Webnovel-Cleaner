@@ -1846,13 +1846,11 @@ function generateJapanesePattern(tokens) {
             </div>
         `;
 
-        document.documentElement.appendChild(root);
+document.documentElement.appendChild(root);
 
-        injectStyles();
-        
+injectStyles();
+
 root.addEventListener("click", handleClick);
-root.addEventListener("change", handleChange);
-root.addEventListener("input", handleInput);
 
 render();
 
@@ -1862,6 +1860,8 @@ try {
 } catch (error) {
     console.error("WNC scanner error:", error);
 }
+
+} // END mount()
 
     // ---------------------------------------------------------------------
     // Rendering
