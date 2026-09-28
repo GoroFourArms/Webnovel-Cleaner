@@ -863,11 +863,6 @@ function candidateMergeKey(candidate) {
         .map(normalizeToken)
         .join(" ");
 }
-function candidateMergeKey(candidate) {
-    return tokenizeCandidate(candidate)
-        .map(normalizeToken)
-        .join(" ");
-}
     // ---------------------------------------------------------------------
     // Existing-rule exclusion
     // ---------------------------------------------------------------------
