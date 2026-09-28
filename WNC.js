@@ -1829,6 +1829,19 @@ injectStyles();
 
 root.addEventListener("click", handleClick);
 
+const importInput =
+    root.querySelector("#wnc-import-file");
+
+if (importInput) {
+    importInput.addEventListener(
+        "change",
+        () => {
+            importFile(importInput.files?.[0]);
+            importInput.value = "";
+        }
+    );
+}
+
 render();
 
 try {
@@ -2134,134 +2147,6 @@ function findTopCandidateForGroup(group, text) {
         total: topRule.total
     };
 }
-
-function renderGroup(content) {
-    const group = db.groups[state.groupIndex];
-
-    if (!group) {
-        state.screen = "groups";
-        render();
-        return;
-    }
-
-    const pageText = getPageText();
-
-const visibleRules =
-    groupMatchesCurrentSite(group)
-        ? group.substitutions.filter(rule =>
-            rule.enabled &&
-            countRuleMatches(rule, pageText) > 0
-        )
-        : [];
-
-    content.innerHTML = `
-        <section class="wnc-screen">
-            <div class="wnc-workspace-heading">
-                <button
-                    class="wnc-back"
-                    data-action="back-groups"
-                    title="Back"
-                >‹</button>
-
-                <h1>
-                    ${escapeHTML(group.name || "(Unnamed)")}
-                </h1>
-            </div>
-
-            <div class="wnc-table-wrap">
-                <table class="wnc-table wnc-rules-table">
-                    <thead>
-                        <tr>
-                            <th>Replace</th>
-                            <th>With</th>
-                            <th>Type</th>
-                            <th>Output</th>
-                            <th>Case</th>
-                            <th>Enable</th>
-                            <th>Matches</th>
-                        </tr>
-                    </thead>
-
-                    <tbody>
-                        ${
-                            visibleRules.length
-                                ? visibleRules.map(rule => {
-                                    const matches =
-                                        countRuleMatches(
-                                            rule,
-                                            pageText
-                                        );
-
-                                    return `
-                                        <tr>
-                                            <td>
-                                                ${escapeHTML(
-                                                    rule.input
-                                                )}
-                                            </td>
-
-                                            <td>
-                                                ${escapeHTML(
-                                                    rule.output
-                                                )}
-                                            </td>
-
-                                            <td>
-                                                ${escapeHTML(
-                                                    rule.inputType
-                                                )}
-                                            </td>
-
-                                            <td>
-                                                ${
-                                                    Number(
-                                                        rule.outputType
-                                                    ) === 1
-                                                        ? "Function"
-                                                        : "Text"
-                                                }
-                                            </td>
-
-                                            <td class="wnc-center">
-                                                ${
-                                                    rule.caseSensitive
-                                                        ? "Yes"
-                                                        : "No"
-                                                }
-                                            </td>
-
-                                            <td class="wnc-center">
-                                                ${
-                                                    rule.enabled
-                                                        ? "Yes"
-                                                        : "No"
-                                                }
-                                            </td>
-
-                                            <td class="wnc-number">
-                                                ${matches}
-                                            </td>
-                                        </tr>
-                                    `;
-                                }).join("")
-                                : `
-                                    <tr>
-                                        <td
-                                            colspan="7"
-                                            class="wnc-empty"
-                                        >
-                                            No matching rules on this page
-                                        </td>
-                                    </tr>
-                                `
-                        }
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    `;
-}
-
     // ---------------------------------------------------------------------
 // Candidate screen
     // ---------------------------------------------------------------------
