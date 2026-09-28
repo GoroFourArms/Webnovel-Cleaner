@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.24
+// @version      6.1.25
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
@@ -226,16 +226,6 @@ normalized.auto =
             : 0;
 
 return normalized;
-}
-
-function normalizeCandidateRoot(term) {
-    let value = normalizeTerm(term);
-
-    value = value
-        .replace(/['’]s$/i, "")
-        .replace(/s$/i, "");
-
-    return value;
 }
 
 function normalizeRule(rule) {
@@ -868,92 +858,16 @@ const FILTER_CONTEXT = new Set([
     "sniffling", "standing", "suppressing", "taking",
     "thinking", "tilting", "watching"
 ]);
-
-function addCandidate(map, value) {
-    let candidate = String(value ?? "")
-        .replace(/\s+/g, " ")
-        .trim();
-
-    if (!candidate) {
-        return;
-    }
-
-    candidate = candidate.replace(
-        /^(?:The|A|An)\s+/i,
-        ""
-    );
-
-    /*
-     * Strip leading context words.
-     *
-     * "Seeing Hyewoo" -> "Hyewoo"
-     * "Looking Jaehyun" -> "Jaehyun"
-     * "Hearing Daon" -> "Daon"
-     * "Clutching Kim Daon" -> "Kim Daon"
-     */
-    while (
-        candidate &&
-        FILTER_CONTEXT.has(
-            candidate.split(/\s+/)[0].toLowerCase()
-        )
-    ) {
-        candidate = candidate
-            .split(/\s+/)
-            .slice(1)
-            .join(" ")
-            .trim();
-    }
-
-    if (!candidate) {
-        return;
-    }
-
-    /*
-     * Ignore single-character candidates.
-     */
-    if ([...candidate].length < 2) {
-        return;
-    }
-
-    const normalized =
-        candidate.toLowerCase();
-
-    /*
-     * Filter conversational/common words only
-     * when they are the entire candidate.
-     *
-     * "He" -> filtered
-     * "He Tao" -> kept
-     * "Woo" -> kept
-     * "Jin" -> kept
-     */
-    if (FILTER_ALONE.has(normalized)) {
-        return;
-    }
-
-    const tokens = candidate.split(/\s+/);
-
-    /*
-     * Filter common function words only when
-     * the entire candidate is that word.
-     *
-     * Multi-word candidates are preserved.
-     */
-    if (
-        tokens.length === 1 &&
-        FILTER_WORDS.has(
-            tokens[0].toLowerCase()
-        )
-    ) {
-        return;
-    }
-
-    map.set(
-        candidate,
-        (map.get(candidate) || 0) + 1
-    );
+function candidateMergeKey(candidate) {
+    return tokenizeCandidate(candidate)
+        .map(normalizeToken)
+        .join(" ");
 }
-
+function candidateMergeKey(candidate) {
+    return tokenizeCandidate(candidate)
+        .map(normalizeToken)
+        .join(" ");
+}
     // ---------------------------------------------------------------------
     // Existing-rule exclusion
     // ---------------------------------------------------------------------
@@ -1273,46 +1187,21 @@ function normalizeToken(token) {
         .replace(/-/g, "");
 
     if (value.length > 4) {
-        /*
-         * cities -> city
-         */
         if (value.endsWith("ies")) {
             value = value.slice(0, -3) + "y";
-        }
-
-        /*
-         * boxes -> box
-         * churches -> church
-         * wishes -> wish
-         */
-        else if (
+        } else if (
             value.endsWith("xes") ||
             value.endsWith("zes") ||
             value.endsWith("ches") ||
             value.endsWith("shes")
         ) {
             value = value.slice(0, -2);
-        }
-
-        /*
-         * buses -> bus
-         * cases -> case
-         */
-        else if (
+        } else if (
             value.endsWith("ses") &&
             !value.endsWith("sses")
         ) {
             value = value.slice(0, -1);
-        }
-
-        /*
-         * dogs -> dog
-         * names -> name
-         *
-         * Avoid common name endings such as:
-         * James, Chris, Lucas, Thomas, etc.
-         */
-        else if (
+        } else if (
             value.endsWith("s") &&
             !value.endsWith("ss") &&
             !value.endsWith("us") &&
@@ -1326,7 +1215,6 @@ function normalizeToken(token) {
 
     return value;
 }
-
     // ---------------------------------------------------------------------
     // Template helpers
     // ---------------------------------------------------------------------
