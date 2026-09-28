@@ -1851,24 +1851,17 @@ function generateJapanesePattern(tokens) {
         injectStyles();
         
 root.addEventListener("click", handleClick);
+root.addEventListener("change", handleChange);
 root.addEventListener("input", handleInput);
 
-const importInput =
-    root.querySelector("#wnc-import-file");
-
-if (importInput) {
-    importInput.addEventListener(
-        "change",
-        () => {
-            importFile(importInput.files?.[0]);
-            importInput.value = "";
-        }
-    );
-}
-
-scanCandidates();
 render();
-    }
+
+try {
+    scanCandidates();
+    render();
+} catch (error) {
+    console.error("WNC scanner error:", error);
+}
 
     // ---------------------------------------------------------------------
     // Rendering
