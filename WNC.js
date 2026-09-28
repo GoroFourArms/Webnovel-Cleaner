@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.23
+// @version      6.1.24
 // @description  Webnovel Cleaner
 // @match        *://*/*
 // @grant        GM_getValue
