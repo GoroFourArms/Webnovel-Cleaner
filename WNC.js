@@ -2149,16 +2149,12 @@ function renderGroup(content) {
 
     const pageText = getPageText();
 
-    const visibleRules =
-        groupMatchesCurrentSite(group)
-            ? group.substitutions.filter(rule =>
-                rule.enabled &&
-                countRuleMatches(
-                    rule,
-                    pageText
-                ) > 0
-            )
-            : [];
+const visibleRules =
+    groupMatchesCurrentSite(group)
+        ? group.substitutions.filter(rule =>
+            rule.enabled
+        )
+        : [];
 
     content.innerHTML = `
         <section class="wnc-screen">
