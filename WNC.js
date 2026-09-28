@@ -76,7 +76,6 @@ let state = {
 
     candidateTemplate: "Other",
 
-    searchQuery: "",
     showOtherGroups: false,
 };
 
@@ -1489,22 +1488,6 @@ function generateJapanesePattern(tokens) {
         min-width: 0;
     }
 
-    .wnc-search {
-        flex: 1 1 180px;
-        min-width: 150px;
-        height: 34px;
-        padding: 6px 10px;
-        color: #eee;
-        background: #111;
-        border: 1px solid #555;
-        border-radius: 5px;
-        outline: none;
-    }
-
-    .wnc-search:focus {
-        border-color: #888;
-    }
-
     .wnc-button,
     .wnc-choice,
     .wnc-tab,
@@ -1816,10 +1799,6 @@ function generateJapanesePattern(tokens) {
             flex-direction: column;
             align-items: stretch;
         }
-
-        .wnc-search {
-            width: 100%;
-        }
     }
 `;
 
@@ -1841,37 +1820,26 @@ function generateJapanesePattern(tokens) {
 
                 <header class="wnc-header">
                     <div class="wnc-brand">WNC</div>
+<div class="wnc-header-actions">
+    <button
+        class="wnc-button"
+        data-action="import"
+        title="Import"
+    >Imp</button>
 
-                    <div class="wnc-header-actions">
-                        <input
-                            id="wnc-search"
-                            class="wnc-search"
-                            type="search"
-                            placeholder="Group..."
-                            autocomplete="off"
-                            spellcheck="false"
-                            value="${escapeHTML(state.searchQuery)}"
-                        >
+    <button
+        class="wnc-button"
+        data-action="close"
+        title="Close"
+    >×</button>
+</div>
 
-                        <button
-                            class="wnc-button"
-                            data-action="import"
-                            title="Import"
-                        >Imp</button>
-
-                        <button
-                            class="wnc-button"
-                            data-action="close"
-                            title="Close"
-                        >×</button>
-
-                        <input
-                            id="wnc-import-file"
-                            type="file"
-                            accept=".json,application/json"
-                            hidden
-                        >
-                    </div>
+<input
+    id="wnc-import-file"
+    type="file"
+    accept=".json,application/json"
+    hidden
+>
                 </header>
                 <main id="wnc-content"></main>
             </div>
@@ -1919,19 +1887,7 @@ render();
     // Groups screen
     // ---------------------------------------------------------------------
 function renderGroups(content) {
-    const query =
-        state.searchQuery.trim().toLowerCase();
-
-    const groups =
-        sortedGroups().filter(({ group }) => {
-            if (!query) {
-                return true;
-            }
-
-            return String(group.name)
-                .toLowerCase()
-                .includes(query);
-        });
+const groups = sortedGroups();
 
     const pageText = getPageText();
 
@@ -2630,16 +2586,18 @@ function handleClick(event) {
         return;
     }
 
-    if (action === "import") {
-        const input =
-            document.querySelector(
-                "#wnc-import-file"
-            );
+if (action === "import") {
+    const input =
+        document.getElementById(
+            "wnc-import-file"
+        );
 
-        input?.click();
-
-        return;
+    if (input) {
+        input.click();
     }
+
+    return;
+}
 
     if (action === "close") {
         closeUI();
@@ -2697,42 +2655,7 @@ function handleChange(event) {
         target.value = "";
     }
 }
-function handleInput(event) {
-    const target = event.target;
 
-    if (target.id !== "wnc-search") {
-        return;
-    }
-
-    state.searchQuery = target.value;
-
-    if (state.screen !== "groups") {
-        return;
-    }
-
-    const cursorStart = target.selectionStart;
-    const cursorEnd = target.selectionEnd;
-
-    const content =
-        document.getElementById("wnc-content");
-
-    if (content) {
-        renderGroups(content);
-    }
-
-    requestAnimationFrame(() => {
-        const search =
-            document.getElementById("wnc-search");
-
-        if (search) {
-            search.focus();
-            search.setSelectionRange(
-                cursorStart,
-                cursorEnd
-            );
-        }
-    });
-}
 
     // ---------------------------------------------------------------------
     // Group actions
