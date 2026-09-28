@@ -945,12 +945,10 @@ function getCurrentSiteRules() {
             rule.input
         );
 }
-
 function candidateCoveredByExistingRule(candidate) {
-const rules = getCurrentSiteRules();
+    const rules = getCurrentSiteRules();
 
-for (const rule of rules) {
-
+    for (const rule of rules) {
         const regex = buildRuleRegex(rule);
 
         if (!regex) {
@@ -1874,7 +1872,15 @@ try {
 function renderGroups(content) {
 const groups = sortedGroups();
 
-    const pageText = getPageText();
+   const pageText = getPageText();
+
+const visibleRules =
+    groupMatchesCurrentSite(group)
+        ? group.substitutions.filter(rule =>
+            rule.enabled &&
+            countRuleMatches(rule, pageText) > 0
+        )
+        : [];
 
     const currentGroups = [];
     const otherGroups = [];
@@ -2141,9 +2147,12 @@ function renderGroup(content) {
     const pageText = getPageText();
 
 const visibleRules =
-    group.substitutions.filter(rule =>
-        rule.enabled
-    );
+    groupMatchesCurrentSite(group)
+        ? group.substitutions.filter(rule =>
+            rule.enabled &&
+            countRuleMatches(rule, pageText) > 0
+        )
+        : [];
 
     content.innerHTML = `
         <section class="wnc-screen">
