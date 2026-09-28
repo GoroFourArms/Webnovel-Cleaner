@@ -228,6 +228,15 @@ normalized.auto =
 return normalized;
 }
 
+function normalizeCandidateRoot(term) {
+    let value = normalizeTerm(term);
+
+    value = value
+        .replace(/['’]s$/i, "")
+        .replace(/s$/i, "");
+
+    return value;
+}
 
 function normalizeRule(rule) {
     if (!rule || typeof rule !== "object") {
