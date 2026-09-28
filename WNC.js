@@ -664,12 +664,16 @@ function getPageText() {
     const chapter =
         findChapterContainer();
 
-    if (!chapter) {
+    const source =
+        chapter ||
+        document.body;
+
+    if (!source) {
         return "";
     }
 
     const clone =
-        chapter.cloneNode(true);
+        source.cloneNode(true);
 
     const wncRoot =
         clone.querySelector("#wnc-root");
@@ -857,19 +861,6 @@ const FILTER_ALONE = new Set([
         /^(?:The|A|An)\s+/i,
         ""
     );
-
-    while (
-        candidate &&
-        FILTER_CONTEXT.has(
-            candidate.split(/\s+/)[0].toLowerCase()
-        )
-    ) {
-        candidate = candidate
-            .split(/\s+/)
-            .slice(1)
-            .join(" ")
-            .trim();
-    }
 
     if (!candidate) {
         return;
@@ -2150,11 +2141,9 @@ function renderGroup(content) {
     const pageText = getPageText();
 
 const visibleRules =
-    groupMatchesCurrentSite(group)
-        ? group.substitutions.filter(rule =>
-            rule.enabled
-        )
-        : [];
+    group.substitutions.filter(rule =>
+        rule.enabled
+    );
 
     content.innerHTML = `
         <section class="wnc-screen">
