@@ -834,29 +834,16 @@ for (const occurrence of selected) {
 const FILTER_WORDS = new Set([
     "a", "after", "an", "and", "as", "at", "before", "but",
     "by", "for", "from", "how", "if", "in", "of", "on",
-    "or", "since", "so", "that", "the", "then", "there",
+    "or", "since", "so", "tell", "that", "the", "then", "there",
     "this", "to", "until", "what", "when", "where", "while",
     "why", "with"
 ]);
 
 const FILTER_ALONE = new Set([
-    "ah", "anyone", "ha", "hehe", "he", "he'd", "he's",
-    "her", "his", "huh", "i", "i'd", "i'll", "i'm", "i've",
-    "it", "it'll", "it's", "just", "maybe", "my", "no",
-    "oh", "okay", "only", "our", "really", "she", "sorry",
-    "thanks", "they", "they're", "we", "we'll", "we're",
-    "we've", "wow", "yeah", "yes", "you", "you'll",
-    "you're", "your"
+    "ah", "do", "ha", "he",
+    "i", "no", "oh", "you"
 ]);
 
-const FILTER_CONTEXT = new Set([
-    "acting", "adding", "clutching", "crying", "eating",
-    "filming", "going", "hearing", "ignoring", "judging",
-    "leaving", "listening", "looking", "making", "panting",
-    "praying", "pulling", "regretting", "seeing",
-    "sniffling", "standing", "suppressing", "taking",
-    "thinking", "tilting", "watching"
-]);
     function addCandidate(map, value) {
     let candidate = String(value ?? "")
         .replace(/\s+/g, " ")
@@ -929,12 +916,26 @@ const FILTER_CONTEXT = new Set([
             return;
         }
     }
-
-    map.set(candidate, 1);
+map.set(
+    normalizeCandidateRepresentative(candidate),
+    1
+);
 }
 function candidateMergeKey(candidate) {
     return tokenizeCandidate(candidate)
         .map(normalizeToken)
+        .join(" ");
+}
+
+function normalizeCandidateRepresentative(candidate) {
+    return tokenizeCandidate(candidate)
+        .map(token => {
+            const normalized = normalizeToken(token);
+            return normalized
+                ? normalized.charAt(0).toUpperCase() +
+                  normalized.slice(1)
+                : normalized;
+        })
         .join(" ");
 }
     // ---------------------------------------------------------------------
@@ -1247,41 +1248,28 @@ function tokenizeCandidate(value) {
         .filter(Boolean);
 }
 function normalizeToken(token) {
-    let value = String(token ?? "")
-        .toLowerCase()
-        .replace(/[’']/g, "'")
-        .replace(/[–—]/g, "-")
-        .replace(/'s$/g, "")
-        .replace(/s'$/g, "")
-        .replace(/-/g, "");
+    let word = token.toLowerCase();
 
-    if (value.length > 4) {
-        if (value.endsWith("ies")) {
-            value = value.slice(0, -3) + "y";
-        } else if (
-            value.endsWith("xes") ||
-            value.endsWith("zes") ||
-            value.endsWith("ches") ||
-            value.endsWith("shes")
-        ) {
-            value = value.slice(0, -2);
-        } else if (value.endsWith("sses")) {
-            value = value.slice(0, -2);
-        } else if (value.endsWith("ses")) {
-            value = value.slice(0, -1);
-        } else if (
-            value.endsWith("s") &&
-            !value.endsWith("ss") &&
-            !value.endsWith("us") &&
-            !value.endsWith("is") &&
-            !value.endsWith("as") &&
-            !value.endsWith("es")
-        ) {
-            value = value.slice(0, -1);
-        }
+    // Possessives
+    word = word.replace(/['’]s$/, "");
+    word = word.replace(/['’]$/, "");
+
+    // Plurals
+    if (word.endsWith("ies") && word.length > 3) {
+        word = word.slice(0, -3) + "y";
+    } else if (
+        word.endsWith("ses") ||
+        word.endsWith("xes") ||
+        word.endsWith("zes") ||
+        word.endsWith("ches") ||
+        word.endsWith("shes")
+    ) {
+        word = word.slice(0, -2);
+    } else if (word.endsWith("s") && !word.endsWith("ss")) {
+        word = word.slice(0, -1);
     }
 
-    return value;
+    return word;
 }
     // ---------------------------------------------------------------------
     // Template helpers
