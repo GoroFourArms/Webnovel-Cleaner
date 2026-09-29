@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.28
+// @version      6.1.29
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -10,12 +10,13 @@
 // @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC.js
 // @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC.js
 // ==/UserScript==
-
 (function () {
     "use strict";
 
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const LAST_IMPORTED_DB_KEY = "WNC_LAST_IMPORTED_DATABASE_V2";
+    const CHAPTER_SELECTOR_KEY = "WNC_CHAPTER_SELECTORS_V1";
+    const DEFAULT_CHAPTER_SELECTORS = [".entry-content", ".text-left", "article", "main", ".prose"];
 
     const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
 
@@ -110,6 +111,8 @@
     let adaptedDatabase = {
         groups: []
     };
+
+    let chapterText = "";
 
     function readStorage(key, fallback = null) {
         try {
@@ -1130,36 +1133,9 @@
         return text.length >= 100;
     }
 
-    function analyzePage() {
-        /*
-         * Implemented in Part 6.
-         */
-    }
-
-    function render() {
-        /*
-         * Implemented in Part 7.
-         */
-    }
-
-    /**********************************************************************
-     * 19. CANDIDATE REGEX
-     **********************************************************************/
-
-    /*
-     * Resetting lastIndex is important because CANDIDATE_REGEX is global.
-     *
-     * Without this, repeated calls to scan the same page can begin at an
-     * unexpected position.
-     */
     function resetCandidateRegex() {
         CANDIDATE_REGEX.lastIndex = 0;
     }
-
-
-    /**********************************************************************
-     * 24. STANDALONE FILTERING
-     **********************************************************************/
 
     function shouldFilterStandaloneCandidate(
         candidate
@@ -1173,20 +1149,6 @@
             return true;
         }
 
-        /*
-         * FILTER_WORDS and FILTER_ALONE apply ONLY when the complete
-         * candidate is one word.
-         *
-         * Therefore:
-         *
-         *   The          → filtered
-         *   He           → filtered
-         *
-         * but:
-         *
-         *   The Dragon   → retained
-         *   He Tao       → retained
-         */
         if (
             !/\s/.test(normalized)
         ) {
@@ -1210,11 +1172,6 @@
         return false;
     }
 
-
-    /**********************************************************************
-     * 25. EXACT CANDIDATE SCANNER
-     **********************************************************************/
-
     function scanCandidateOccurrences(
         text
     ) {
@@ -1236,12 +1193,7 @@
                     )
             ) !== null
         ) {
-            /*
-             * The complete candidate is capture group 1.
-             *
-             * We intentionally do not break the phrase into individual
-             * words.
-             */
+
             const candidate =
                 String(
                     match[1] ?? ""
@@ -1251,11 +1203,6 @@
                 continue;
             }
 
-            /*
-             * Standalone filters are applied BEFORE normalization.
-             *
-             * Larger phrases remain intact.
-             */
             if (
                 shouldFilterStandaloneCandidate(
                     candidate
@@ -1278,11 +1225,6 @@
         return occurrences;
     }
 
-
-    /**********************************************************************
-     * 26. TOKENIZATION FOR NORMALIZATION
-     **********************************************************************/
-
     function splitCandidateTokens(
         candidate
     ) {
@@ -1294,204 +1236,65 @@
             .filter(Boolean);
     }
 
-
-    /**********************************************************************
-     * 27. TOKEN NORMALIZATION
-     **********************************************************************/
-
-    /*
-     * This function normalizes ONLY candidate occurrences.
-     *
-     * It must NEVER be used on FoxReplace rule inputs.
-     */
-
-    function normalizeCandidateToken(
-        token
-    ) {
-        let word =
-            String(
-                token ?? ""
-            ).trim();
+    function normalizeCandidateToken(token) {
+        let word = String(token ?? "").trim();
 
         if (!word) {
             return "";
         }
 
-        /*
-         * Normalize curly apostrophes.
-         */
-        word =
-            word.replace(
-                /[’‘]/g,
-                "'"
-            );
+        word = word.replace(/[’‘]/g, "'");
 
-        /*
-         * Preserve punctuation such as:
-         *
-         *   U.S.
-         *   Mr.
-         *   X.
-         */
-        const lower =
-            word.toLowerCase();
-
-        /*
-         * Explicit proper-name exceptions.
-         *
-         * These names must not be interpreted as plural nouns.
-         */
-        if (
-            SINGULARIZATION_EXCEPTIONS.has(
-                lower
-            )
-        ) {
+        if (SINGULARIZATION_EXCEPTIONS.has(word.toLowerCase())) {
             return word;
         }
 
-        /*
-         * Possessive:
-         *
-         * Dragon's → Dragon
-         * James'   → James
-         * Dragons' → Dragons
-         */
-        if (
-            /['’]s$/i.test(word)
-        ) {
-            word =
-                word.replace(
-                    /['’]s$/i,
-                    ""
-                );
-        } else if (
-            /s['’]$/i.test(word)
-        ) {
-            /*
-             * Dragons' → Dragons
-             *
-             * The plural is handled below.
-             */
-            word =
-                word.replace(
-                    /['’]$/i,
-                    ""
-                );
+        if (/'s$/i.test(word)) {
+            word = word.replace(/'s$/i, "");
+        } else if (/s'$/i.test(word)) {
+            word = word.slice(0, -1);
         }
 
-        const lowerAfterPossessive =
-            word.toLowerCase();
+        if (!word) {
+            return "";
+        }
 
-        /*
-         * Never singularize these after possessive processing either.
-         */
-        if (
-            SINGULARIZATION_EXCEPTIONS.has(
-                lowerAfterPossessive
-            )
-        ) {
+        if (SINGULARIZATION_EXCEPTIONS.has(word.toLowerCase())) {
             return word;
         }
 
-        /*
-         * Do not singularize very short words.
-         */
-        if (
-            word.length <= 3
-        ) {
+        if (word.length <= 3) {
             return word;
         }
 
-        /*
-         * Common plural handling.
-         *
-         * This is intentionally conservative. WNC is trying to merge
-         * ordinary name/title variants, not perform full English
-         * morphological analysis.
-         */
-
-        /*
-         * -ies:
-         *
-         * Cities → City
-         */
-        if (
-            /[^aeiou]ies$/i.test(word) &&
-            word.length > 4
-        ) {
-            return word.replace(
-                /ies$/i,
-                "y"
-            );
+        if (/[^aeiou]ies$/i.test(word)) {
+            return word.replace(/ies$/i, "y");
         }
 
-        /*
-         * -ses / -xes / -zes / -ches / -shes
-         *
-         * Examples:
-         *   Boxes → Box
-         *   Classes → Class
-         *
-         * Do not apply this blindly to all words ending in s.
-         */
-        if (
-            /(ses|xes|zes|ches|shes)$/i.test(
-                word
-            )
-        ) {
-            const candidate =
-                word.replace(
-                    /es$/i,
-                    ""
-                );
-
-            if (
-                candidate.length >= 3
-            ) {
-                return candidate;
-            }
+        if (/ches$/i.test(word) || /shes$/i.test(word) || /xes$/i.test(word) || /zes$/i.test(word)) {
+            return word.replace(/es$/i, "");
         }
 
-        /*
-         * Ordinary plural -s.
-         *
-         * Avoid:
-         *   James
-         *   Davis
-         *   Lucas
-         *   Carlos
-         *   Thomas
-         *
-         * Those were handled by the explicit exception list.
-         */
-        if (
-            /s$/i.test(word) &&
-            !/ss$/i.test(word) &&
-            !/[aeiou]us$/i.test(word) &&
-            !/is$/i.test(word) &&
-            !/os$/i.test(word) &&
-            !/as$/i.test(word)
-        ) {
-            const candidate =
-                word.slice(
-                    0,
-                    -1
-                );
+        if (/sses$/i.test(word)) {
+            return word.replace(/es$/i, "");
+        }
 
-            if (
-                candidate.length >= 3
-            ) {
-                return candidate;
-            }
+        if (/oes$/i.test(word)) {
+            return word.slice(0, -1);
+        }
+
+        if (/ves$/i.test(word)) {
+            const lower = word.toLowerCase();
+            if (lower.endsWith("leaves")) return word.slice(0, -3) + "f";
+            if (lower.endsWith("wolves")) return word.slice(0, -3) + "f";
+        }
+
+        if (/s$/i.test(word) && !/ss$/i.test(word) && !/[aeiou]us$/i.test(word) && !/is$/i.test(word) && !/os$/i.test(word) && !/as$/i.test(word)) {
+            return word.slice(0, -1);
         }
 
         return word;
     }
-
-
-    /**********************************************************************
-     * 28. FULL CANDIDATE NORMALIZATION
-     **********************************************************************/
 
     function normalizeCandidate(
         candidate
@@ -1506,16 +1309,6 @@
             .join(" ");
     }
 
-
-    /**********************************************************************
-     * 29. CANDIDATE DISPLAY / CANONICAL FORM
-     **********************************************************************/
-
-    /*
-     * The normalized form is the canonical clustering key.
-     *
-     * We retain the first observed display form separately.
-     */
     function createCandidateOccurrence(
         text
     ) {
@@ -1528,11 +1321,6 @@
                 )
         };
     }
-
-
-    /**********************************************************************
-     * 30. MERGE DUPLICATE NORMALIZED CANDIDATES
-     **********************************************************************/
 
     function mergeCandidateOccurrences(
         occurrences
@@ -1614,17 +1402,6 @@
         );
     }
 
-
-    /**********************************************************************
-     * 31. DISPLAY NAME SELECTION
-     **********************************************************************/
-
-    /*
-     * When several spelling variants normalize together, select the
-     * most frequently observed original form.
-     *
-     * Ties retain first-discovered order.
-     */
     function chooseCandidateDisplayName(
         candidate
     ) {
@@ -1663,7 +1440,6 @@
         return bestName;
     }
 
-
     function finalizeCandidateNames(
         candidates
     ) {
@@ -1679,11 +1455,6 @@
 
         return candidates;
     }
-
-
-    /**********************************************************************
-     * 32. RAW SCAN PIPELINE
-     **********************************************************************/
 
     function scanChapterCandidates(
         text
@@ -1702,11 +1473,6 @@
             merged
         );
 
-        /*
-         * Frequency order here is intentional.
-         *
-         * This is the input order for the hierarchy-building process.
-         */
         merged.sort(
             (a, b) =>
                 b.frequency -
@@ -1716,61 +1482,61 @@
         return merged;
     }
 
+function getSavedChapterSelector() {
+    const saved = readStorage(CHAPTER_SELECTOR_KEY, {});
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return "";
+    return String(saved[location.hostname.toLowerCase()] ?? "").trim();
+}
 
-    /**********************************************************************
-     * 33. CHAPTER SCAN DIAGNOSTICS
-     **********************************************************************/
+function saveChapterSelector(selector) {
+    const host = location.hostname.toLowerCase();
+    const saved = readStorage(CHAPTER_SELECTOR_KEY, {});
+    const selectors = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    const value = String(selector ?? "").trim();
+    if (value) selectors[host] = value;
+    else delete selectors[host];
+    return writeStorage(CHAPTER_SELECTOR_KEY, selectors);
+}
 
 function getChapterScanInfo() {
-    const text =
-        document.body?.innerText ||
-        document.body?.textContent ||
-        "";
+    const host = location.hostname.toLowerCase();
+    const saved = readStorage(CHAPTER_SELECTOR_KEY, {});
+    const custom = typeof saved === "object" && !Array.isArray(saved) ? String(saved[host] ?? "").trim() : "";
+    const selectors = custom ? [custom, ...DEFAULT_CHAPTER_SELECTORS] : DEFAULT_CHAPTER_SELECTORS;
+
+    let selectorError = null;
+
+    for (const selector of selectors) {
+        try {
+            const element = document.querySelector(selector);
+            if (element && elementHasUsefulText(element)) {
+                const text = String(element.innerText ?? element.textContent ?? "")
+                    .replace(/\u00A0/g, " ")
+                    .replace(/\r/g, "")
+                    .trim();
+                return { container: element, selector, text, error: null };
+            }
+        } catch (error) {
+            if (selector === custom) selectorError = error;
+        }
+    }
+
+    const bodyText = String(document.body?.innerText ?? document.body?.textContent ?? "")
+        .replace(/\u00A0/g, " ")
+        .replace(/\r/g, "")
+        .trim();
 
     return {
         container: document.body,
-        text: text
-            .replace(/\u00A0/g, " ")
-            .replace(/\r/g, "")
-            .trim()
+        selector: "body",
+        text: bodyText,
+        error: selectorError
     };
 }
 
+      
 
-    /**********************************************************************
-     * 34. END PART 2
-     **********************************************************************/
-      /**********************************************************************
-     * 35. CLUSTERING CONFIGURATION
-     **********************************************************************/
-
-    /*
-     * A candidate belongs to another candidate's cluster when their
-     * normalized token sequences are close enough to be connected by
-     * token links.
-     *
-     * Maximum direct token distance:
-     *
-     *     2 token links
-     *
-     * The hierarchy is built in frequency order:
-     *
-     *     highest-frequency candidate → root
-     *     next highest unclustered candidate → next root
-     *     etc.
-     *
-     * Once a candidate is attached to a root, it can also bring candidates
-     * within two token links of itself into the same cluster.
-     *
-     * Therefore the cluster may grow through a chain, but each individual
-     * link is limited to two token links.
-     */
     const MAX_CLUSTER_TOKEN_LINKS = 2;
-
-
-    /**********************************************************************
-     * 36. TOKEN NORMALIZATION FOR CLUSTERING
-     **********************************************************************/
 
     function candidateTokens(
         candidate
@@ -1786,36 +1552,6 @@ function getChapterScanInfo() {
             )
             .filter(Boolean);
     }
-
-
-    /**********************************************************************
-     * 37. TOKEN DISTANCE
-     **********************************************************************/
-
-    /*
-     * We need a token-level distance rather than a character-level
-     * distance.
-     *
-     * Examples:
-     *
-     *     John Smith
-     *     John Smith Jr
-     *
-     * are close.
-     *
-     *     John Smith
-     *     John
-     *
-     * are also close.
-     *
-     *     John Smith
-     *     Zhang Wei
-     *
-     * are not.
-     *
-     * This function computes a minimum number of token insertions,
-     * deletions, and substitutions.
-     */
 
     function tokenEditDistance(
         leftTokens,
@@ -1904,33 +1640,6 @@ function getChapterScanInfo() {
         ];
     }
 
-
-    /**********************************************************************
-     * 38. SUBSEQUENCE / TOKEN-LINK DISTANCE
-     **********************************************************************/
-
-    /*
-     * WNC clustering is intended for name/title variants rather than
-     * unrestricted fuzzy matching.
-     *
-     * This helper therefore treats a contained token sequence as a
-     * particularly strong relationship.
-     *
-     * Examples:
-     *
-     *     "Wei"
-     *     "Zhang Wei"
-     *
-     * have a short relationship.
-     *
-     * Likewise:
-     *
-     *     "John Smith"
-     *     "John Smith Jr"
-     *
-     * are closely related.
-     */
-
     function isTokenSubsequence(
         shorter,
         longer
@@ -1972,11 +1681,6 @@ function getChapterScanInfo() {
         return false;
     }
 
-
-    /**********************************************************************
-     * 39. CANDIDATE TOKEN LINK DISTANCE
-     **********************************************************************/
-
     function candidateTokenLinkDistance(
         left,
         right
@@ -1998,9 +1702,6 @@ function getChapterScanInfo() {
             return Infinity;
         }
 
-        /*
-         * Exact normalized candidate.
-         */
         if (
             left.normalized ===
             right.normalized
@@ -2008,9 +1709,6 @@ function getChapterScanInfo() {
             return 0;
         }
 
-        /*
-         * Containment is important for names.
-         */
         if (
             isTokenSubsequence(
                 leftTokens,
@@ -2033,11 +1731,6 @@ function getChapterScanInfo() {
         );
     }
 
-
-    /**********************************************************************
-     * 40. DIRECT CLUSTER RELATIONSHIP
-     **********************************************************************/
-
     function candidatesAreClusterLinked(
         left,
         right
@@ -2054,11 +1747,6 @@ function getChapterScanInfo() {
         );
     }
 
-
-    /**********************************************************************
-     * 41. CLUSTER OBJECT
-     **********************************************************************/
-
     function createCluster(
         root,
         clusterId
@@ -2073,7 +1761,6 @@ function getChapterScanInfo() {
             memberKeys: new Set()
         };
     }
-
 
     function addCandidateToCluster(
         cluster,
@@ -2105,261 +1792,51 @@ function getChapterScanInfo() {
         return true;
     }
 
-
-    /**********************************************************************
-     * 42. HIERARCHICAL CLUSTERING
-     **********************************************************************/
-
-    /*
-     * IMPORTANT:
-     *
-     * This is intentionally NOT a conventional all-pairs clustering
-     * algorithm.
-     *
-     * The hierarchy is determined by frequency.
-     *
-     * Example:
-     *
-     *     100 × Zhang Wei
-     *      60 × Zhang
-     *      40 × Wei
-     *      20 × Zhang Wei Jr
-     *
-     * Zhang Wei becomes the first root.
-     *
-     * Candidates linked to it become members of that cluster.
-     *
-     * After that, the highest-frequency candidate that remains
-     * unclustered becomes the next root.
-     *
-     * This preserves the requested frequency hierarchy.
-     */
-
-    function buildCandidateClusters(
-        candidates
-    ) {
-        if (
-            !Array.isArray(candidates) ||
-            !candidates.length
-        ) {
-            return {
-                clusters: [],
-
-                unclustered: [],
-
-                assigned: new Set()
-            };
+    function buildCandidateClusters(candidates) {
+        if (!Array.isArray(candidates) || !candidates.length) {
+            return { clusters: [], unclustered: [], assigned: new Set() };
         }
 
-        /*
-         * Work from highest frequency to lowest frequency.
-         *
-         * Stable tie behavior is preserved by retaining the incoming
-         * order.
-         */
-        const ordered =
-            candidates
-                .map(
-                    (
-                        candidate,
-                        index
-                    ) => ({
-                        candidate,
-                        originalIndex: index
-                    })
-                )
-                .sort(
-                    (a, b) => {
-                        if (
-                            b.candidate.frequency !==
-                            a.candidate.frequency
-                        ) {
-                            return (
-                                b.candidate.frequency -
-                                a.candidate.frequency
-                            );
-                        }
+        const ordered = candidates
+            .map((candidate, index) => ({ candidate, originalIndex: index }))
+            .sort((a, b) => b.candidate.frequency - a.candidate.frequency || a.originalIndex - b.originalIndex);
 
-                        return (
-                            a.originalIndex -
-                            b.originalIndex
-                        );
-                    }
-                );
-
-        const assigned =
-            new Set();
-
+        const assigned = new Set();
         const clusters = [];
-
         let nextClusterId = 1;
 
+        for (const item of ordered) {
+            const root = item.candidate;
+            const rootKey = root.normalized;
 
-        /******************************************************************
-         * Select roots in descending frequency order.
-         ******************************************************************/
+            if (assigned.has(rootKey)) continue;
 
-        for (
-            const item
-            of ordered
-        ) {
-            const root =
-                item.candidate;
+            const cluster = createCluster(root, nextClusterId++);
+            addCandidateToCluster(cluster, root);
+            assigned.add(rootKey);
 
-            const rootKey =
-                root.normalized;
+            for (const candidateItem of ordered) {
+                const candidate = candidateItem.candidate;
+                const key = candidate.normalized;
 
-            if (
-                assigned.has(
-                    rootKey
-                )
-            ) {
-                continue;
-            }
+                if (assigned.has(key)) continue;
 
-            const cluster =
-                createCluster(
-                    root,
-                    nextClusterId++
-                );
-
-            addCandidateToCluster(
-                cluster,
-                root
-            );
-
-            assigned.add(
-                rootKey
-            );
-
-            /*
-             * We maintain a queue of cluster members.
-             *
-             * This permits the requested chain behavior:
-             *
-             *     root
-             *       ↓ within 2 links
-             *     member A
-             *       ↓ within 2 links
-             *     member B
-             *
-             * B can therefore belong to the root's cluster even if B
-             * is not directly within two links of the root.
-             */
-            const queue = [
-                root
-            ];
-
-            let queueIndex = 0;
-
-            while (
-                queueIndex <
-                queue.length
-            ) {
-                const source =
-                    queue[
-                        queueIndex++
-                    ];
-
-                /*
-                 * Scan frequency-ordered candidates.
-                 *
-                 * We intentionally do not use an all-pairs union-find
-                 * because that would lose the frequency hierarchy.
-                 */
-                for (
-                    const candidateItem
-                    of ordered
-                ) {
-                    const candidate =
-                        candidateItem.candidate;
-
-                    const candidateKey =
-                        candidate.normalized;
-
-                    if (
-                        assigned.has(
-                            candidateKey
-                        )
-                    ) {
-                        continue;
-                    }
-
-                    if (
-                        candidatesAreClusterLinked(
-                            source,
-                            candidate
-                        )
-                    ) {
-                        addCandidateToCluster(
-                            cluster,
-                            candidate
-                        );
-
-                        assigned.add(
-                            candidateKey
-                        );
-
-                        queue.push(
-                            candidate
-                        );
-                    }
+                if (candidatesAreClusterLinked(root, candidate)) {
+                    addCandidateToCluster(cluster, candidate);
+                    assigned.add(key);
                 }
             }
 
-            /*
-             * Cluster members are sorted by frequency, not by the order
-             * in which the chain happened to discover them.
-             */
-            cluster.members.sort(
-                (a, b) =>
-                    b.frequency -
-                    a.frequency
-            );
-
-            clusters.push(
-                cluster
-            );
+            cluster.members.sort((a, b) => b.frequency - a.frequency || a.name.localeCompare(b.name));
+            clusters.push(cluster);
         }
-
-
-        /******************************************************************
-         * Candidates that never became part of a cluster.
-         *
-         * In normal operation a root always creates a cluster, so the
-         * "unclustered" list is primarily useful for the 5% rule and
-         * diagnostic purposes.
-         ******************************************************************/
-
-        const unclustered =
-            candidates.filter(
-                candidate =>
-                    !assigned.has(
-                        candidate.normalized
-                    )
-            );
 
         return {
             clusters,
-
-            unclustered,
-
+            unclustered: candidates.filter(candidate => !assigned.has(candidate.normalized)),
             assigned
         };
     }
-
-
-    /**********************************************************************
-     * 43. TRUE UNCLUSTERED CANDIDATES
-     **********************************************************************/
-
-    /*
-     * The hierarchical algorithm above gives every surviving candidate
-     * a root. However, WNC's 5% rule specifically concerns candidates
-     * that cannot form a meaningful cluster with another candidate.
-     *
-     * Therefore we identify isolated candidates separately.
-     */
 
     function findIsolatedCandidates(
         candidates
@@ -2403,21 +1880,6 @@ function getChapterScanInfo() {
 
         return isolated;
     }
-
-
-    /**********************************************************************
-     * 44. 5% UNCLUSTERED FREQUENCY FILTER
-     **********************************************************************/
-
-    /*
-     * Only genuinely isolated candidates are subject to the cutoff.
-     *
-     * The highest frequency candidate establishes the maximum.
-     *
-     * Anything isolated below 5% of that maximum is removed.
-     *
-     * Candidates inside a cluster are NEVER removed by this rule.
-     */
 
     function applyUnclusteredFrequencyFilter(
         candidates
@@ -2497,9 +1959,7 @@ function getChapterScanInfo() {
                     candidate.normalized
                 )
             ) {
-                /*
-                 * Clustered candidates are always retained.
-                 */
+
                 kept.push(
                     candidate
                 );
@@ -2533,11 +1993,6 @@ function getChapterScanInfo() {
             threshold
         };
     }
-
-
-    /**********************************************************************
-     * 45. COMPLETE CANDIDATE CLUSTER PIPELINE
-     **********************************************************************/
 
 function processCandidateClusters(
     candidates
@@ -2581,10 +2036,6 @@ function processCandidateClusters(
     };
 }
 
-    /**********************************************************************
-     * 46. CLUSTER LOOKUP
-     **********************************************************************/
-
     function findClusterForCandidate(
         clusters,
         normalized
@@ -2612,11 +2063,6 @@ function processCandidateClusters(
         return null;
     }
 
-
-    /**********************************************************************
-     * 47. CLUSTERED CANDIDATE INDEX
-     **********************************************************************/
-
     function createCandidateClusterIndex(
         clusters
     ) {
@@ -2639,11 +2085,6 @@ function processCandidateClusters(
 
         return index;
     }
-
-
-    /**********************************************************************
-     * 48. CLUSTER SORTING
-     **********************************************************************/
 
     function sortClusterMembers(
         cluster
@@ -2679,7 +2120,6 @@ function processCandidateClusters(
         );
     }
 
-
     function sortClustersByRootFrequency(
         clusters
     ) {
@@ -2689,12 +2129,6 @@ function processCandidateClusters(
             return [];
         }
 
-        /*
-         * Root hierarchy remains frequency based.
-         *
-         * cluster.id is used as the tie-breaker, preserving discovery
-         * order.
-         */
         return clusters
             .slice()
             .sort(
@@ -2717,11 +2151,6 @@ function processCandidateClusters(
                 }
             );
     }
-
-
-    /**********************************************************************
-     * 49. CLUSTER DIAGNOSTICS
-     **********************************************************************/
 
     function getClusterDiagnostics(
         result
@@ -2781,40 +2210,7 @@ function processCandidateClusters(
         };
     }
 
-
-    /**********************************************************************
-     * 50. END PART 3
-     **********************************************************************/
-      /**********************************************************************
-     * 51. FOXREPLACE MATCHING
-     **********************************************************************/
-
-    /*
-     * IMPORTANT:
-     *
-     * Candidate normalization is NEVER applied to FoxReplace rules.
-     *
-     * Example:
-     *
-     *     Candidate:
-     *         Dragons
-     *
-     *     normalized candidate:
-     *         Dragon
-     *
-     *     FoxReplace rule:
-     *         Dragons
-     *
-     * The rule remains "Dragons".
-     *
-     * Matching is performed against the candidate's observed/display
-     * forms and the rule's actual input.
-     */
-
-
-    /**********************************************************************
-     * 52. REGEXP COMPILATION
-     **********************************************************************/
+      
 
     function compileRuleRegex(
         rule
@@ -2833,10 +2229,6 @@ function processCandidateClusters(
                     ? ""
                     : "i";
 
-            /*
-             * Preserve common regex flags if a FoxReplace-compatible
-             * representation includes them separately.
-             */
             const rawRule =
                 rule.raw || {};
 
@@ -2868,12 +2260,6 @@ function processCandidateClusters(
                 }
             }
 
-            /*
-             * Do not force global matching here.
-             *
-             * For existence testing, a non-global regex is safer because
-             * repeated .test() calls cannot suffer from lastIndex state.
-             */
             flags =
                 flags.replace(
                     /g/g,
@@ -2888,11 +2274,6 @@ function processCandidateClusters(
             return null;
         }
     }
-
-
-    /**********************************************************************
-     * 53. TEXT CASE COMPARISON
-     **********************************************************************/
 
     function compareRuleText(
         candidateText,
@@ -2916,11 +2297,6 @@ function processCandidateClusters(
         );
     }
 
-
-    /**********************************************************************
-     * 54. WHOLE-WORD COMPARISON
-     **********************************************************************/
-
     function wholeWordRuleMatches(
         candidateText,
         ruleText,
@@ -2940,21 +2316,11 @@ function processCandidateClusters(
             return false;
         }
 
-        /*
-         * Escape the literal rule input.
-         */
         const escaped =
             escapeRegex(
                 ruleInput
             );
 
-        /*
-         * FoxReplace whole-word behavior is fundamentally a literal
-         * word-boundary match.
-         *
-         * We use an alphanumeric boundary rather than JavaScript's \b
-         * because FoxReplace names can contain apostrophes and hyphens.
-         */
         const expression =
             `(?<![A-Za-z0-9'’-])` +
             escaped +
@@ -2973,11 +2339,6 @@ function processCandidateClusters(
             return false;
         }
     }
-
-
-    /**********************************************************************
-     * 55. LITERAL TEXT CONTAINMENT
-     **********************************************************************/
 
     function textRuleContains(
         candidateText,
@@ -3013,11 +2374,6 @@ function processCandidateClusters(
             );
     }
 
-
-    /**********************************************************************
-     * 56. EXACT/FULL RULE MATCH
-     **********************************************************************/
-
     function ruleMatchesEntireCandidate(
         candidate,
         rule
@@ -3041,12 +2397,6 @@ function processCandidateClusters(
             return false;
         }
 
-        /*
-         * TEXT rules:
-         *
-         * Exact/full match means the entire candidate equals the rule
-         * input.
-         */
         if (
             rule.inputType === "text"
         ) {
@@ -3060,31 +2410,20 @@ function processCandidateClusters(
             );
         }
 
-        /*
-         * WHOLEWORDS rules:
-         *
-         * The candidate itself is tested as a complete text string.
-         */
         if (
             rule.inputType ===
             "wholewords"
         ) {
             return candidateForms.some(
                 form =>
-                    wholeWordRuleMatches(
-                        form,
-                        rule.input,
+                    compareRuleText(
+                        form.trim(),
+                        String(rule.input ?? "").trim(),
                         rule.caseSensitive
                     )
             );
         }
 
-        /*
-         * REGEXP rules:
-         *
-         * A regex match is considered a full match only if the regex
-         * consumes the entire candidate.
-         */
         if (
             rule.inputType ===
             "regexp"
@@ -3100,11 +2439,6 @@ function processCandidateClusters(
 
         return false;
     }
-
-
-    /**********************************************************************
-     * 57. REGEXP FULL-STRING MATCH
-     **********************************************************************/
 
     function regexMatchesEntireString(
         text,
@@ -3124,9 +2458,6 @@ function processCandidateClusters(
                 text ?? ""
             );
 
-        /*
-         * First try a normal match.
-         */
         const match =
             regex.exec(
                 value
@@ -3136,23 +2467,12 @@ function processCandidateClusters(
             return false;
         }
 
-        /*
-         * A regex can match a substring.
-         *
-         * For a full rule match, the matched span must cover the entire
-         * candidate.
-         */
         return (
             match.index === 0 &&
             match[0].length ===
                 value.length
         );
     }
-
-
-    /**********************************************************************
-     * 58. ANY RULE MATCH
-     **********************************************************************/
 
     function ruleMatchesCandidate(
         candidate,
@@ -3225,23 +2545,6 @@ function processCandidateClusters(
         );
     }
 
-
-    /**********************************************************************
-     * 59. CANDIDATE MATCH FORMS
-     **********************************************************************/
-
-    /*
-     * A candidate may have multiple observed variants after normalization.
-     *
-     * Example:
-     *
-     *     Dragon
-     *     Dragons
-     *     Dragon's
-     *
-     * These are one candidate internally, but FoxReplace matching must
-     * consider the ORIGINAL forms rather than the normalized "Dragon".
-     */
     function getCandidateMatchForms(
         candidate
     ) {
@@ -3251,9 +2554,6 @@ function processCandidateClusters(
 
         const forms = [];
 
-        /*
-         * The observed variants are authoritative.
-         */
         if (
             candidate.variants instanceof Map
         ) {
@@ -3274,9 +2574,6 @@ function processCandidateClusters(
             }
         }
 
-        /*
-         * Fallback to the display name.
-         */
         if (
             candidate.name &&
             !forms.includes(
@@ -3291,11 +2588,6 @@ function processCandidateClusters(
         return forms;
     }
 
-
-    /**********************************************************************
-     * 60. PARTIAL / CONTAINED MATCH
-     **********************************************************************/
-
     function rulePartiallyMatchesCandidate(
         candidate,
         rule
@@ -3308,9 +2600,6 @@ function processCandidateClusters(
             return false;
         }
 
-        /*
-         * If it is already a full match, it is not merely partial.
-         */
         if (
             ruleMatchesEntireCandidate(
                 candidate,
@@ -3369,15 +2658,7 @@ function processCandidateClusters(
             rule.inputType ===
             "wholewords"
         ) {
-            /*
-             * Whole-word rules can match a portion of a multi-token
-             * candidate.
-             *
-             * Example:
-             *
-             *     Rule: John
-             *     Candidate: John Smith
-             */
+
             return forms.some(
                 form => {
                     if (
@@ -3414,11 +2695,6 @@ function processCandidateClusters(
         );
     }
 
-
-    /**********************************************************************
-     * 61. RULE MATCH DETAILS
-     **********************************************************************/
-
     function getRuleMatchType(
         candidate,
         rule
@@ -3443,11 +2719,6 @@ function processCandidateClusters(
 
         return "none";
     }
-
-
-    /**********************************************************************
-     * 62. MATCH ALL CURRENT-SITE RULES
-     **********************************************************************/
 
     function findCandidateRuleMatches(
         candidate
@@ -3496,29 +2767,6 @@ function processCandidateClusters(
         };
     }
 
-
-    /**********************************************************************
-     * 63. RULE OUTPUT → RULE INPUT CONFLICT
-     **********************************************************************/
-
-    /*
-     * A rule can itself produce text that another rule consumes.
-     *
-     * Example:
-     *
-     *     Rule A:
-     *       input  = "X"
-     *       output = "John"
-     *
-     *     Rule B:
-     *       input  = "John"
-     *
-     * This is a conflict because applying A can create something that B
-     * can then match.
-     *
-     * We check the actual rule strings, without candidate normalization.
-     */
-
     function ruleOutputMatchesRuleInput(
         sourceRule,
         targetRule
@@ -3554,9 +2802,6 @@ function processCandidateClusters(
             return false;
         }
 
-        /*
-         * Do not consider a rule conflicting with itself.
-         */
         if (
             sourceRule ===
             targetRule
@@ -3564,9 +2809,6 @@ function processCandidateClusters(
             return false;
         }
 
-        /*
-         * Target regexp.
-         */
         if (
             targetRule.inputType ===
             "regexp"
@@ -3587,9 +2829,6 @@ function processCandidateClusters(
             );
         }
 
-        /*
-         * Target whole-word rule.
-         */
         if (
             targetRule.inputType ===
             "wholewords"
@@ -3601,20 +2840,12 @@ function processCandidateClusters(
             );
         }
 
-        /*
-         * Target literal rule.
-         */
         return textRuleContains(
             output,
             input,
             targetRule.caseSensitive
         );
     }
-
-
-    /**********************************************************************
-     * 64. RULE-TO-RULE CONFLICTS
-     **********************************************************************/
 
     function findRuleOutputConflicts() {
         const rules =
@@ -3665,11 +2896,6 @@ function processCandidateClusters(
         return conflicts;
     }
 
-
-    /**********************************************************************
-     * 65. CONFLICT OBJECTS
-     **********************************************************************/
-
     function createCandidateConflict(
         candidate,
         matchData
@@ -3689,34 +2915,6 @@ function processCandidateClusters(
                 matchData.all
         };
     }
-
-
-    /**********************************************************************
-     * 66. CLASSIFICATION
-     **********************************************************************/
-
-    /*
-     * Classification rules:
-     *
-     *     no relevant rule
-     *         → Candidates
-     *
-     *     exactly one exact rule
-     *     and no partial rules
-     *         → Groups
-     *
-     *     multiple exact rules
-     *         → Conflicts
-     *
-     *     exact + partial
-     *         → Conflicts
-     *
-     *     partial without exact
-     *         → Conflicts
-     *
-     *     rule-output → rule-input relationship
-     *         → Conflicts
-     */
 
     function classifyCandidate(
         candidate
@@ -3763,11 +2961,6 @@ function processCandidateClusters(
             matches
         };
     }
-
-
-    /**********************************************************************
-     * 67. GROUP MATCH RECORDS
-     **********************************************************************/
 
 function buildGroupMatches(classifications) {
     const groups = new Map();
@@ -3847,11 +3040,6 @@ function buildGroupMatches(classifications) {
     );
 }
 
-
-    /**********************************************************************
-     * 68. CONFLICT CANDIDATE RECORDS
-     **********************************************************************/
-
     function buildCandidateConflicts(
         classifications
     ) {
@@ -3869,11 +3057,6 @@ function buildGroupMatches(classifications) {
                     )
             );
     }
-
-
-    /**********************************************************************
-     * 69. CONFLICT RELATIONSHIP KEYS
-     **********************************************************************/
 
     function getConflictRuleKeys(
         conflict
@@ -3904,21 +3087,6 @@ function buildGroupMatches(classifications) {
 
         return keys;
     }
-
-
-    /**********************************************************************
-     * 70. CONFLICT CLUSTER LINK
-     **********************************************************************/
-
-    /*
-     * Two candidate conflicts belong to the same conflict cluster if:
-     *
-     *   1. they share a FoxReplace rule, OR
-     *   2. their candidates are themselves within the same candidate
-     *      cluster relationship.
-     *
-     * The first condition is the important one for rule ambiguity.
-     */
 
     function conflictsAreLinked(
         left,
@@ -3960,11 +3128,6 @@ function buildGroupMatches(classifications) {
         return false;
     }
 
-
-    /**********************************************************************
-     * 71. CONFLICT CLUSTERING
-     **********************************************************************/
-
     function clusterCandidateConflicts(
         conflicts
     ) {
@@ -3982,9 +3145,6 @@ function buildGroupMatches(classifications) {
 
         let nextClusterId = 1;
 
-        /*
-         * Discovery order is preserved.
-         */
         for (
             let i = 0;
             i < conflicts.length;
@@ -4026,15 +3186,6 @@ function buildGroupMatches(classifications) {
                     current
                 );
 
-                /*
-                 * Chain clustering allows:
-                 *
-                 *     A ↔ B
-                 *     B ↔ C
-                 *
-                 * to become one conflict cluster even if A and C do not
-                 * directly share a rule.
-                 */
                 for (
                     let j = 0;
                     j < conflicts.length;
@@ -4066,11 +3217,6 @@ function buildGroupMatches(classifications) {
 
         return clusters;
     }
-
-
-    /**********************************************************************
-     * 72. RULE-OUTPUT CONFLICT CLUSTERS
-     **********************************************************************/
 
     function clusterRuleOutputConflicts(
         conflicts
@@ -4188,11 +3334,6 @@ function buildGroupMatches(classifications) {
         return clusters;
     }
 
-
-    /**********************************************************************
-     * 73. COMPLETE CONFLICT DATABASE
-     **********************************************************************/
-
 function buildConflictData(classifications) {
     const conflicts = [];
 
@@ -4259,11 +3400,6 @@ function buildConflictData(classifications) {
     return conflicts;
 }
 
-
-    /**********************************************************************
-     * 74. CONFLICT DISPLAY HELPERS
-     **********************************************************************/
-
     function getConflictGroups(
         conflict
     ) {
@@ -4299,7 +3435,6 @@ function buildConflictData(classifications) {
         return groups;
     }
 
-
     function getConflictGroupNames(
         conflict
     ) {
@@ -4311,7 +3446,6 @@ function buildConflictData(classifications) {
                 "(Unnamed group)"
         );
     }
-
 
     function getConflictRuleEntries(
         conflict
@@ -4351,31 +3485,7 @@ function buildConflictData(classifications) {
         return entries;
     }
 
-
-    /**********************************************************************
-     * 75. END PART 4
-     **********************************************************************/
-      /**********************************************************************
-     * 76. GENERATED INPUT TEMPLATES
-     **********************************************************************/
-
-    /*
-     * Generated Input is only a suggestion for the Candidates tab.
-     *
-     * WNC does NOT:
-     *
-     *   - add it to FoxReplace
-     *   - modify FoxReplace
-     *   - replace page text
-     *   - execute the generated regexp
-     *
-     * The user copies the generated Input into FoxReplace manually.
-     */
-
-
-    /**********************************************************************
-     * 77. GENERATED INPUT ESCAPING
-     **********************************************************************/
+      
 
     function escapeRegexLiteral(
         value
@@ -4387,11 +3497,6 @@ function buildConflictData(classifications) {
             "\\$&"
         );
     }
-
-
-    /**********************************************************************
-     * 78. NORMALIZE DISPLAY SPACING
-     **********************************************************************/
 
     function normalizeGeneratedInputSpacing(
         value
@@ -4405,30 +3510,6 @@ function buildConflictData(classifications) {
                 " "
             );
     }
-
-
-    /**********************************************************************
-     * 79. OTHER TEMPLATE
-     **********************************************************************/
-
-    /*
-     * "Other" preserves the original WNC behavior:
-     *
-     *     (?<![a-z])Candidate(?![a-z])
-     *
-     * The candidate itself is escaped so names containing regex
-     * punctuation do not accidentally become regex syntax.
-     *
-     * Examples:
-     *
-     *     Dragon
-     *         →
-     *     (?<![a-z])Dragon(?![a-z])
-     *
-     *     U.S.
-     *         →
-     *     (?<![a-z])U\.S\.(?![a-z])
-     */
 
     function generateOtherInput(
         candidate
@@ -4456,11 +3537,6 @@ function buildConflictData(classifications) {
         );
     }
 
-
-    /**********************************************************************
-     * 80. KOREAN TEMPLATE HELPERS
-     **********************************************************************/
-
     function isHyphenVariantCandidate(
         value
     ) {
@@ -4468,7 +3544,6 @@ function buildConflictData(classifications) {
             String(value ?? "")
         );
     }
-
 
     function replaceSpacesAndHyphens(
         value
@@ -4486,31 +3561,6 @@ function buildConflictData(classifications) {
                 "-"
             );
     }
-
-
-    /**********************************************************************
-     * 81. KOREAN TEMPLATE
-     **********************************************************************/
-
-    /*
-     * Korean names commonly appear with variations around the first
-     * token and with space/hyphen differences.
-     *
-     * For two or more tokens, WNC intentionally omits the first token
-     * from the generated core.
-     *
-     * Example:
-     *
-     *     Kim Tae Hyun
-     *
-     * becomes a pattern centered around:
-     *
-     *     Tae Hyun
-     *
-     * and supports the common space/hyphen variation.
-     *
-     * Single-token names remain intact.
-     */
 
     function generateKoreanInput(
         candidate
@@ -4531,9 +3581,6 @@ function buildConflictData(classifications) {
                 value
             );
 
-        /*
-         * Single-token candidate.
-         */
         if (
             tokens.length <= 1
         ) {
@@ -4546,9 +3593,6 @@ function buildConflictData(classifications) {
             );
         }
 
-        /*
-         * Omit the first token.
-         */
         const remainingTokens =
             tokens.slice(1);
 
@@ -4557,32 +3601,16 @@ function buildConflictData(classifications) {
                 " "
             );
 
-        /*
-         * Escape every token individually.
-         */
         const escapedTokens =
             remainingTokens.map(
                 escapeRegexLiteral
             );
 
-        /*
-         * Space/hyphen-flexible form.
-         *
-         *     Tae Hyun
-         *     Tae-Hyun
-         */
         const flexible =
             escapedTokens.join(
                 "[\\s-]+"
             );
 
-        /*
-         * Include a version that accepts the remaining phrase with
-         * ordinary whitespace as well.
-         *
-         * The alternation is kept explicit rather than replacing all
-         * whitespace globally.
-         */
         const alternatives = [
             flexible
         ];
@@ -4613,30 +3641,6 @@ function buildConflictData(classifications) {
         );
     }
 
-
-    /**********************************************************************
-     * 82. JAPANESE TEMPLATE
-     **********************************************************************/
-
-    /*
-     * Japanese name ordering:
-     *
-     *     First Last
-     *     Last First
-     *
-     * The generated pattern outputs the LAST token as the core name.
-     *
-     * Example:
-     *
-     *     Tanaka Haru
-     *
-     * becomes:
-     *
-     *     Tanaka Haru|Haru Tanaka
-     *
-     * with the final token available as the primary name component.
-     */
-
     function generateJapaneseInput(
         candidate
     ) {
@@ -4656,9 +3660,6 @@ function buildConflictData(classifications) {
                 value
             );
 
-        /*
-         * Single-token names.
-         */
         if (
             tokens.length <= 1
         ) {
@@ -4679,10 +3680,6 @@ function buildConflictData(classifications) {
                 tokens.length - 1
             ];
 
-        /*
-         * For multi-token names, retain the full two possible ordering
-         * forms.
-         */
         const forward =
             tokens
                 .map(
@@ -4710,10 +3707,6 @@ function buildConflictData(classifications) {
                     "\\s+"
                 );
 
-        /*
-         * If first and last happen to be identical, avoid a duplicate
-         * alternative.
-         */
         const alternatives =
             Array.from(
                 new Set([
@@ -4730,11 +3723,6 @@ function buildConflictData(classifications) {
             ")(?![A-Za-z0-9'’-])"
         );
     }
-
-
-    /**********************************************************************
-     * 83. TEMPLATE DISPATCHER
-     **********************************************************************/
 
     function generateCandidateInput(
         candidate,
@@ -4768,11 +3756,6 @@ function buildConflictData(classifications) {
         }
     }
 
-
-    /**********************************************************************
-     * 84. REGENERATE ALL CANDIDATE INPUTS
-     **********************************************************************/
-
     function regenerateCandidateInputs(
         candidates,
         template =
@@ -4800,11 +3783,6 @@ function buildConflictData(classifications) {
         return candidates;
     }
 
-
-    /**********************************************************************
-     * 85. TEMPLATE CHANGE
-     **********************************************************************/
-
     function setCandidateTemplate(
         template
     ) {
@@ -4819,9 +3797,6 @@ function buildConflictData(classifications) {
         state.candidateTemplate =
             template;
 
-        /*
-         * Regenerate every currently displayed candidate immediately.
-         */
         regenerateCandidateInputs(
             state.candidates,
             state.candidateTemplate
@@ -4829,17 +3804,6 @@ function buildConflictData(classifications) {
 
         render();
     }
-
-
-    /**********************************************************************
-     * 86. GENERATED INPUT VALIDATION
-     **********************************************************************/
-
-    /*
-     * This is only an internal sanity check.
-     *
-     * WNC does not execute generated Inputs against page text.
-     */
 
     function generatedInputLooksValid(
         input
@@ -4852,13 +3816,7 @@ function buildConflictData(classifications) {
         }
 
         try {
-            /*
-             * Strip the lookbehind/lookahead only for validation if an
-             * environment does not support them.
-             *
-             * Modern browsers do support the expressions WNC generates,
-             * but this check avoids throwing during UI rendering.
-             */
+
             new RegExp(
                 input
             );
@@ -4868,11 +3826,6 @@ function buildConflictData(classifications) {
             return false;
         }
     }
-
-
-    /**********************************************************************
-     * 87. GENERATED INPUT DISPLAY VALUE
-     **********************************************************************/
 
     function getGeneratedInput(
         candidate
@@ -4896,40 +3849,7 @@ function buildConflictData(classifications) {
         return candidate.generatedInput;
     }
 
-
-    /**********************************************************************
-     * 88. END PART 5
-     **********************************************************************/
-      /**********************************************************************
-     * 89. ANALYSIS PIPELINE
-     **********************************************************************/
-
-    /*
-     * Complete WNC processing flow:
-     *
-     *   chapter
-     *      ↓
-     *   exact candidate scanner
-     *      ↓
-     *   candidate normalization
-     *      ↓
-     *   frequency merge
-     *      ↓
-     *   hierarchical clustering
-     *      ↓
-     *   remove ONLY isolated candidates below 5%
-     *      ↓
-     *   FoxReplace matching
-     *      ↓
-     *   candidates / groups / conflicts
-     *      ↓
-     *   generated Inputs
-     */
-
-
-    /**********************************************************************
-     * 90. EMPTY ANALYSIS STATE
-     **********************************************************************/
+      
 
     function clearAnalysisResults() {
         state.candidates = [];
@@ -4938,11 +3858,6 @@ function buildConflictData(classifications) {
         state.groupIndex = null;
         state.expandedRules.clear();
     }
-
-
-    /**********************************************************************
-     * 91. BUILD CANDIDATE RESULTS
-     **********************************************************************/
 
     function buildCandidateResults(
         processedCandidates
@@ -4959,10 +3874,6 @@ function buildConflictData(classifications) {
                     adaptedDatabase
                 );
 
-            /*
-             * Only completely unmatched candidates belong on the
-             * Candidates tab.
-             */
 if (
     classification.classification !==
     "candidate"
@@ -4984,10 +3895,6 @@ if (
         return candidates;
     }
 
-
-    /**********************************************************************
-     * 92. MAIN PAGE ANALYSIS
-     **********************************************************************/
 function analyzePage() {
     clearAnalysisResults();
 
@@ -5063,11 +3970,6 @@ function analyzePage() {
     };
 }
 
-
-    /**********************************************************************
-     * 93. SAFE ANALYSIS WRAPPER
-     **********************************************************************/
-
     function runAnalysisSafely() {
         try {
             return analyzePage();
@@ -5091,11 +3993,6 @@ function analyzePage() {
         }
     }
 
-
-    /**********************************************************************
-     * 94. GROUP MATCH LOOKUP
-     **********************************************************************/
-
     function getVisibleGroupMatches() {
         if (
             !Array.isArray(
@@ -5107,11 +4004,6 @@ function analyzePage() {
 
         return state.groupMatches;
     }
-
-
-    /**********************************************************************
-     * 95. RULE MATCH LOOKUP
-     **********************************************************************/
 
     function getGroupRulesWithMatches(
         groupMatch
@@ -5127,23 +4019,6 @@ function analyzePage() {
 
         return groupMatch.rules;
     }
-
-
-    /**********************************************************************
-     * 96. SORT DIRECTION CYCLE
-     **********************************************************************/
-
-    /*
-     * direction:
-     *
-     *     0  = original order
-     *     1  = ascending
-     *    -1  = descending
-     *
-     * Clicking a sortable header cycles:
-     *
-     *     original → ascending → descending → original
-     */
 
     function cycleSortState(
         sortState,
@@ -5178,11 +4053,6 @@ function analyzePage() {
         }
     }
 
-
-    /**********************************************************************
-     * 97. GENERIC COMPARISON
-     **********************************************************************/
-
     function compareNumbers(
         a,
         b
@@ -5207,7 +4077,6 @@ function analyzePage() {
         );
     }
 
-
     function compareStrings(
         a,
         b
@@ -5225,11 +4094,6 @@ function analyzePage() {
             }
         );
     }
-
-
-    /**********************************************************************
-     * 98. GROUP SORTING
-     **********************************************************************/
 
     function getGroupSortValue(
         group,
@@ -5265,7 +4129,6 @@ function analyzePage() {
                 return group.index;
         }
     }
-
 
     function compareGroups(
         a,
@@ -5311,7 +4174,6 @@ function analyzePage() {
         );
     }
 
-
     function sortGroupMatches(
         groups
     ) {
@@ -5332,10 +4194,6 @@ function analyzePage() {
         } =
             state.groupSort;
 
-        /*
-         * Original order is deliberately preserved rather than
-         * recalculated from the displayed name.
-         */
         if (
             direction === 0 ||
             column === "original"
@@ -5366,11 +4224,6 @@ function analyzePage() {
         );
     }
 
-
-    /**********************************************************************
-     * 99. RULE SORTING
-     **********************************************************************/
-
     function getRuleSortValue(
         rule,
         column
@@ -5395,7 +4248,6 @@ function analyzePage() {
                 return rule.index;
         }
     }
-
 
     function compareRules(
         a,
@@ -5441,7 +4293,6 @@ function analyzePage() {
         );
     }
 
-
     function sortGroupRules(
         rules
     ) {
@@ -5462,9 +4313,6 @@ function analyzePage() {
         } =
             state.ruleSort;
 
-        /*
-         * Original FoxReplace rule order.
-         */
         if (
             direction === 0 ||
             column === "original"
@@ -5495,20 +4343,6 @@ function analyzePage() {
         );
     }
 
-
-    /**********************************************************************
-     * 100. CONFLICT SORTING
-     **********************************************************************/
-
-    /*
-     * Conflicts are intentionally NOT manually sortable.
-     *
-     * Their order is discovery order.
-     *
-     * Cluster IDs are assigned once during buildConflictData() and
-     * therefore remain stable while the current analysis is displayed.
-     */
-
 function getVisibleConflicts() {
     if (!Array.isArray(state.conflicts)) {
         return [];
@@ -5516,10 +4350,6 @@ function getVisibleConflicts() {
 
     return state.conflicts.slice();
 }
-
-    /**********************************************************************
-     * 101. CLUSTER DISPLAY ORDER
-     **********************************************************************/
 
     function getClusterDisplayId(
         conflict
@@ -5535,17 +4365,6 @@ function getVisibleConflicts() {
 
         return "";
     }
-
-
-    /**********************************************************************
-     * 102. CANDIDATE DISPLAY SORT
-     **********************************************************************/
-
-    /*
-     * Candidates are presented in frequency order.
-     *
-     * This is separate from FoxReplace group/rule sorting.
-     */
 
     function sortCandidatesForDisplay(
         candidates
@@ -5578,9 +4397,6 @@ function getVisibleConflicts() {
                         return frequencyDifference;
                     }
 
-                    /*
-                     * Preserve discovery order for equal frequencies.
-                     */
                     return compareNumbers(
                         a.firstSeenIndex,
                         b.firstSeenIndex
@@ -5588,11 +4404,6 @@ function getVisibleConflicts() {
                 }
             );
     }
-
-
-    /**********************************************************************
-     * 103. APPLY GROUP SORT
-     **********************************************************************/
 
     function sortDisplayedGroups() {
         state.groupMatches =
@@ -5617,11 +4428,6 @@ function getVisibleConflicts() {
         }
     }
 
-
-    /**********************************************************************
-     * 104. SORT GROUPS BY HEADER
-     **********************************************************************/
-
     function sortGroupsBy(
         column
     ) {
@@ -5630,20 +4436,10 @@ function getVisibleConflicts() {
             column
         );
 
-        /*
-         * Group sorting and rule sorting are independent.
-         *
-         * Changing a group header does not alter the user's rule sort.
-         */
         sortDisplayedGroups();
 
         render();
     }
-
-
-    /**********************************************************************
-     * 105. SORT RULES BY HEADER
-     **********************************************************************/
 
     function sortRulesBy(
         column
@@ -5657,11 +4453,6 @@ function getVisibleConflicts() {
 
         render();
     }
-
-
-    /**********************************************************************
-     * 106. RULE EXPANSION
-     **********************************************************************/
 
     function getRuleExpansionKey(
         group,
@@ -5680,7 +4471,6 @@ function getVisibleConflicts() {
         );
     }
 
-
     function isRuleExpanded(
         group,
         rule
@@ -5692,7 +4482,6 @@ function getVisibleConflicts() {
             )
         );
     }
-
 
     function toggleRuleExpanded(
         group,
@@ -5721,11 +4510,6 @@ function getVisibleConflicts() {
         render();
     }
 
-
-    /**********************************************************************
-     * 107. GROUP SELECTION
-     **********************************************************************/
-
     function selectGroup(
         groupIndex
     ) {
@@ -5738,11 +4522,6 @@ function getVisibleConflicts() {
 
         render();
     }
-
-
-    /**********************************************************************
-     * 108. RESET SORTING
-     **********************************************************************/
 
     function resetDisplaySorting() {
         state.groupSort = {
@@ -5759,11 +4538,6 @@ function getVisibleConflicts() {
 
         render();
     }
-
-
-    /**********************************************************************
-     * 109. ANALYSIS SUMMARY
-     **********************************************************************/
 
     function getAnalysisSummary() {
         const candidateCount =
@@ -5802,28 +4576,7 @@ function getVisibleConflicts() {
         };
     }
 
-
-    /**********************************************************************
-     * 110. END PART 6
-     **********************************************************************/
-      /**********************************************************************
-     * 111. WNC USER INTERFACE
-     **********************************************************************/
-
-    /*
-     * The UI intentionally keeps the older WNC dark/suggestions style.
-     *
-     * Exactly three tabs:
-     *
-     *     Candidates | Groups | Conflicts
-     *
-     * The UI is a display/workbench only.
-     */
-
-
-    /**********************************************************************
-     * 112. UI CONSTANTS
-     **********************************************************************/
+      
 
     const WNC_UI_ID = "wnc-overlay";
 
@@ -5835,11 +4588,6 @@ function getVisibleConflicts() {
         "groups",
         "conflicts"
     ];
-
-
-    /**********************************************************************
-     * 113. CSS
-     **********************************************************************/
 
     function getWncStyles() {
         return `
@@ -5926,6 +4674,24 @@ function getVisibleConflicts() {
 
             #${WNC_UI_ID} .wnc-spacer {
                 flex: 1;
+            }
+
+            #${WNC_UI_ID} .wnc-selector {
+                width: 180px;
+                padding: 6px 8px;
+                border: 1px solid #444;
+                border-radius: 4px;
+                background: #17191d;
+                color: #eee;
+            }
+
+            #${WNC_UI_ID} .wnc-save-selector {
+                padding: 6px 9px;
+                border: 1px solid #444;
+                border-radius: 4px;
+                background: #25282d;
+                color: #eee;
+                cursor: pointer;
             }
 
             #${WNC_UI_ID} .wnc-template {
@@ -6215,11 +4981,6 @@ function getVisibleConflicts() {
         `;
     }
 
-
-    /**********************************************************************
-     * 114. INSTALL STYLE
-     **********************************************************************/
-
     function ensureWncStyles() {
         let style =
             document.getElementById(
@@ -6253,11 +5014,6 @@ function getVisibleConflicts() {
         return style;
     }
 
-
-    /**********************************************************************
-     * 115. HTML ESCAPING
-     **********************************************************************/
-
     function escapeHtml(
         value
     ) {
@@ -6286,11 +5042,6 @@ function getVisibleConflicts() {
             );
     }
 
-
-    /**********************************************************************
-     * 116. TAB LABELS
-     **********************************************************************/
-
     function getTabLabel(
         tab
     ) {
@@ -6308,11 +5059,6 @@ function getVisibleConflicts() {
                 return "Candidates";
         }
     }
-
-
-    /**********************************************************************
-     * 117. SORT ARROW
-     **********************************************************************/
 
     function getSortArrow(
         sortState,
@@ -6338,11 +5084,6 @@ function getVisibleConflicts() {
             "</span>"
         );
     }
-
-
-    /**********************************************************************
-     * 118. TOP TOOLBAR
-     **********************************************************************/
 
     function renderToolbar() {
         const tabs =
@@ -6375,11 +5116,6 @@ function getVisibleConflicts() {
                 )
                 .join("");
 
-        /*
-         * The template selector is deliberately global.
-         *
-         * There is no template selector on individual candidate rows.
-         */
         const templateOptions =
             INPUT_TEMPLATES
                 .map(
@@ -6418,6 +5154,15 @@ function getVisibleConflicts() {
 
                 '<div class="wnc-spacer"></div>' +
 
+                '<input class="wnc-selector" data-wnc-selector ' +
+                    'value="' +
+                    escapeHtml(getSavedChapterSelector()) +
+                    '" placeholder="Chapter CSS" />' +
+
+                '<button class="wnc-save-selector" data-wnc-save-selector>' +
+                    'Save' +
+                '</button>' +
+
                 '<select class="wnc-template" ' +
                     'data-wnc-template>' +
                     templateOptions +
@@ -6431,11 +5176,6 @@ function getVisibleConflicts() {
             "</div>"
         );
     }
-
-
-    /**********************************************************************
-     * 119. CANDIDATES TAB
-     **********************************************************************/
 
     function renderCandidatesTab() {
         const candidates =
@@ -6540,11 +5280,6 @@ function getVisibleConflicts() {
         );
     }
 
-
-    /**********************************************************************
-     * 120. GROUP TAB — HEADER
-     **********************************************************************/
-
     function renderGroupHeader(
         group
     ) {
@@ -6595,11 +5330,6 @@ function getVisibleConflicts() {
             "</div>"
         );
     }
-
-
-    /**********************************************************************
-     * 121. GROUP TAB — RULE ROW
-     **********************************************************************/
 
     function renderGroupRule(
         group,
@@ -6727,11 +5457,6 @@ function getVisibleConflicts() {
 
         return html;
     }
-
-
-    /**********************************************************************
-     * 122. GROUP TAB
-     **********************************************************************/
 
     function renderGroupsTab() {
         const groups =
@@ -6889,11 +5614,6 @@ function getVisibleConflicts() {
         );
     }
 
-
-    /**********************************************************************
-     * 123. CONFLICT TAB
-     **********************************************************************/
-
     function renderConflict(
         conflict
     ) {
@@ -6986,11 +5706,6 @@ function getVisibleConflicts() {
         );
     }
 
-
-    /**********************************************************************
-     * 124. CONFLICT CLUSTERS
-     **********************************************************************/
-
     function getConflictClustersForDisplay() {
         const conflicts =
             getVisibleConflicts();
@@ -7040,7 +5755,6 @@ function getVisibleConflicts() {
 
         return clusters;
     }
-
 
     function renderConflictsTab() {
         const clusters =
@@ -7093,11 +5807,6 @@ function getVisibleConflicts() {
         );
     }
 
-
-    /**********************************************************************
-     * 125. ACTIVE TAB
-     **********************************************************************/
-
     function renderActiveTab() {
         switch (
             state.screen
@@ -7113,11 +5822,6 @@ function getVisibleConflicts() {
                 return renderCandidatesTab();
         }
     }
-
-
-    /**********************************************************************
-     * 126. FULL WNC WINDOW
-     **********************************************************************/
 
     function renderWncWindow() {
         const scanInfo =
@@ -7176,11 +5880,6 @@ function getVisibleConflicts() {
         return html;
     }
 
-
-    /**********************************************************************
-     * 127. RENDER
-     **********************************************************************/
-
     function render() {
         const overlay =
             document.getElementById(
@@ -7200,11 +5899,6 @@ function getVisibleConflicts() {
             overlay
         );
     }
-
-
-    /**********************************************************************
-     * 128. OPEN UI
-     **********************************************************************/
 
     function openWnc() {
         ensureWncStyles();
@@ -7231,9 +5925,6 @@ function getVisibleConflicts() {
                 );
         }
 
-        /*
-         * Opening WNC always starts on Candidates.
-         */
         state.screen =
             "candidates";
 
@@ -7244,11 +5935,6 @@ function getVisibleConflicts() {
 
         render();
     }
-
-
-    /**********************************************************************
-     * 129. CLOSE UI
-     **********************************************************************/
 
     function closeWnc() {
         const overlay =
@@ -7263,13 +5949,7 @@ function getVisibleConflicts() {
         }
     }
 
-
-    /**********************************************************************
-     * 130. END PART 7
-     **********************************************************************/
-      /**********************************************************************
-     * 131. UI EVENT HANDLING
-     **********************************************************************/
+      
 
     function bindWncEvents(
         overlay
@@ -7280,9 +5960,6 @@ function getVisibleConflicts() {
             return;
         }
 
-        /*
-         * Tabs
-         */
         overlay
             .querySelectorAll(
                 "[data-wnc-tab]"
@@ -7312,12 +5989,6 @@ function getVisibleConflicts() {
                 }
             );
 
-
-        /*
-         * Global candidate template.
-         *
-         * Changing this immediately regenerates every candidate Input.
-         */
         const templateSelect =
             overlay.querySelector(
                 "[data-wnc-template]"
@@ -7336,10 +6007,17 @@ function getVisibleConflicts() {
             );
         }
 
+        const selectorInput = overlay.querySelector("[data-wnc-selector]");
+        const selectorButton = overlay.querySelector("[data-wnc-save-selector]");
 
-        /*
-         * Close.
-         */
+        if (selectorInput && selectorButton) {
+            selectorButton.addEventListener("click", () => {
+                if (!saveChapterSelector(selectorInput.value)) return;
+                runAnalysisSafely();
+                render();
+            });
+        }
+
         const closeButton =
             overlay.querySelector(
                 "[data-wnc-close]"
@@ -7354,10 +6032,6 @@ function getVisibleConflicts() {
             );
         }
 
-
-        /*
-         * Copy generated Input.
-         */
         overlay
             .querySelectorAll(
                 "[data-wnc-copy]"
@@ -7412,10 +6086,6 @@ function getVisibleConflicts() {
                 }
             );
 
-
-        /*
-         * Group sorting.
-         */
         overlay
             .querySelectorAll(
                 "[data-wnc-group-sort]"
@@ -7437,10 +6107,6 @@ function getVisibleConflicts() {
                 }
             );
 
-
-        /*
-         * Rule sorting.
-         */
         overlay
             .querySelectorAll(
                 "[data-wnc-rule-sort]"
@@ -7462,12 +6128,6 @@ function getVisibleConflicts() {
                 }
             );
 
-
-        /*
-         * Expand/collapse individual FoxReplace rules.
-         *
-         * The rule itself is the clickable row.
-         */
         overlay
             .querySelectorAll(
                 "[data-wnc-rule-group]"
@@ -7528,11 +6188,6 @@ function getVisibleConflicts() {
             );
     }
 
-
-    /**********************************************************************
-     * 132. CLIPBOARD
-     **********************************************************************/
-
     async function copyText(
         value
     ) {
@@ -7568,9 +6223,6 @@ function getVisibleConflicts() {
             );
         }
 
-        /*
-         * Fallback for pages where navigator.clipboard is unavailable.
-         */
         try {
             const textarea =
                 document.createElement(
@@ -7623,11 +6275,6 @@ function getVisibleConflicts() {
         }
     }
 
-
-    /**********************************************************************
-     * 133. MENU — OPEN WNC
-     **********************************************************************/
-
     function registerWncMenuCommands() {
         GM_registerMenuCommand(
             "Open Webnovel Cleaner",
@@ -7636,21 +6283,13 @@ function getVisibleConflicts() {
             }
         );
 
-
-        /******************************************************************
-         * Import FoxReplace JSON
-         ******************************************************************/
-
         GM_registerMenuCommand(
             "Import FoxReplace JSON",
             () => {
                 importFoxReplaceJson();
             }
         );
-
-    /**********************************************************************
-     * 134. IMPORT FOXREPLACE JSON
-     **********************************************************************/
+    }
 
     function importFoxReplaceJson() {
         const input =
@@ -7715,11 +6354,6 @@ function getVisibleConflicts() {
         input.click();
     }
 
-
-    /**********************************************************************
-     * 135. FOXREPLACE FILE IMPORT
-     **********************************************************************/
-
     async function importFoxReplaceFile(
         file
     ) {
@@ -7758,40 +6392,9 @@ function getVisibleConflicts() {
         let parsed;
 
         try {
-            parsed =
-                JSON.parse(
-                    text.replace(
-                        /^\uFEFF/,
-                        ""
-                    )
-                );
-        } catch (
-            error
-        ) {
-            throw new Error(
-                "The selected file is not valid JSON."
-            );
-        }
-
-        /*
-         * Some export/import workflows can produce JSON containing a
-         * second JSON string. Support that without assuming it is the
-         * normal FoxReplace format.
-         */
-        if (
-            typeof parsed ===
-                "string"
-        ) {
-            try {
-                parsed =
-                    JSON.parse(
-                        parsed
-                    );
-            } catch {
-                throw new Error(
-                    "The JSON file contains a string rather than a FoxReplace database."
-                );
-            }
+            parsed = parseImportedText(text);
+        } catch (error) {
+            throw error;
         }
 
         const adapted =
@@ -7838,12 +6441,6 @@ function getVisibleConflicts() {
             );
         }
 
-        /*
-         * Important:
-         *
-         * The imported JSON is stored exactly as imported.
-         * It does NOT overwrite the normal WNC database.
-         */
         GM_setValue(
             LAST_IMPORTED_DB_KEY,
             parsed
@@ -7860,9 +6457,6 @@ function getVisibleConflicts() {
 
         analyzePage();
 
-        /*
-         * If WNC is already open, immediately refresh it.
-         */
         render();
 
         alert(
@@ -7873,62 +6467,6 @@ function getVisibleConflicts() {
             ruleCount
         );
     }
-
-
-    /**********************************************************************
-     * 136. FILE READER
-     **********************************************************************/
-
-    async function readFileText(
-        file
-    ) {
-        if (
-            file &&
-            typeof file.text ===
-                "function"
-        ) {
-            return file.text();
-        }
-
-        return new Promise(
-            (
-                resolve,
-                reject
-            ) => {
-                const reader =
-                    new FileReader();
-
-                reader.onload =
-                    () => {
-                        resolve(
-                            String(
-                                reader.result ||
-                                ""
-                            )
-                        );
-                    };
-
-                reader.onerror =
-                    () => {
-                        reject(
-                            new Error(
-                                "Unable to read the selected file."
-                            )
-                        );
-                    };
-
-                reader.readAsText(
-                    file,
-                    "utf-8"
-                );
-            }
-        );
-    }
-
-
-    /**********************************************************************
-     * 137. CURRENT-DATABASE VALIDATION
-     **********************************************************************/
 
 function ensureDatabaseShape() {
     if (
@@ -7947,11 +6485,6 @@ function ensureDatabaseShape() {
 
     return adaptedDatabase;
 }
-
-
-    /**********************************************************************
-     * 138. STARTUP ANALYSIS
-     **********************************************************************/
 
 function initializeWnc() {
     adaptedDatabase =
@@ -7991,11 +6524,6 @@ function initializeWnc() {
     );
 }
 
-
-    /**********************************************************************
-     * 139. PAGE-READY BOOTSTRAP
-     **********************************************************************/
-
     function startWnc() {
         registerWncMenuCommands();
 
@@ -8014,29 +6542,6 @@ function initializeWnc() {
             initializeWnc();
         }
     }
-
-
-    /**********************************************************************
-     * 140. NO MUTATION OBSERVER
-     **********************************************************************/
-
-    /*
-     * Deliberately no MutationObserver is installed.
-     *
-     * WNC analyzes the chapter when:
-     *
-     *   - the userscript starts
-     *   - WNC is opened
-     *   - the chapter selector is changed
-     *   - a FoxReplace database is imported
-     *
-     * It does NOT continuously monitor or modify the page.
-     */
-
-
-    /**********************************************************************
-     * 141. FINAL START
-     **********************************************************************/
 
     startWnc();
 
