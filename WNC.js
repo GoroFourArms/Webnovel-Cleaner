@@ -14,61 +14,14 @@
 (function () {
     "use strict";
 
-    /**********************************************************************
-     * WNC 6.1.27
-     *
-     * ARCHITECTURE
-     *
-     * FoxReplace JSON
-     *      ↓
-     * Raw database preserved unchanged
-     *      ↓
-     * WNC FoxReplace adapter
-     *      ↓
-     * Current-site rules
-     *      ↓
-     * Candidate matching
-     *
-     * Candidate normalization NEVER modifies FoxReplace rules.
-     **********************************************************************/
-
-    /**********************************************************************
-     * 1. CONFIGURATION
-     **********************************************************************/
-
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const LAST_IMPORTED_DB_KEY = "WNC_LAST_IMPORTED_DATABASE_V2";
 
-    /*
-     * Only candidates that remain completely unclustered are subjected
-     * to the 5% frequency cutoff.
-     */
     const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
 
-    /*
-     * Exact scanner required by WNC.
-     *
-     * This deliberately captures complete capitalized phrases.
-     *
-     * Examples:
-     *   He Tao
-     *   John Smith
-     *   U.S.
-     *   Mr. Smith
-     *   WebNovel
-     */
     const CANDIDATE_REGEX =
         /(?<![A-Z0-9'’-])((?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*)(?:\s+(?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*))*)(?![A-Za-z0-9'’-])/g;
 
-    /*
-     * Words that are ignored when they occur by themselves.
-     *
-     * They are NOT removed from larger candidates.
-     *
-     * Therefore:
-     *   The              → filtered
-     *   The Dragon       → retained
-     */
     const FILTER_WORDS = new Set([
         "a",
         "after",
@@ -105,9 +58,6 @@
         "with"
     ]);
 
-    /*
-     * Additional words that should not survive as standalone candidates.
-     */
     const FILTER_ALONE = new Set([
         "ah",
         "do",
@@ -119,12 +69,6 @@
         "you"
     ]);
 
-    /*
-     * These are deliberately NOT singularized.
-     *
-     * Without this, the old trailing-s logic incorrectly changed names
-     * such as James → Jame and Lucas → Luca.
-     */
     const SINGULARIZATION_EXCEPTIONS = new Set([
         "james",
         "davis",
@@ -139,30 +83,13 @@
         "Japanese"
     ];
 
-
-    /**********************************************************************
-     * 2. STATE
-     **********************************************************************/
-
     const state = {
         screen: "candidates",
-
         groupIndex: null,
-
         candidates: [],
-
         groupMatches: [],
-
         conflicts: [],
-
         candidateTemplate: "Other",
-
-        /*
-         * Whether groups with no current candidate matches should also
-         * be displayed.
-         *
-         * Default is false.
-         */
         showOtherGroups: false,
 
         groupSort: {
@@ -178,50 +105,16 @@
         expandedRules: new Set()
     };
 
-
-    /**********************************************************************
-     * 3. INTERNAL DATABASE STATE
-     **********************************************************************/
-
-    /*
-     * rawFoxReplaceDatabase:
-     *
-     * The actual imported object.
-     *
-     * IMPORTANT:
-     * We never normalize candidate names into this object.
-     * We never rewrite its rule inputs.
-     */
     let rawFoxReplaceDatabase = null;
 
-    /*
-     * adaptedDatabase:
-     *
-     * Internal WNC representation derived from the raw database.
-     */
     let adaptedDatabase = {
         groups: []
     };
-
-    /*
-     * Current chapter text.
-     */
-    let chapterText = "";
-
-    /**********************************************************************
-     * 4. GENERIC STORAGE
-     **********************************************************************/
 
     function readStorage(key, fallback = null) {
         try {
             const value = GM_getValue(key, fallback);
 
-            /*
-             * Tampermonkey normally returns an object directly.
-             *
-             * Some environments / older stored values may return JSON
-             * strings, so support both.
-             */
             if (typeof value === "string") {
                 const trimmed = value.trim();
 
@@ -243,7 +136,6 @@
         }
     }
 
-
     function writeStorage(key, value) {
         try {
             GM_setValue(key, value);
@@ -254,25 +146,6 @@
         }
     }
 
-
-    /**********************************************************************
-     * 5. FOXREPLACE TYPE NORMALIZATION
-     **********************************************************************/
-
-    /*
-     * FoxReplace exports use values such as:
-     *
-     *   text
-     *   wholewords
-     *   regexp
-     *
-     * The old WNC importer only recognized "whole".
-     *
-     * That was incorrect.
-     *
-     * This adapter accepts both FoxReplace's real values and common
-     * legacy representations without changing the raw database.
-     */
     function normalizeInputType(value) {
         const text = String(value ?? "")
             .trim()
@@ -304,7 +177,6 @@
         return "text";
     }
 
-
     function normalizeOutputType(value) {
         if (value === undefined || value === null) {
             return 0;
@@ -314,20 +186,12 @@
             .trim()
             .toLowerCase();
 
-        /*
-         * Preserve numeric FoxReplace values.
-         */
         if (/^\d+$/.test(text)) {
             return Number(text);
         }
 
         return value;
     }
-
-
-    /**********************************************************************
-     * 6. FOXREPLACE RULE ADAPTER
-     **********************************************************************/
 
     function firstDefined(object, keys, fallback = undefined) {
         if (!object || typeof object !== "object") {
@@ -346,7 +210,6 @@
 
         return fallback;
     }
-
 
     function normalizeBoolean(value, fallback = false) {
         if (value === undefined || value === null) {
@@ -389,7 +252,6 @@
 
         return fallback;
     }
-
 
     function normalizeRule(rawRule, ruleIndex, groupIndex) {
         if (!rawRule || typeof rawRule !== "object") {
@@ -448,10 +310,6 @@
 
         let inputType = normalizeInputType(inputTypeRaw);
 
-        /*
-         * Some older / alternate databases may expose an explicit
-         * regexp boolean instead of inputType.
-         */
         const explicitRegexp = firstDefined(
             rawRule,
             [
@@ -498,9 +356,6 @@
             true
         );
 
-        /*
-         * If a database explicitly has disabled=true, that wins.
-         */
         if (
             Object.prototype.hasOwnProperty.call(rawRule, "disabled") &&
             normalizeBoolean(rawRule.disabled, false)
@@ -510,21 +365,14 @@
 
         return {
             raw: rawRule,
-
             groupIndex,
             ruleIndex,
-
             input: String(input ?? ""),
             output: String(output ?? ""),
-
             inputType,
-
             outputType: normalizeOutputType(outputTypeRaw),
-
             caseSensitive,
-
             enabled,
-
             html: firstDefined(
                 rawRule,
                 [
@@ -535,11 +383,6 @@
             )
         };
     }
-
-
-    /**********************************************************************
-     * 7. FOXREPLACE GROUP ADAPTER
-     **********************************************************************/
 
     function normalizeUrls(value) {
         if (value === undefined || value === null) {
@@ -561,7 +404,6 @@
 
         return [];
     }
-
 
     function normalizeGroup(rawGroup, groupIndex) {
         if (!rawGroup || typeof rawGroup !== "object") {
@@ -651,20 +493,12 @@
 
         return {
             raw: rawGroup,
-
             index: groupIndex,
-
             name,
-
             urls,
-
             rules,
-
             enabled: disabled ? false : enabled,
 
-            /*
-             * Preserve FoxReplace mode instead of throwing it away.
-             */
             mode: firstDefined(
                 rawGroup,
                 [
@@ -709,24 +543,11 @@
         };
     }
 
-
-    /**********************************************************************
-     * 8. FIND FOXREPLACE GROUP ARRAY
-     **********************************************************************/
-
     function findGroupArray(database) {
         if (!database || typeof database !== "object") {
             return null;
         }
 
-        /*
-         * Most importantly, support the actual FoxReplace export form:
-         *
-         * {
-         *   "version": "2.1",
-         *   "groups": [...]
-         * }
-         */
         const directKeys = [
             "groups",
             "Groups",
@@ -742,9 +563,6 @@
             }
         }
 
-        /*
-         * Some wrapper formats put the database under another object.
-         */
         const wrapperKeys = [
             "data",
             "Data",
@@ -770,12 +588,6 @@
             }
         }
 
-        /*
-         * Last-resort structural detection.
-         *
-         * We only accept an array if its objects actually look like
-         * FoxReplace groups.
-         */
         for (const value of Object.values(database)) {
             if (!Array.isArray(value)) {
                 continue;
@@ -804,11 +616,6 @@
         return null;
     }
 
-
-    /**********************************************************************
-     * 9. FOXREPLACE DATABASE ADAPTER
-     **********************************************************************/
-
     function adaptFoxReplaceDatabase(rawDatabase) {
         if (!rawDatabase || typeof rawDatabase !== "object") {
             throw new Error(
@@ -825,18 +632,18 @@
         }
 
         const adaptedGroups = [];
+
         for (let index = 0; index < groups.length; index++) {
-            const adapted = normalizeGroup(groups[index], index);
+            const adapted = normalizeGroup(
+                groups[index],
+                index
+            );
 
             if (adapted) {
                 adaptedGroups.push(adapted);
             }
         }
 
-        /*
-         * A database with zero groups is technically recognizable,
-         * but it is almost certainly not a useful FoxReplace export.
-         */
         if (
             groups.length > 0 &&
             adaptedGroups.length === 0
@@ -845,6 +652,7 @@
                 "A group array was found, but none of its groups had a recognizable FoxReplace rule structure."
             );
         }
+
         return {
             raw: rawDatabase,
 
@@ -860,11 +668,6 @@
             groups: adaptedGroups
         };
     }
-
-
-    /**********************************************************************
-     * 10. DATABASE VALIDATION
-     **********************************************************************/
 
     function countAdaptedRules(database) {
         if (!database || !Array.isArray(database.groups)) {
@@ -882,7 +685,6 @@
             0
         );
     }
-
 
     function describeDatabase(database) {
         if (!database) {
@@ -904,11 +706,6 @@
         };
     }
 
-
-    /**********************************************************************
-     * 11. LOAD DATABASES
-     **********************************************************************/
-
     function loadNormalDatabase() {
         const stored = readStorage(DB_KEY, null);
 
@@ -927,7 +724,6 @@
             return null;
         }
     }
-
 
     function loadLastImportedDatabase() {
         const stored = readStorage(
@@ -951,12 +747,6 @@
         }
     }
 
-
-    /*
-     * WNC always prefers the most recently imported FoxReplace database.
-     *
-     * The normal database is retained as a fallback.
-     */
     function loadActiveDatabase() {
         return (
             loadLastImportedDatabase() ||
@@ -973,22 +763,9 @@
         );
     }
 
-
-    /**********************************************************************
-     * 12. ACTIVE DATABASE
-     **********************************************************************/
-
-let db = loadActiveDatabase();
-
-
-    /**********************************************************************
-     * 13. ROBUST FOXREPLACE IMPORT
-     **********************************************************************/
+    let db = loadActiveDatabase();
 
     function parseImportedText(text) {
-        /*
-         * Remove UTF-8 BOM if present.
-         */
         let cleaned = String(text ?? "")
             .replace(/^\uFEFF/, "")
             .trim();
@@ -1009,12 +786,6 @@ let db = loadActiveDatabase();
             );
         }
 
-        /*
-         * Some export/wrapper mechanisms can produce a JSON string
-         * containing another JSON document.
-         *
-         * Support that safely.
-         */
         if (typeof parsed === "string") {
             const secondPass = parsed.trim();
 
@@ -1036,7 +807,6 @@ let db = loadActiveDatabase();
 
         return parsed;
     }
-
 
     function readFileText(file) {
         if (
@@ -1068,7 +838,6 @@ let db = loadActiveDatabase();
             reader.readAsText(file);
         });
     }
-
 
     function openImportPicker() {
         const input = document.createElement("input");
@@ -1103,12 +872,6 @@ let db = loadActiveDatabase();
                             parsed
                         );
 
-                    /*
-                     * Store the ORIGINAL FoxReplace JSON.
-                     *
-                     * We do NOT store the normalized WNC adapter as the
-                     * imported database.
-                     */
                     const saved =
                         writeStorage(
                             LAST_IMPORTED_DB_KEY,
@@ -1137,15 +900,7 @@ let db = loadActiveDatabase();
 
                     state.expandedRules.clear();
 
-                    /*
-                     * analyzePage() and render() are defined later.
-                     *
-                     * During execution they will already exist because
-                     * this menu command runs after the complete script
-                     * has initialized.
-                     */
                     analyzePage();
-
                     render();
 
                     const info =
@@ -1188,11 +943,6 @@ let db = loadActiveDatabase();
         input.click();
     }
 
-
-    /**********************************************************************
-     * 14. URL MATCHING
-     **********************************************************************/
-
     function escapeRegex(text) {
         return String(text)
             .replace(
@@ -1201,14 +951,12 @@ let db = loadActiveDatabase();
             );
     }
 
-
     function wildcardToRegex(pattern) {
         return String(pattern)
             .split("*")
             .map(escapeRegex)
             .join(".*");
     }
-
 
     function urlPatternMatches(pattern) {
         const currentUrl =
@@ -1220,9 +968,6 @@ let db = loadActiveDatabase();
         const currentOrigin =
             String(location.origin);
 
-        const currentPath =
-            String(location.pathname);
-
         const rawPattern =
             String(pattern ?? "")
                 .trim();
@@ -1231,9 +976,6 @@ let db = loadActiveDatabase();
             return false;
         }
 
-        /*
-         * /regex/
-         */
         if (
             rawPattern.length >= 2 &&
             rawPattern.startsWith("/") &&
@@ -1263,34 +1005,22 @@ let db = loadActiveDatabase();
             }
         }
 
-        /*
-         * Exact URL.
-         */
         if (rawPattern === currentUrl) {
             return true;
         }
 
-        /*
-         * Hostname-only pattern.
-         */
         if (
             rawPattern === currentHostname
         ) {
             return true;
         }
 
-        /*
-         * Protocol + hostname.
-         */
         if (
             rawPattern === currentOrigin
         ) {
             return true;
         }
 
-        /*
-         * FoxReplace-style wildcard.
-         */
         if (rawPattern.includes("*")) {
             try {
                 const expression =
@@ -1309,10 +1039,6 @@ let db = loadActiveDatabase();
             }
         }
 
-        /*
-         * If a pattern looks like a normal URL or path, support it as a
-         * substring as a practical compatibility fallback.
-         */
         if (
             rawPattern.includes("://") ||
             rawPattern.startsWith("/")
@@ -1322,9 +1048,6 @@ let db = loadActiveDatabase();
             );
         }
 
-        /*
-         * Bare host / site string.
-         */
         return (
             currentHostname
                 .toLowerCase()
@@ -1334,19 +1057,11 @@ let db = loadActiveDatabase();
         );
     }
 
-
-    /**********************************************************************
-     * 15. CURRENT-SITE GROUP FILTER
-     **********************************************************************/
-
     function groupMatchesCurrentSite(group) {
         if (!group || !group.enabled) {
             return false;
         }
 
-        /*
-         * An explicitly URL-targeted group must match the current page.
-         */
         if (
             Array.isArray(group.urls) &&
             group.urls.length > 0
@@ -1356,19 +1071,8 @@ let db = loadActiveDatabase();
             );
         }
 
-        /*
-         * FoxReplace databases can contain groups without URL patterns.
-         *
-         * Rather than silently throwing those groups away, treat an
-         * enabled group with no URL restriction as global.
-         */
         return true;
     }
-
-
-    /**********************************************************************
-     * 16. CURRENT-SITE RULES
-     **********************************************************************/
 
     function getCurrentSiteGroups() {
         if (
@@ -1382,7 +1086,6 @@ let db = loadActiveDatabase();
             groupMatchesCurrentSite
         );
     }
-
 
     function getCurrentSiteRules() {
         const groups =
@@ -1412,23 +1115,6 @@ let db = loadActiveDatabase();
         return result;
     }
 
-
-    /**********************************************************************
-     * 17. CHAPTER SELECTOR STORAGE
-     **********************************************************************/
-
-    function getHostnameStorageKey() {
-        return (
-            `${CHAPTER_SELECTOR_KEY}:` +
-            location.hostname
-        );
-    }
-
-
-    /**********************************************************************
-     * 18. BASIC DOM HELPERS
-     **********************************************************************/
-
     function elementHasUsefulText(element) {
         if (!element) {
             return false;
@@ -1441,19 +1127,8 @@ let db = loadActiveDatabase();
                 ""
             ).trim();
 
-        /*
-         * Avoid selecting tiny navigation / title containers.
-         */
         return text.length >= 100;
     }
-
-
-    /**********************************************************************
-     * 19. PLACEHOLDERS FOR LATER PARTS
-     *
-     * These declarations allow Part 1 to be pasted before the remaining
-     * parts without changing the architecture.
-     **********************************************************************/
 
     function analyzePage() {
         /*
@@ -1461,35 +1136,14 @@ let db = loadActiveDatabase();
          */
     }
 
-
     function render() {
         /*
          * Implemented in Part 7.
          */
     }
 
-
     /**********************************************************************
-     * END OF PART 1
-     **********************************************************************/
-
-    /*
-     * Do not add another userscript wrapper around the following parts.
-     *
-     * Part 2 continues directly inside this same:
-     *
-     * (function () {
-     *     "use strict";
-     *
-     *     ...
-     *
-     * })();
-     *
-     * wrapper.
-     */
-
-    /**********************************************************************
-     * 23. CANDIDATE REGEX
+     * 19. CANDIDATE REGEX
      **********************************************************************/
 
     /*
