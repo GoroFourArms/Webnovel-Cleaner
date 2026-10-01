@@ -222,3 +222,19 @@ generateKoreanInput
 Added safe candidate validation.
 
 Uses the normalized candidate name as the Korean template input.
+
+Chapter Container
+
+Removed site-specific chapter selector storage and the fixed selector fallback hierarchy.
+
+Chapter containers are now detected automatically from the page DOM.
+
+Container selection considers usable text and meaningful child content.
+
+A parent container is rejected when it adds less than 10% more usable text than its child.
+
+The most specific suitable container is therefore preferred when the parent contains essentially the same chapter text.
+
+The document body remains the final fallback when no suitable container is detected.
+
+This removes unnecessary selector persistence and manual configuration while keeping chapter-container detection automatic.
