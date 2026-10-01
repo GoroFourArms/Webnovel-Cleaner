@@ -142,3 +142,83 @@
 
 * `node --check WNC_6.1.29.js` passes.
 * All seven parts are sequential slices of the same validated script.
+
+* buildConflictData
+
+Replaced the conflict data structure so it matches the fields consumed by the conflict renderer.
+
+Changes:
+- Added candidateName.
+- Added frequency.
+- Added type.
+- Added groupName.
+- Added rule.
+- Added ruleInput.
+- Added ruleOutput.
+- Preserved candidate and group objects.
+- Added clusterId with a safe fallback.
+- Handles missing classifications and match arrays safely.
+- Uses exact/partial match type when creating individual conflict records.
+- Creates one display conflict per conflicting rule instead of one record containing incompatible nested data.
+- Removed the unused groups array construction.
+
+- buildCandidateResults
+
+Removed the unused adaptedDatabase argument from classifyCandidate().
+
+Added an array guard so the function always receives an iterable array.
+
+Kept candidate generation unchanged.
+
+This is a cleanup of the candidate-processing call chain. It does not by itself explain the reported "expected expression, got ')'" error; the supplied portions contain no clearly unmatched parenthesis.
+getConflictGroups
+
+Replaced the function with explicit array validation.
+
+The function now safely handles:
+- Missing conflict data.
+- Missing exact/partial arrays.
+- Missing group entries.
+- Duplicate groups.
+
+No functional change is intended for valid conflict data.
+getConflictGroupNames
+
+Simplified the function while preserving its behavior.
+
+It now directly maps the validated groups returned by getConflictGroups().
+getConflictRuleEntries
+
+Added validation for the conflict object, exact/partial arrays, group objects, and rule objects.
+
+Preserved the exact/partial classification and returned structure.
+escapeRegexLiteral
+
+Normalized the input to a safe string before escaping regex metacharacters.
+
+Kept the function limited to literal regex escaping.
+normalizeGeneratedInputSpacing
+
+Normalizes repeated whitespace to a single space and trims leading/trailing whitespace.
+
+Handles null or undefined values safely.
+generateOtherInput
+
+Added safe handling for missing candidates.
+
+Uses the available candidate name fields in priority order and normalizes the generated input.
+isHyphenVariantCandidate
+
+Added safe handling for missing candidates.
+
+Checks standard and Unicode hyphen/dash characters without modifying the candidate.
+replaceSpacesAndHyphens
+
+Normalizes whitespace and standard/Unicode hyphen characters as one separator.
+
+Handles missing values safely.
+generateKoreanInput
+
+Added safe candidate validation.
+
+Uses the normalized candidate name as the Korean template input.
