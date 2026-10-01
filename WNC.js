@@ -3339,6 +3339,10 @@ function buildConflictData(classifications) {
 
     let discoveryOrder = 0;
 
+    if (!Array.isArray(classifications)) {
+        return conflicts;
+    }
+
     for (const item of classifications) {
         if (
             !item ||
@@ -3350,296 +3354,250 @@ function buildConflictData(classifications) {
         const matches =
             item.matches || {};
 
+        const exact =
+            Array.isArray(matches.exact)
+                ? matches.exact
+                : [];
+
+        const partial =
+            Array.isArray(matches.partial)
+                ? matches.partial
+                : [];
+
         const allMatches =
             Array.isArray(matches.all)
                 ? matches.all
-                : [];
+                : [
+                    ...exact,
+                    ...partial
+                ];
 
-        const groupNames = [];
+        const candidate =
+            item.candidate || {};
 
-        for (const match of allMatches) {
-            const name =
-                match?.group?.name;
+        const conflictMatches =
+            allMatches.length
+                ? allMatches
+                : [
+                    ...exact,
+                    ...partial
+                ];
 
+        for (
+            const match
+            of conflictMatches
+        ) {
             if (
-                name &&
-                !groupNames.includes(name)
+                !match ||
+                !match.group
             ) {
-                groupNames.push(name);
+                continue;
             }
+
+            const group =
+                match.group;
+
+            const rule =
+                match.rule || {};
+
+            const type =
+                exact.includes(match)
+                    ? "exact"
+                    : "partial";
+
+            conflicts.push({
+                id:
+                    `conflict-${discoveryOrder + 1}`,
+
+                discoveryOrder:
+                    discoveryOrder++,
+
+                candidate,
+
+                candidateName:
+                    candidate.name || "",
+
+                frequency:
+                    Number(
+                        candidate.frequency
+                    ) || 0,
+
+                clusterId:
+                    Number.isFinite(
+                        candidate.clusterId
+                    )
+                        ? candidate.clusterId
+                        : 0,
+
+                type,
+
+                groupName:
+                    group.name ||
+                    "(Unnamed group)",
+
+                group,
+
+                rule,
+
+                ruleInput:
+                    rule.input || "",
+
+                ruleOutput:
+                    rule.output || ""
+            });
         }
-
-        conflicts.push({
-            id:
-                `conflict-${discoveryOrder + 1}`,
-
-            discoveryOrder:
-                discoveryOrder++,
-
-            candidate:
-                item.candidate,
-
-            groups:
-                groupNames,
-
-            matches:
-                allMatches,
-
-            exact:
-                Array.isArray(matches.exact)
-                    ? matches.exact
-                    : [],
-
-            partial:
-                Array.isArray(matches.partial)
-                    ? matches.partial
-                    : []
-        });
     }
 
     return conflicts;
 }
 
-    function getConflictGroups(
-        conflict
-    ) {
-        const groups = [];
+function getConflictGroups(conflict) {
+    const groups = [];
+    const seen = new Set();
 
-        const seen = new Set();
-
-        const entries = [
-            ...(conflict?.exact || []),
-            ...(conflict?.partial || [])
-        ];
-
-        for (
-            const entry
-            of entries
-        ) {
-            const index =
-                entry.group.index;
-
-            if (
-                seen.has(index)
-            ) {
-                continue;
-            }
-
-            seen.add(index);
-
-            groups.push(
-                entry.group
-            );
-        }
-
+    if (!conflict) {
         return groups;
     }
 
-    function getConflictGroupNames(
-        conflict
-    ) {
-        return getConflictGroups(
-            conflict
-        ).map(
-            group =>
-                group.name ||
-                "(Unnamed group)"
-        );
+    const entries = [
+        ...(Array.isArray(conflict.exact) ? conflict.exact : []),
+        ...(Array.isArray(conflict.partial) ? conflict.partial : [])
+    ];
+
+    for (const entry of entries) {
+        if (!entry || !entry.group) {
+            continue;
+        }
+
+        const index = entry.group.index;
+
+        if (seen.has(index)) {
+            continue;
+        }
+
+        seen.add(index);
+        groups.push(entry.group);
     }
 
-    function getConflictRuleEntries(
-        conflict
-    ) {
-        const entries = [];
+    return groups;
+}
+function getConflictGroupNames(conflict) {
+    return getConflictGroups(conflict).map(
+        group =>
+            group.name ||
+            "(Unnamed group)"
+    );
+}
 
-        for (
-            const entry
-            of conflict?.exact || []
-        ) {
-            entries.push({
-                type: "exact",
+function getConflictRuleEntries(conflict) {
+    const entries = [];
 
-                group:
-                    entry.group,
-
-                rule:
-                    entry.rule
-            });
-        }
-
-        for (
-            const entry
-            of conflict?.partial || []
-        ) {
-            entries.push({
-                type: "partial",
-
-                group:
-                    entry.group,
-
-                rule:
-                    entry.rule
-            });
-        }
-
+    if (!conflict) {
         return entries;
     }
 
+    const exact =
+        Array.isArray(conflict.exact)
+            ? conflict.exact
+            : [];
+
+    const partial =
+        Array.isArray(conflict.partial)
+            ? conflict.partial
+            : [];
+
+    for (const entry of exact) {
+        if (!entry || !entry.group || !entry.rule) {
+            continue;
+        }
+
+        entries.push({
+            type: "exact",
+            group: entry.group,
+            rule: entry.rule
+        });
+    }
+
+    for (const entry of partial) {
+        if (!entry || !entry.group || !entry.rule) {
+            continue;
+        }
+
+        entries.push({
+            type: "partial",
+            group: entry.group,
+            rule: entry.rule
+        });
+    }
+
+    return entries;
+}
+
       
+function escapeRegexLiteral(value) {
+    return String(value ?? "").replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+    );
+}
+function normalizeGeneratedInputSpacing(value) {
+    return String(value ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
 
-    function escapeRegexLiteral(
-        value
-    ) {
-        return String(
-            value ?? ""
-        ).replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-        );
+function generateOtherInput(candidate) {
+    if (!candidate) {
+        return "";
     }
 
-    function normalizeGeneratedInputSpacing(
-        value
-    ) {
-        return String(
-            value ?? ""
-        )
-            .trim()
-            .replace(
-                /\s+/g,
-                " "
-            );
+    const name =
+        candidate.name ||
+        candidate.displayName ||
+        candidate.text ||
+        "";
+
+    return normalizeGeneratedInputSpacing(name);
+}
+
+function isHyphenVariantCandidate(candidate) {
+    if (!candidate) {
+        return false;
     }
 
-    function generateOtherInput(
-        candidate
-    ) {
-        const value =
-            normalizeGeneratedInputSpacing(
-                candidate?.name ??
-                candidate?.normalized ??
-                ""
-            );
+    const name =
+        candidate.name ||
+        candidate.displayName ||
+        candidate.text ||
+        "";
 
-        if (!value) {
-            return "";
-        }
+    return /[-\u2010\u2011\u2012\u2013\u2014]/.test(
+        String(name)
+    );
+}
+    
+function replaceSpacesAndHyphens(value, replacement) {
+    const text = String(value ?? "");
+    const joiner = String(replacement ?? "");
 
-        const escaped =
-            escapeRegexLiteral(
-                value
-            );
+    return text
+        .replace(/[\s\u2010\u2011\u2012\u2013\u2014-]+/g, joiner)
+        .trim();
+}
 
-        return (
-            "(?<![a-z])" +
-            escaped +
-            "(?![a-z])"
-        );
+function generateKoreanInput(candidate) {
+    if (!candidate) {
+        return "";
     }
 
-    function isHyphenVariantCandidate(
-        value
-    ) {
-        return /[-‐-‒–—―]/.test(
-            String(value ?? "")
-        );
-    }
+    const name =
+        candidate.name ||
+        candidate.displayName ||
+        candidate.text ||
+        "";
 
-    function replaceSpacesAndHyphens(
-        value
-    ) {
-        return String(
-            value ?? ""
-        )
-            .trim()
-            .replace(
-                /\s+/g,
-                " "
-            )
-            .replace(
-                /[-‐-‒–—―]+/g,
-                "-"
-            );
-    }
-
-    function generateKoreanInput(
-        candidate
-    ) {
-        const value =
-            normalizeGeneratedInputSpacing(
-                candidate?.name ??
-                candidate?.normalized ??
-                ""
-            );
-
-        if (!value) {
-            return "";
-        }
-
-        const tokens =
-            splitCandidateTokens(
-                value
-            );
-
-        if (
-            tokens.length <= 1
-        ) {
-            return (
-                "(?<![a-z])" +
-                escapeRegexLiteral(
-                    value
-                ) +
-                "(?![a-z])"
-            );
-        }
-
-        const remainingTokens =
-            tokens.slice(1);
-
-        const remaining =
-            remainingTokens.join(
-                " "
-            );
-
-        const escapedTokens =
-            remainingTokens.map(
-                escapeRegexLiteral
-            );
-
-        const flexible =
-            escapedTokens.join(
-                "[\\s-]+"
-            );
-
-        const alternatives = [
-            flexible
-        ];
-
-        if (
-            remaining !== value
-        ) {
-            alternatives.push(
-                escapeRegexLiteral(
-                    remaining
-                )
-            );
-        }
-
-        const uniqueAlternatives =
-            Array.from(
-                new Set(
-                    alternatives
-                )
-            );
-
-        return (
-            "(?<![A-Za-z0-9'’-])(?:" +
-            uniqueAlternatives.join(
-                "|"
-            ) +
-            ")(?![A-Za-z0-9'’-])"
-        );
-    }
+    return normalizeGeneratedInputSpacing(name);
+}
 
     function generateJapaneseInput(
         candidate
@@ -3859,41 +3817,35 @@ function buildConflictData(classifications) {
         state.expandedRules.clear();
     }
 
-    function buildCandidateResults(
-        processedCandidates
-    ) {
-        const candidates = [];
+function buildCandidateResults(processedCandidates) {
+    if (!Array.isArray(processedCandidates)) {
+        return [];
+    }
 
-        for (
-            const candidate
-            of processedCandidates
+    const candidates = [];
+
+    for (const candidate of processedCandidates) {
+        const classification =
+            classifyCandidate(candidate);
+
+        if (
+            classification.classification !==
+            "candidate"
         ) {
-            const classification =
-                classifyCandidate(
-                    candidate,
-                    adaptedDatabase
-                );
-
-if (
-    classification.classification !==
-    "candidate"
-) {
-    continue;
-}
-
-            candidate.generatedInput =
-                generateCandidateInput(
-                    candidate,
-                    state.candidateTemplate
-                );
-
-            candidates.push(
-                candidate
-            );
+            continue;
         }
 
-        return candidates;
+        candidate.generatedInput =
+            generateCandidateInput(
+                candidate,
+                state.candidateTemplate
+            );
+
+        candidates.push(candidate);
     }
+
+    return candidates;
+}
 
 function analyzePage() {
     clearAnalysisResults();
