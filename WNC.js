@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.29
+// @version      6.1.30
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -15,9 +15,6 @@
 
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const LAST_IMPORTED_DB_KEY = "WNC_LAST_IMPORTED_DATABASE_V2";
-    const CHAPTER_SELECTOR_KEY = "WNC_CHAPTER_SELECTORS_V1";
-    const DEFAULT_CHAPTER_SELECTORS = [".entry-content", ".text-left", "article", "main", ".prose"];
-
     const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
 
     const CANDIDATE_REGEX =
@@ -92,17 +89,14 @@
         conflicts: [],
         candidateTemplate: "Other",
         showOtherGroups: false,
-
         groupSort: {
             column: "original",
             direction: 0
         },
-
         ruleSort: {
             column: "original",
             direction: 0
         },
-
         expandedRules: new Set()
     };
 
@@ -464,7 +458,11 @@
 
         const rules = rawRules
             .map((rule, ruleIndex) =>
-                normalizeRule(rule, ruleIndex, groupIndex)
+                normalizeRule(
+                    rule,
+                    ruleIndex,
+                    groupIndex
+                )
             )
             .filter(Boolean);
 
@@ -501,7 +499,6 @@
             urls,
             rules,
             enabled: disabled ? false : enabled,
-
             mode: firstDefined(
                 rawGroup,
                 [
@@ -510,7 +507,6 @@
                 ],
                 null
             ),
-
             pageLoad: normalizeBoolean(
                 firstDefined(
                     rawGroup,
@@ -522,7 +518,6 @@
                 ),
                 true
             ),
-
             auto: normalizeBoolean(
                 firstDefined(
                     rawGroup,
@@ -534,7 +529,6 @@
                 ),
                 true
             ),
-
             html: firstDefined(
                 rawGroup,
                 [
@@ -636,7 +630,11 @@
 
         const adaptedGroups = [];
 
-        for (let index = 0; index < groups.length; index++) {
+        for (
+            let index = 0;
+            index < groups.length;
+            index++
+        ) {
             const adapted = normalizeGroup(
                 groups[index],
                 index
@@ -658,7 +656,6 @@
 
         return {
             raw: rawDatabase,
-
             version: firstDefined(
                 rawDatabase,
                 [
@@ -667,18 +664,23 @@
                 ],
                 null
             ),
-
             groups: adaptedGroups
         };
     }
 
     function countAdaptedRules(database) {
-        if (!database || !Array.isArray(database.groups)) {
+        if (
+            !database ||
+            !Array.isArray(database.groups)
+        ) {
             return 0;
         }
 
         return database.groups.reduce(
-            (total, group) =>
+            (
+                total,
+                group
+            ) =>
                 total +
                 (
                     Array.isArray(group.rules)
@@ -699,25 +701,34 @@
         }
 
         return {
-            groups: Array.isArray(database.groups)
-                ? database.groups.length
-                : 0,
-
-            rules: countAdaptedRules(database),
-
-            version: database.version
+            groups:
+                Array.isArray(database.groups)
+                    ? database.groups.length
+                    : 0,
+            rules:
+                countAdaptedRules(
+                    database
+                ),
+            version:
+                database.version
         };
     }
 
     function loadNormalDatabase() {
-        const stored = readStorage(DB_KEY, null);
+        const stored =
+            readStorage(
+                DB_KEY,
+                null
+            );
 
         if (!stored) {
             return null;
         }
 
         try {
-            return adaptFoxReplaceDatabase(stored);
+            return adaptFoxReplaceDatabase(
+                stored
+            );
         } catch (error) {
             console.warn(
                 "WNC normal database could not be adapted:",
@@ -729,17 +740,20 @@
     }
 
     function loadLastImportedDatabase() {
-        const stored = readStorage(
-            LAST_IMPORTED_DB_KEY,
-            null
-        );
+        const stored =
+            readStorage(
+                LAST_IMPORTED_DB_KEY,
+                null
+            );
 
         if (!stored) {
             return null;
         }
 
         try {
-            return adaptFoxReplaceDatabase(stored);
+            return adaptFoxReplaceDatabase(
+                stored
+            );
         } catch (error) {
             console.warn(
                 "WNC last imported database could not be adapted:",
@@ -758,20 +772,25 @@
                 raw: {
                     groups: []
                 },
-
                 version: null,
-
                 groups: []
             }
         );
     }
 
-    let db = loadActiveDatabase();
+    let db =
+        loadActiveDatabase();
 
     function parseImportedText(text) {
-        let cleaned = String(text ?? "")
-            .replace(/^\uFEFF/, "")
-            .trim();
+        let cleaned =
+            String(
+                text ?? ""
+            )
+                .replace(
+                    /^\uFEFF/,
+                    ""
+                )
+                .trim();
 
         if (!cleaned) {
             throw new Error(
@@ -782,24 +801,36 @@
         let parsed;
 
         try {
-            parsed = JSON.parse(cleaned);
-        } catch (error) {
+            parsed =
+                JSON.parse(
+                    cleaned
+                );
+        } catch {
             throw new Error(
                 "The selected file is not valid JSON."
             );
         }
 
-        if (typeof parsed === "string") {
-            const secondPass = parsed.trim();
+        if (
+            typeof parsed ===
+            "string"
+        ) {
+            const secondPass =
+                parsed.trim();
 
             if (
-                secondPass.startsWith("{") ||
-                secondPass.startsWith("[")
+                secondPass.startsWith(
+                    "{"
+                ) ||
+                secondPass.startsWith(
+                    "["
+                )
             ) {
                 try {
-                    parsed = JSON.parse(
-                        secondPass
-                    );
+                    parsed =
+                        JSON.parse(
+                            secondPass
+                        );
                 } catch {
                     throw new Error(
                         "The file contains a JSON string, but the embedded JSON is invalid."
@@ -814,42 +845,61 @@
     function readFileText(file) {
         if (
             file &&
-            typeof file.text === "function"
+            typeof file.text ===
+                "function"
         ) {
             return file.text();
         }
 
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
+        return new Promise(
+            (
+                resolve,
+                reject
+            ) => {
+                const reader =
+                    new FileReader();
 
-            reader.onload = () => {
-                resolve(
-                    String(
-                        reader.result ?? ""
-                    )
+                reader.onload =
+                    () => {
+                        resolve(
+                            String(
+                                reader.result ??
+                                ""
+                            )
+                        );
+                    };
+
+                reader.onerror =
+                    () => {
+                        reject(
+                            new Error(
+                                "The browser could not read the selected file."
+                            )
+                        );
+                    };
+
+                reader.readAsText(
+                    file
                 );
-            };
-
-            reader.onerror = () => {
-                reject(
-                    new Error(
-                        "The browser could not read the selected file."
-                    )
-                );
-            };
-
-            reader.readAsText(file);
-        });
+            }
+        );
     }
 
     function openImportPicker() {
-        const input = document.createElement("input");
+        const input =
+            document.createElement(
+                "input"
+            );
 
         input.type = "file";
-        input.accept = ".json,application/json";
-        input.style.display = "none";
+        input.accept =
+            ".json,application/json";
+        input.style.display =
+            "none";
 
-        document.body.appendChild(input);
+        document.body.appendChild(
+            input
+        );
 
         input.addEventListener(
             "change",
@@ -865,10 +915,14 @@
 
                 try {
                     const text =
-                        await readFileText(file);
+                        await readFileText(
+                            file
+                        );
 
                     const parsed =
-                        parseImportedText(text);
+                        parseImportedText(
+                            text
+                        );
 
                     const adapted =
                         adaptFoxReplaceDatabase(
@@ -947,15 +1001,18 @@
     }
 
     function escapeRegex(text) {
-        return String(text)
-            .replace(
-                /[.*+?^${}()|[\]\\]/g,
-                "\\$&"
-            );
+        return String(
+            text
+        ).replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+        );
     }
 
     function wildcardToRegex(pattern) {
-        return String(pattern)
+        return String(
+            pattern
+        )
             .split("*")
             .map(escapeRegex)
             .join(".*");
@@ -972,8 +1029,9 @@
             String(location.origin);
 
         const rawPattern =
-            String(pattern ?? "")
-                .trim();
+            String(
+                pattern ?? ""
+            ).trim();
 
         if (!rawPattern) {
             return false;
@@ -1002,29 +1060,38 @@
                 return new RegExp(
                     expression,
                     flags
-                ).test(currentUrl);
+                ).test(
+                    currentUrl
+                );
             } catch {
                 return false;
             }
         }
 
-        if (rawPattern === currentUrl) {
-            return true;
-        }
-
         if (
-            rawPattern === currentHostname
+            rawPattern ===
+            currentUrl
         ) {
             return true;
         }
 
         if (
-            rawPattern === currentOrigin
+            rawPattern ===
+            currentHostname
         ) {
             return true;
         }
 
-        if (rawPattern.includes("*")) {
+        if (
+            rawPattern ===
+            currentOrigin
+        ) {
+            return true;
+        }
+
+        if (
+            rawPattern.includes("*")
+        ) {
             try {
                 const expression =
                     "^" +
@@ -1036,14 +1103,18 @@
                 return new RegExp(
                     expression,
                     "i"
-                ).test(currentUrl);
+                ).test(
+                    currentUrl
+                );
             } catch {
                 return false;
             }
         }
 
         if (
-            rawPattern.includes("://") ||
+            rawPattern.includes(
+                "://"
+            ) ||
             rawPattern.startsWith("/")
         ) {
             return currentUrl.includes(
@@ -1051,17 +1122,20 @@
             );
         }
 
-        return (
-            currentHostname
-                .toLowerCase()
-                .includes(
-                    rawPattern.toLowerCase()
-                )
-        );
+        return currentHostname
+            .toLowerCase()
+            .includes(
+                rawPattern.toLowerCase()
+            );
     }
 
-    function groupMatchesCurrentSite(group) {
-        if (!group || !group.enabled) {
+    function groupMatchesCurrentSite(
+        group
+    ) {
+        if (
+            !group ||
+            !group.enabled
+        ) {
             return false;
         }
 
@@ -1080,7 +1154,9 @@
     function getCurrentSiteGroups() {
         if (
             !db ||
-            !Array.isArray(db.groups)
+            !Array.isArray(
+                db.groups
+            )
         ) {
             return [];
         }
@@ -1096,15 +1172,25 @@
 
         const result = [];
 
-        for (const group of groups) {
+        for (
+            const group
+            of groups
+        ) {
             if (
-                !Array.isArray(group.rules)
+                !Array.isArray(
+                    group.rules
+                )
             ) {
                 continue;
             }
 
-            for (const rule of group.rules) {
-                if (!rule.enabled) {
+            for (
+                const rule
+                of group.rules
+            ) {
+                if (
+                    !rule.enabled
+                ) {
                     continue;
                 }
 
@@ -1118,30 +1204,18 @@
         return result;
     }
 
-    function elementHasUsefulText(element) {
-        if (!element) {
-            return false;
-        }
-
-        const text =
-            String(
-                element.innerText ??
-                element.textContent ??
-                ""
-            ).trim();
-
-        return text.length >= 100;
-    }
-
     function resetCandidateRegex() {
-        CANDIDATE_REGEX.lastIndex = 0;
+        CANDIDATE_REGEX.lastIndex =
+            0;
     }
 
     function shouldFilterStandaloneCandidate(
         candidate
     ) {
         const normalized =
-            String(candidate ?? "")
+            String(
+                candidate ?? ""
+            )
                 .trim()
                 .toLowerCase();
 
@@ -1150,7 +1224,9 @@
         }
 
         if (
-            !/\s/.test(normalized)
+            !/\s/.test(
+                normalized
+            )
         ) {
             if (
                 FILTER_WORDS.has(
@@ -1193,7 +1269,6 @@
                     )
             ) !== null
         ) {
-
             const candidate =
                 String(
                     match[1] ?? ""
@@ -1213,9 +1288,7 @@
 
             occurrences.push({
                 text: candidate,
-
                 start: match.index,
-
                 end:
                     match.index +
                     match[0].length
@@ -1236,61 +1309,166 @@
             .filter(Boolean);
     }
 
-    function normalizeCandidateToken(token) {
-        let word = String(token ?? "").trim();
+    function normalizeCandidateToken(
+        token
+    ) {
+        let word =
+            String(
+                token ?? ""
+            ).trim();
 
         if (!word) {
             return "";
         }
 
-        word = word.replace(/[’‘]/g, "'");
+        word =
+            word.replace(
+                /[’‘]/g,
+                "'"
+            );
 
-        if (SINGULARIZATION_EXCEPTIONS.has(word.toLowerCase())) {
+        if (
+            SINGULARIZATION_EXCEPTIONS.has(
+                word.toLowerCase()
+            )
+        ) {
             return word;
         }
 
-        if (/'s$/i.test(word)) {
-            word = word.replace(/'s$/i, "");
-        } else if (/s'$/i.test(word)) {
-            word = word.slice(0, -1);
+        if (
+            /'s$/i.test(
+                word
+            )
+        ) {
+            word =
+                word.replace(
+                    /'s$/i,
+                    ""
+                );
+        } else if (
+            /s'$/i.test(
+                word
+            )
+        ) {
+            word =
+                word.slice(
+                    0,
+                    -1
+                );
         }
 
         if (!word) {
             return "";
         }
 
-        if (SINGULARIZATION_EXCEPTIONS.has(word.toLowerCase())) {
+        if (
+            SINGULARIZATION_EXCEPTIONS.has(
+                word.toLowerCase()
+            )
+        ) {
             return word;
         }
 
-        if (word.length <= 3) {
+        if (
+            word.length <= 3
+        ) {
             return word;
         }
 
-        if (/[^aeiou]ies$/i.test(word)) {
-            return word.replace(/ies$/i, "y");
+        if (
+            /[^aeiou]ies$/i.test(
+                word
+            )
+        ) {
+            return word.replace(
+                /ies$/i,
+                "y"
+            );
         }
 
-        if (/ches$/i.test(word) || /shes$/i.test(word) || /xes$/i.test(word) || /zes$/i.test(word)) {
-            return word.replace(/es$/i, "");
+        if (
+            /ches$/i.test(word) ||
+            /shes$/i.test(word) ||
+            /xes$/i.test(word) ||
+            /zes$/i.test(word)
+        ) {
+            return word.replace(
+                /es$/i,
+                ""
+            );
         }
 
-        if (/sses$/i.test(word)) {
-            return word.replace(/es$/i, "");
+        if (
+            /sses$/i.test(
+                word
+            )
+        ) {
+            return word.replace(
+                /es$/i,
+                ""
+            );
         }
 
-        if (/oes$/i.test(word)) {
-            return word.slice(0, -1);
+        if (
+            /oes$/i.test(
+                word
+            )
+        ) {
+            return word.slice(
+                0,
+                -1
+            );
         }
 
-        if (/ves$/i.test(word)) {
-            const lower = word.toLowerCase();
-            if (lower.endsWith("leaves")) return word.slice(0, -3) + "f";
-            if (lower.endsWith("wolves")) return word.slice(0, -3) + "f";
+        if (
+            /ves$/i.test(
+                word
+            )
+        ) {
+            const lower =
+                word.toLowerCase();
+
+            if (
+                lower.endsWith(
+                    "leaves"
+                )
+            ) {
+                return (
+                    word.slice(
+                        0,
+                        -3
+                    ) +
+                    "f"
+                );
+            }
+
+            if (
+                lower.endsWith(
+                    "wolves"
+                )
+            ) {
+                return (
+                    word.slice(
+                        0,
+                        -3
+                    ) +
+                    "f"
+                );
+            }
         }
 
-        if (/s$/i.test(word) && !/ss$/i.test(word) && !/[aeiou]us$/i.test(word) && !/is$/i.test(word) && !/os$/i.test(word) && !/as$/i.test(word)) {
-            return word.slice(0, -1);
+        if (
+            /s$/i.test(word) &&
+            !/ss$/i.test(word) &&
+            !/[aeiou]us$/i.test(word) &&
+            !/is$/i.test(word) &&
+            !/os$/i.test(word) &&
+            !/as$/i.test(word)
+        ) {
+            return word.slice(
+                0,
+                -1
+            );
         }
 
         return word;
@@ -1314,7 +1492,6 @@
     ) {
         return {
             original: text,
-
             normalized:
                 normalizeCandidate(
                     text
@@ -1358,18 +1535,18 @@
                 continue;
             }
 
-            if (!map.has(normalized)) {
+            if (
+                !map.has(
+                    normalized
+                )
+            ) {
                 map.set(
                     normalized,
                     {
                         name: original,
-
                         normalized,
-
                         frequency: 0,
-
                         variants: new Map(),
-
                         occurrences: []
                     }
                 );
@@ -1407,13 +1584,20 @@
     ) {
         if (
             !candidate ||
-            !(candidate.variants instanceof Map)
+            !(
+                candidate.variants
+                instanceof Map
+            )
         ) {
-            return candidate?.name || "";
+            return (
+                candidate?.name ||
+                ""
+            );
         }
 
         let bestName =
-            candidate.name || "";
+            candidate.name ||
+            "";
 
         let bestFrequency =
             0;
@@ -1482,59 +1666,261 @@
         return merged;
     }
 
-function getSavedChapterSelector() {
-    const saved = readStorage(CHAPTER_SELECTOR_KEY, {});
-    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return "";
-    return String(saved[location.hostname.toLowerCase()] ?? "").trim();
-}
-
-function saveChapterSelector(selector) {
-    const host = location.hostname.toLowerCase();
-    const saved = readStorage(CHAPTER_SELECTOR_KEY, {});
-    const selectors = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
-    const value = String(selector ?? "").trim();
-    if (value) selectors[host] = value;
-    else delete selectors[host];
-    return writeStorage(CHAPTER_SELECTOR_KEY, selectors);
-}
-
-function getChapterScanInfo() {
-    const host = location.hostname.toLowerCase();
-    const saved = readStorage(CHAPTER_SELECTOR_KEY, {});
-    const custom = typeof saved === "object" && !Array.isArray(saved) ? String(saved[host] ?? "").trim() : "";
-    const selectors = custom ? [custom, ...DEFAULT_CHAPTER_SELECTORS] : DEFAULT_CHAPTER_SELECTORS;
-
-    let selectorError = null;
-
-    for (const selector of selectors) {
-        try {
-            const element = document.querySelector(selector);
-            if (element && elementHasUsefulText(element)) {
-                const text = String(element.innerText ?? element.textContent ?? "")
-                    .replace(/\u00A0/g, " ")
-                    .replace(/\r/g, "")
-                    .trim();
-                return { container: element, selector, text, error: null };
-            }
-        } catch (error) {
-            if (selector === custom) selectorError = error;
+    function getElementTextLength(
+        element
+    ) {
+        if (!element) {
+            return 0;
         }
+
+        return String(
+            element.innerText ??
+            element.textContent ??
+            ""
+        )
+            .replace(
+                /\u00A0/g,
+                " "
+            )
+            .replace(
+                /\s+/g,
+                " "
+            )
+            .trim()
+            .length;
     }
 
-    const bodyText = String(document.body?.innerText ?? document.body?.textContent ?? "")
-        .replace(/\u00A0/g, " ")
-        .replace(/\r/g, "")
-        .trim();
+    function getMeaningfulChildCount(
+        element
+    ) {
+        if (!element) {
+            return 0;
+        }
 
-    return {
-        container: document.body,
-        selector: "body",
-        text: bodyText,
-        error: selectorError
-    };
-}
+        return Array.from(
+            element.children
+        ).filter(
+            child =>
+                ![
+                    "SCRIPT",
+                    "STYLE",
+                    "NOSCRIPT",
+                    "TEMPLATE",
+                    "SVG"
+                ].includes(
+                    child.tagName
+                ) &&
+                getElementTextLength(
+                    child
+                ) >= 20
+        ).length;
+    }
 
-      
+    function isChapterCandidate(
+        element
+    ) {
+        if (
+            !element ||
+            element === document.body
+        ) {
+            return false;
+        }
+
+        const tag =
+            String(
+                element.tagName ||
+                ""
+            ).toUpperCase();
+
+        if (
+            [
+                "SCRIPT",
+                "STYLE",
+                "NOSCRIPT",
+                "TEMPLATE",
+                "NAV",
+                "HEADER",
+                "FOOTER",
+                "ASIDE",
+                "FORM",
+                "SVG"
+            ].includes(
+                tag
+            )
+        ) {
+            return false;
+        }
+
+        return (
+            getElementTextLength(
+                element
+            ) >= 100
+        );
+    }
+
+    function getChapterCandidates() {
+        if (!document.body) {
+            return [];
+        }
+
+        const candidates = [];
+
+        for (
+            const element
+            of document.body.querySelectorAll(
+                "*"
+            )
+        ) {
+            if (
+                !isChapterCandidate(
+                    element
+                )
+            ) {
+                continue;
+            }
+
+            candidates.push({
+                element,
+                textLength:
+                    getElementTextLength(
+                        element
+                    ),
+                childCount:
+                    getMeaningfulChildCount(
+                        element
+                    ),
+                depth:
+                    getElementDepth(
+                        element
+                    )
+            });
+        }
+
+        return candidates;
+    }
+
+    function getElementDepth(
+        element
+    ) {
+        let depth = 0;
+        let current = element;
+
+        while (
+            current &&
+            current !== document.body
+        ) {
+            depth++;
+            current =
+                current.parentElement;
+        }
+
+        return depth;
+    }
+
+    function findBestChapterContainer() {
+        const candidates =
+            getChapterCandidates();
+
+        if (
+            !candidates.length
+        ) {
+            return document.body;
+        }
+
+        candidates.sort(
+            (
+                a,
+                b
+            ) =>
+                b.textLength -
+                a.textLength ||
+                b.childCount -
+                a.childCount ||
+                b.depth -
+                a.depth
+        );
+
+        for (
+            const candidate
+            of candidates
+        ) {
+            let current =
+                candidate.element;
+
+            while (
+                current.parentElement &&
+                current.parentElement !==
+                    document.body
+            ) {
+                const parent =
+                    current.parentElement;
+
+                if (
+                    !isChapterCandidate(
+                        parent
+                    )
+                ) {
+                    break;
+                }
+
+                const childText =
+                    getElementTextLength(
+                        current
+                    );
+
+                const parentText =
+                    getElementTextLength(
+                        parent
+                    );
+
+                if (
+                    childText <= 0 ||
+                    parentText <
+                        childText * 1.1
+                ) {
+                    break;
+                }
+
+                current =
+                    parent;
+            }
+
+            return current;
+        }
+
+        return document.body;
+    }
+
+    function getChapterScanInfo() {
+        const container =
+            findBestChapterContainer();
+
+        const text =
+            String(
+                container?.innerText ??
+                container?.textContent ??
+                ""
+            )
+                .replace(
+                    /\u00A0/g,
+                    " "
+                )
+                .replace(
+                    /\r/g,
+                    ""
+                )
+                .replace(
+                    /\s+/g,
+                    " "
+                )
+                .trim();
+
+        return {
+            container,
+            text,
+            error: null
+        };
+    }
 
     const MAX_CLUSTER_TOKEN_LINKS = 2;
 
@@ -1558,12 +1944,16 @@ function getChapterScanInfo() {
         rightTokens
     ) {
         const left =
-            Array.isArray(leftTokens)
+            Array.isArray(
+                leftTokens
+            )
                 ? leftTokens
                 : [];
 
         const right =
-            Array.isArray(rightTokens)
+            Array.isArray(
+                rightTokens
+            )
                 ? rightTokens
                 : [];
 
@@ -1589,7 +1979,8 @@ function getChapterScanInfo() {
             i < rows;
             i++
         ) {
-            matrix[i][0] = i;
+            matrix[i][0] =
+                i;
         }
 
         for (
@@ -1597,7 +1988,8 @@ function getChapterScanInfo() {
             j < columns;
             j++
         ) {
-            matrix[0][j] = j;
+            matrix[0][j] =
+                j;
         }
 
         for (
@@ -1623,10 +2015,8 @@ function getChapterScanInfo() {
                     Math.min(
                         matrix[i - 1][j] +
                             1,
-
                         matrix[i][j - 1] +
                             1,
-
                         matrix[i - 1][j - 1] +
                             substitutionCost
                     );
@@ -1665,7 +2055,9 @@ function getChapterScanInfo() {
         ) {
             if (
                 token ===
-                shorter[shortIndex]
+                shorter[
+                    shortIndex
+                ]
             ) {
                 shortIndex++;
 
@@ -1753,11 +2145,8 @@ function getChapterScanInfo() {
     ) {
         return {
             id: clusterId,
-
             root,
-
             members: [],
-
             memberKeys: new Set()
         };
     }
@@ -1766,7 +2155,10 @@ function getChapterScanInfo() {
         cluster,
         candidate
     ) {
-        if (!cluster || !candidate) {
+        if (
+            !cluster ||
+            !candidate
+        ) {
             return false;
         }
 
@@ -1792,48 +2184,146 @@ function getChapterScanInfo() {
         return true;
     }
 
-    function buildCandidateClusters(candidates) {
-        if (!Array.isArray(candidates) || !candidates.length) {
-            return { clusters: [], unclustered: [], assigned: new Set() };
+    function buildCandidateClusters(
+        candidates
+    ) {
+        if (
+            !Array.isArray(
+                candidates
+            ) ||
+            !candidates.length
+        ) {
+            return {
+                clusters: [],
+                unclustered: [],
+                assigned: new Set()
+            };
         }
 
-        const ordered = candidates
-            .map((candidate, index) => ({ candidate, originalIndex: index }))
-            .sort((a, b) => b.candidate.frequency - a.candidate.frequency || a.originalIndex - b.originalIndex);
+        const ordered =
+            candidates
+                .map(
+                    (
+                        candidate,
+                        index
+                    ) => ({
+                        candidate,
+                        originalIndex:
+                            index
+                    })
+                )
+                .sort(
+                    (
+                        a,
+                        b
+                    ) =>
+                        b.candidate.frequency -
+                            a.candidate.frequency ||
+                        a.originalIndex -
+                            b.originalIndex
+                );
 
-        const assigned = new Set();
+        const assigned =
+            new Set();
+
         const clusters = [];
+
         let nextClusterId = 1;
 
-        for (const item of ordered) {
-            const root = item.candidate;
-            const rootKey = root.normalized;
+        for (
+            const item
+            of ordered
+        ) {
+            const root =
+                item.candidate;
 
-            if (assigned.has(rootKey)) continue;
+            const rootKey =
+                root.normalized;
 
-            const cluster = createCluster(root, nextClusterId++);
-            addCandidateToCluster(cluster, root);
-            assigned.add(rootKey);
+            if (
+                assigned.has(
+                    rootKey
+                )
+            ) {
+                continue;
+            }
 
-            for (const candidateItem of ordered) {
-                const candidate = candidateItem.candidate;
-                const key = candidate.normalized;
+            const cluster =
+                createCluster(
+                    root,
+                    nextClusterId++
+                );
 
-                if (assigned.has(key)) continue;
+            addCandidateToCluster(
+                cluster,
+                root
+            );
 
-                if (candidatesAreClusterLinked(root, candidate)) {
-                    addCandidateToCluster(cluster, candidate);
-                    assigned.add(key);
+            assigned.add(
+                rootKey
+            );
+
+            for (
+                const candidateItem
+                of ordered
+            ) {
+                const candidate =
+                    candidateItem.candidate;
+
+                const key =
+                    candidate.normalized;
+
+                if (
+                    assigned.has(
+                        key
+                    )
+                ) {
+                    continue;
+                }
+
+                if (
+                    candidatesAreClusterLinked(
+                        root,
+                        candidate
+                    )
+                ) {
+                    addCandidateToCluster(
+                        cluster,
+                        candidate
+                    );
+
+                    assigned.add(
+                        key
+                    );
                 }
             }
 
-            cluster.members.sort((a, b) => b.frequency - a.frequency || a.name.localeCompare(b.name));
-            clusters.push(cluster);
+            cluster.members.sort(
+                (
+                    a,
+                    b
+                ) =>
+                    b.frequency -
+                        a.frequency ||
+                    a.name.localeCompare(
+                        b.name
+                    )
+            );
+
+            clusters.push(
+                cluster
+            );
         }
 
         return {
             clusters,
-            unclustered: candidates.filter(candidate => !assigned.has(candidate.normalized)),
+            unclustered:
+                candidates.filter(
+                    candidate =>
+                        !assigned.has(
+                            candidate.normalized
+                        )
+                ),
             assigned
         };
     }
@@ -1885,16 +2375,15 @@ function getChapterScanInfo() {
         candidates
     ) {
         if (
-            !Array.isArray(candidates) ||
+            !Array.isArray(
+                candidates
+            ) ||
             !candidates.length
         ) {
             return {
                 candidates: [],
-
                 removed: [],
-
                 isolated: [],
-
                 maximumFrequency: 0
             };
         }
@@ -1920,11 +2409,8 @@ function getChapterScanInfo() {
             return {
                 candidates:
                     candidates.slice(),
-
                 removed: [],
-
                 isolated: [],
-
                 maximumFrequency
             };
         }
@@ -1947,7 +2433,6 @@ function getChapterScanInfo() {
             UNCLUSTERED_FREQUENCY_RATIO;
 
         const kept = [];
-
         const removed = [];
 
         for (
@@ -1959,7 +2444,6 @@ function getChapterScanInfo() {
                     candidate.normalized
                 )
             ) {
-
                 kept.push(
                     candidate
                 );
@@ -1983,65 +2467,57 @@ function getChapterScanInfo() {
 
         return {
             candidates: kept,
-
             removed,
-
             isolated,
-
             maximumFrequency,
-
             threshold
         };
     }
 
-function processCandidateClusters(
-    candidates
-) {
-    const clustering =
-        buildCandidateClusters(
-            candidates
-        );
+    function processCandidateClusters(
+        candidates
+    ) {
+        const clustering =
+            buildCandidateClusters(
+                candidates
+            );
 
-    const filtered =
-        applyUnclusteredFrequencyFilter(
-            candidates
-        );
+        const filtered =
+            applyUnclusteredFrequencyFilter(
+                candidates
+            );
 
-    const finalClustering =
-        buildCandidateClusters(
-            filtered.candidates
-        );
+        const finalClustering =
+            buildCandidateClusters(
+                filtered.candidates
+            );
 
-    return {
-        candidates:
-            filtered.candidates,
-
-        removed:
-            filtered.removed,
-
-        clusters:
-            finalClustering.clusters,
-
-        initialClusters:
-            clustering.clusters,
-
-        isolated:
-            filtered.isolated,
-
-        maximumFrequency:
-            filtered.maximumFrequency,
-
-        threshold:
-            filtered.threshold || 0
-    };
-}
+        return {
+            candidates:
+                filtered.candidates,
+            removed:
+                filtered.removed,
+            clusters:
+                finalClustering.clusters,
+            initialClusters:
+                clustering.clusters,
+            isolated:
+                filtered.isolated,
+            maximumFrequency:
+                filtered.maximumFrequency,
+            threshold:
+                filtered.threshold || 0
+        };
+    }
 
     function findClusterForCandidate(
         clusters,
         normalized
     ) {
         if (
-            !Array.isArray(clusters)
+            !Array.isArray(
+                clusters
+            )
         ) {
             return null;
         }
@@ -2066,7 +2542,8 @@ function processCandidateClusters(
     function createCandidateClusterIndex(
         clusters
     ) {
-        const index = new Map();
+        const index =
+            new Map();
 
         for (
             const cluster
@@ -2099,7 +2576,10 @@ function processCandidateClusters(
         }
 
         cluster.members.sort(
-            (a, b) => {
+            (
+                a,
+                b
+            ) => {
                 const frequencyDifference =
                     b.frequency -
                     a.frequency;
@@ -2111,10 +2591,8 @@ function processCandidateClusters(
                     return frequencyDifference;
                 }
 
-                return (
-                    a.name.localeCompare(
-                        b.name
-                    )
+                return a.name.localeCompare(
+                    b.name
                 );
             }
         );
@@ -2124,7 +2602,9 @@ function processCandidateClusters(
         clusters
     ) {
         if (
-            !Array.isArray(clusters)
+            !Array.isArray(
+                clusters
+            )
         ) {
             return [];
         }
@@ -2132,7 +2612,10 @@ function processCandidateClusters(
         return clusters
             .slice()
             .sort(
-                (a, b) => {
+                (
+                    a,
+                    b
+                ) => {
                     const frequencyDifference =
                         b.root.frequency -
                         a.root.frequency;
@@ -2158,16 +2641,9 @@ function processCandidateClusters(
         if (!result) {
             return {
                 candidates: 0,
-
                 clusters: 0,
-
                 removed: 0,
-
-                isolated: 0,
-
-                maximumFrequency: 0,
-
-                threshold: 0
+                isolated: 0
             };
         }
 
@@ -2178,41 +2654,27 @@ function processCandidateClusters(
                 )
                     ? result.candidates.length
                     : 0,
-
             clusters:
                 Array.isArray(
                     result.clusters
                 )
                     ? result.clusters.length
                     : 0,
-
             removed:
                 Array.isArray(
                     result.removed
                 )
                     ? result.removed.length
                     : 0,
-
             isolated:
                 Array.isArray(
                     result.isolated
                 )
                     ? result.isolated.length
-                    : 0,
-
-            maximumFrequency:
-                result.maximumFrequency ||
-                0,
-
-            threshold:
-                result.threshold ||
-                0
+                    : 0
         };
     }
-
-      
-
-    function compileRuleRegex(
+      function compileRuleRegex(
         rule
     ) {
         if (
@@ -2270,7 +2732,7 @@ function processCandidateClusters(
                 rule.input,
                 flags
             );
-        } catch (error) {
+        } catch {
             return null;
         }
     }
@@ -2317,7 +2779,7 @@ function processCandidateClusters(
         }
 
         const escaped =
-            escapeRegex(
+            escapeRegexLiteral(
                 ruleInput
             );
 
@@ -2398,7 +2860,8 @@ function processCandidateClusters(
         }
 
         if (
-            rule.inputType === "text"
+            rule.inputType ===
+            "text"
         ) {
             return candidateForms.some(
                 form =>
@@ -2418,7 +2881,10 @@ function processCandidateClusters(
                 form =>
                     compareRuleText(
                         form.trim(),
-                        String(rule.input ?? "").trim(),
+                        String(
+                            rule.input ??
+                            ""
+                        ).trim(),
                         rule.caseSensitive
                     )
             );
@@ -2457,6 +2923,8 @@ function processCandidateClusters(
             String(
                 text ?? ""
             );
+
+        regex.lastIndex = 0;
 
         const match =
             regex.exec(
@@ -2554,36 +3022,42 @@ function processCandidateClusters(
 
         const forms = [];
 
+        const addForm =
+            value => {
+                const form =
+                    String(
+                        value ?? ""
+                    ).trim();
+
+                if (
+                    form &&
+                    !forms.includes(
+                        form
+                    )
+                ) {
+                    forms.push(
+                        form
+                    );
+                }
+            };
+
         if (
-            candidate.variants instanceof Map
+            candidate.variants instanceof
+            Map
         ) {
             for (
                 const name
                 of candidate.variants.keys()
             ) {
-                if (
-                    name &&
-                    !forms.includes(
-                        name
-                    )
-                ) {
-                    forms.push(
-                        name
-                    );
-                }
+                addForm(
+                    name
+                );
             }
         }
 
-        if (
-            candidate.name &&
-            !forms.includes(
-                candidate.name
-            )
-        ) {
-            forms.push(
-                candidate.name
-            );
-        }
+        addForm(
+            candidate.name
+        );
 
         return forms;
     }
@@ -2642,8 +3116,12 @@ function processCandidateClusters(
                             form
                         );
 
+                    if (!match) {
+                        return false;
+                    }
+
                     return (
-                        !!match &&
+                        match[0].length > 0 &&
                         (
                             match.index > 0 ||
                             match[0].length <
@@ -2658,7 +3136,6 @@ function processCandidateClusters(
             rule.inputType ===
             "wholewords"
         ) {
-
             return forms.some(
                 form => {
                     if (
@@ -2727,7 +3204,6 @@ function processCandidateClusters(
             getCurrentSiteRules();
 
         const exact = [];
-
         const partial = [];
 
         for (
@@ -2757,9 +3233,7 @@ function processCandidateClusters(
 
         return {
             exact,
-
             partial,
-
             all: [
                 ...exact,
                 ...partial
@@ -2773,12 +3247,7 @@ function processCandidateClusters(
     ) {
         if (
             !sourceRule ||
-            !targetRule
-        ) {
-            return false;
-        }
-
-        if (
+            !targetRule ||
             !sourceRule.enabled ||
             !targetRule.enabled
         ) {
@@ -2797,14 +3266,8 @@ function processCandidateClusters(
 
         if (
             !output ||
-            !input
-        ) {
-            return false;
-        }
-
-        if (
-            sourceRule ===
-            targetRule
+            !input ||
+            sourceRule === targetRule
         ) {
             return false;
         }
@@ -2884,9 +3347,7 @@ function processCandidateClusters(
                     conflicts.push({
                         type:
                             "rule-output-input",
-
                         source,
-
                         target
                     });
                 }
@@ -2902,15 +3363,11 @@ function processCandidateClusters(
     ) {
         return {
             type: "candidate",
-
             candidate,
-
             exact:
                 matchData.exact,
-
             partial:
                 matchData.partial,
-
             all:
                 matchData.all
         };
@@ -2931,9 +3388,7 @@ function processCandidateClusters(
             return {
                 classification:
                     "candidate",
-
                 candidate,
-
                 matches
             };
         }
@@ -2945,9 +3400,7 @@ function processCandidateClusters(
             return {
                 classification:
                     "group",
-
                 candidate,
-
                 matches
             };
         }
@@ -2955,90 +3408,110 @@ function processCandidateClusters(
         return {
             classification:
                 "conflict",
-
             candidate,
-
             matches
         };
     }
 
-function buildGroupMatches(classifications) {
-    const groups = new Map();
+    function buildGroupMatches(
+        classifications
+    ) {
+        const groups = new Map();
 
-    for (const item of classifications) {
-        if (
-            !item ||
-            item.classification !== "group"
+        for (
+            const item
+            of classifications
         ) {
-            continue;
-        }
-
-        const matches =
-            item.matches?.exact || [];
-
-        for (const match of matches) {
-            const group =
-                match?.group;
-
-            const rule =
-                match?.rule;
-
-            if (!group || !rule) {
+            if (
+                !item ||
+                item.classification !==
+                    "group"
+            ) {
                 continue;
             }
 
-            if (!groups.has(group.index)) {
-                groups.set(
-                    group.index,
-                    {
-                        ...group,
-                        rules: []
-                    }
-                );
-            }
-
-            const groupMatch =
-                groups.get(group.index);
-
-            if (
-                !groupMatch.rules.some(
-                    existing =>
-                        existing.ruleIndex ===
-                        rule.ruleIndex
+            const matches =
+                Array.isArray(
+                    item.matches?.exact
                 )
-            ) {
-                groupMatch.rules.push({
-                    ...rule,
-                    matchedCandidates: []
-                });
-            }
+                    ? item.matches.exact
+                    : [];
 
-            const groupRule =
-                groupMatch.rules.find(
-                    existing =>
-                        existing.ruleIndex ===
-                        rule.ruleIndex
-                );
-
-            if (
-                groupRule &&
-                !groupRule.matchedCandidates.some(
-                    candidate =>
-                        candidate.normalized ===
-                        item.candidate.normalized
-                )
+            for (
+                const match
+                of matches
             ) {
-                groupRule.matchedCandidates.push(
-                    item.candidate
-                );
+                const group =
+                    match?.group;
+
+                const rule =
+                    match?.rule;
+
+                if (
+                    !group ||
+                    !rule
+                ) {
+                    continue;
+                }
+
+                if (
+                    !groups.has(
+                        group.index
+                    )
+                ) {
+                    groups.set(
+                        group.index,
+                        {
+                            ...group,
+                            rules: []
+                        }
+                    );
+                }
+
+                const groupMatch =
+                    groups.get(
+                        group.index
+                    );
+
+                let groupRule =
+                    groupMatch.rules.find(
+                        existing =>
+                            existing.ruleIndex ===
+                            rule.ruleIndex
+                    );
+
+                if (
+                    !groupRule
+                ) {
+                    groupRule = {
+                        ...rule,
+                        candidates: []
+                    };
+
+                    groupMatch.rules.push(
+                        groupRule
+                    );
+                }
+
+                if (
+                    item.candidate &&
+                    !groupRule.candidates.some(
+                        candidate =>
+                            candidate.normalized ===
+                            item.candidate.normalized
+                    )
+                ) {
+                    groupRule.candidates.push(
+                        item.candidate
+                    );
+                }
             }
         }
-    }
 
-    return Array.from(
-        groups.values()
-    );
-}
+        return Array.from(
+            groups.values()
+        );
+    }
 
     function buildCandidateConflicts(
         classifications
@@ -3067,21 +3540,42 @@ function buildGroupMatches(classifications) {
             return keys;
         }
 
-        for (
-            const entry
-            of conflict.exact || []
-        ) {
-            keys.add(
-                `${entry.group.index}:${entry.rule.ruleIndex}`
-            );
-        }
+        const entries = [
+            ...(Array.isArray(conflict.exact)
+                ? conflict.exact
+                : []),
+            ...(Array.isArray(conflict.partial)
+                ? conflict.partial
+                : [])
+        ];
 
         for (
             const entry
-            of conflict.partial || []
+            of entries
         ) {
+            if (
+                !entry ||
+                !entry.group ||
+                !entry.rule
+            ) {
+                continue;
+            }
+
+            const groupIndex =
+                entry.group.index;
+
+            const ruleIndex =
+                entry.rule.ruleIndex;
+
+            if (
+                groupIndex === undefined ||
+                ruleIndex === undefined
+            ) {
+                continue;
+            }
+
             keys.add(
-                `${entry.group.index}:${entry.rule.ruleIndex}`
+                `${groupIndex}:${ruleIndex}`
             );
         }
 
@@ -3092,6 +3586,13 @@ function buildGroupMatches(classifications) {
         left,
         right
     ) {
+        if (
+            !left ||
+            !right
+        ) {
+            return false;
+        }
+
         const leftRules =
             getConflictRuleKeys(
                 left
@@ -3139,10 +3640,7 @@ function buildGroupMatches(classifications) {
         }
 
         const clusters = [];
-
-        const assigned =
-            new Set();
-
+        const assigned = new Set();
         let nextClusterId = 1;
 
         for (
@@ -3158,7 +3656,6 @@ function buildGroupMatches(classifications) {
 
             const cluster = {
                 id: nextClusterId++,
-
                 conflicts: []
             };
 
@@ -3182,6 +3679,10 @@ function buildGroupMatches(classifications) {
                         currentIndex
                     ];
 
+                if (!current) {
+                    continue;
+                }
+
                 cluster.conflicts.push(
                     current
                 );
@@ -3204,7 +3705,6 @@ function buildGroupMatches(classifications) {
                         )
                     ) {
                         assigned.add(j);
-
                         queue.push(j);
                     }
                 }
@@ -3229,10 +3729,7 @@ function buildGroupMatches(classifications) {
         }
 
         const clusters = [];
-
-        const assigned =
-            new Set();
-
+        const assigned = new Set();
         let nextClusterId = 1;
 
         for (
@@ -3248,7 +3745,6 @@ function buildGroupMatches(classifications) {
 
             const cluster = {
                 id: nextClusterId++,
-
                 conflicts: []
             };
 
@@ -3272,9 +3768,35 @@ function buildGroupMatches(classifications) {
                         currentIndex
                     ];
 
+                if (!current) {
+                    continue;
+                }
+
                 cluster.conflicts.push(
                     current
                 );
+
+                const currentKeys = [];
+
+                if (
+                    current.source &&
+                    current.source.group &&
+                    current.source.rule
+                ) {
+                    currentKeys.push(
+                        `${current.source.group.index}:${current.source.rule.ruleIndex}`
+                    );
+                }
+
+                if (
+                    current.target &&
+                    current.target.group &&
+                    current.target.rule
+                ) {
+                    currentKeys.push(
+                        `${current.target.group.index}:${current.target.rule.ruleIndex}`
+                    );
+                }
 
                 for (
                     let j = 0;
@@ -3290,17 +3812,31 @@ function buildGroupMatches(classifications) {
                     const other =
                         conflicts[j];
 
-                    const currentKeys =
-                        new Set([
-                            `${current.source.group.index}:${current.source.rule.ruleIndex}`,
-                            `${current.target.group.index}:${current.target.rule.ruleIndex}`
-                        ]);
+                    if (!other) {
+                        continue;
+                    }
 
-                    const otherKeys =
-                        new Set([
-                            `${other.source.group.index}:${other.source.rule.ruleIndex}`,
+                    const otherKeys = [];
+
+                    if (
+                        other.source &&
+                        other.source.group &&
+                        other.source.rule
+                    ) {
+                        otherKeys.push(
+                            `${other.source.group.index}:${other.source.rule.ruleIndex}`
+                        );
+                    }
+
+                    if (
+                        other.target &&
+                        other.target.group &&
+                        other.target.rule
+                    ) {
+                        otherKeys.push(
                             `${other.target.group.index}:${other.target.rule.ruleIndex}`
-                        ]);
+                        );
+                    }
 
                     let linked = false;
 
@@ -3309,7 +3845,7 @@ function buildGroupMatches(classifications) {
                         of currentKeys
                     ) {
                         if (
-                            otherKeys.has(
+                            otherKeys.includes(
                                 key
                             )
                         ) {
@@ -3318,11 +3854,12 @@ function buildGroupMatches(classifications) {
                         }
                     }
 
-                    if (linked) {
-                        assigned.add(j);
-
-                        queue.push(j);
+                    if (!linked) {
+                        continue;
                     }
+
+                    assigned.add(j);
+                    queue.push(j);
                 }
             }
 
@@ -3334,270 +3871,364 @@ function buildGroupMatches(classifications) {
         return clusters;
     }
 
-function buildConflictData(classifications) {
-    const conflicts = [];
+    function buildConflictData(
+        classifications
+    ) {
+        const conflicts = [];
+        let discoveryOrder = 0;
 
-    let discoveryOrder = 0;
-
-    if (!Array.isArray(classifications)) {
-        return conflicts;
-    }
-
-    for (const item of classifications) {
         if (
-            !item ||
-            item.classification !== "conflict"
+            !Array.isArray(
+                classifications
+            )
         ) {
-            continue;
+            return conflicts;
         }
 
-        const matches =
-            item.matches || {};
-
-        const exact =
-            Array.isArray(matches.exact)
-                ? matches.exact
-                : [];
-
-        const partial =
-            Array.isArray(matches.partial)
-                ? matches.partial
-                : [];
-
-        const allMatches =
-            Array.isArray(matches.all)
-                ? matches.all
-                : [
-                    ...exact,
-                    ...partial
-                ];
-
-        const candidate =
-            item.candidate || {};
-
-        const conflictMatches =
-            allMatches.length
-                ? allMatches
-                : [
-                    ...exact,
-                    ...partial
-                ];
-
         for (
-            const match
-            of conflictMatches
+            const item
+            of classifications
         ) {
             if (
-                !match ||
-                !match.group
+                !item ||
+                item.classification !==
+                    "conflict"
             ) {
                 continue;
             }
 
-            const group =
-                match.group;
+            const matches =
+                item.matches || {};
 
-            const rule =
-                match.rule || {};
+            const exact =
+                Array.isArray(
+                    matches.exact
+                )
+                    ? matches.exact
+                    : [];
 
-            const type =
-                exact.includes(match)
-                    ? "exact"
-                    : "partial";
+            const partial =
+                Array.isArray(
+                    matches.partial
+                )
+                    ? matches.partial
+                    : [];
 
-            conflicts.push({
-                id:
-                    `conflict-${discoveryOrder + 1}`,
+            const conflictMatches =
+                Array.isArray(
+                    matches.all
+                )
+                    ? matches.all
+                    : [
+                        ...exact,
+                        ...partial
+                    ];
 
-                discoveryOrder:
-                    discoveryOrder++,
+            const candidate =
+                item.candidate || {};
 
-                candidate,
+            for (
+                const match
+                of conflictMatches
+            ) {
+                if (
+                    !match ||
+                    !match.group
+                ) {
+                    continue;
+                }
 
-                candidateName:
-                    candidate.name || "",
+                const group =
+                    match.group;
 
-                frequency:
-                    Number(
-                        candidate.frequency
-                    ) || 0,
+                const rule =
+                    match.rule || {};
 
-                clusterId:
-                    Number.isFinite(
-                        candidate.clusterId
+                const type =
+                    exact.includes(
+                        match
                     )
-                        ? candidate.clusterId
-                        : 0,
+                        ? "exact"
+                        : "partial";
 
-                type,
+                conflicts.push({
+                    id:
+                        `conflict-${discoveryOrder + 1}`,
 
-                groupName:
-                    group.name ||
-                    "(Unnamed group)",
+                    discoveryOrder:
+                        discoveryOrder++,
 
-                group,
+                    candidate,
 
-                rule,
+                    candidateName:
+                        candidate.name || "",
 
-                ruleInput:
-                    rule.input || "",
+                    frequency:
+                        Number(
+                            candidate.frequency
+                        ) || 0,
 
-                ruleOutput:
-                    rule.output || ""
-            });
+                    clusterId:
+                        Number.isFinite(
+                            candidate.clusterId
+                        )
+                            ? candidate.clusterId
+                            : 0,
+
+                    type,
+
+                    groupName:
+                        group.name ||
+                        "(Unnamed group)",
+
+                    group,
+
+                    rule,
+
+                    ruleInput:
+                        rule.input || "",
+
+                    ruleOutput:
+                        rule.output || ""
+                });
+            }
         }
+
+        return conflicts;
     }
 
-    return conflicts;
-}
+    function getConflictGroups(
+        conflict
+    ) {
+        const groups = [];
+        const seen = new Set();
 
-function getConflictGroups(conflict) {
-    const groups = [];
-    const seen = new Set();
+        if (!conflict) {
+            return groups;
+        }
 
-    if (!conflict) {
+        const entries = [
+            ...(Array.isArray(
+                conflict.exact
+            )
+                ? conflict.exact
+                : []),
+            ...(Array.isArray(
+                conflict.partial
+            )
+                ? conflict.partial
+                : [])
+        ];
+
+        for (
+            const entry
+            of entries
+        ) {
+            if (
+                !entry ||
+                !entry.group
+            ) {
+                continue;
+            }
+
+            const index =
+                entry.group.index;
+
+            const key =
+                index === undefined
+                    ? entry.group
+                    : index;
+
+            if (
+                seen.has(key)
+            ) {
+                continue;
+            }
+
+            seen.add(key);
+            groups.push(
+                entry.group
+            );
+        }
+
         return groups;
     }
 
-    const entries = [
-        ...(Array.isArray(conflict.exact) ? conflict.exact : []),
-        ...(Array.isArray(conflict.partial) ? conflict.partial : [])
-    ];
-
-    for (const entry of entries) {
-        if (!entry || !entry.group) {
-            continue;
-        }
-
-        const index = entry.group.index;
-
-        if (seen.has(index)) {
-            continue;
-        }
-
-        seen.add(index);
-        groups.push(entry.group);
+    function getConflictGroupNames(
+        conflict
+    ) {
+        return getConflictGroups(
+            conflict
+        ).map(
+            group =>
+                group.name ||
+                "(Unnamed group)"
+        );
     }
 
-    return groups;
-}
-function getConflictGroupNames(conflict) {
-    return getConflictGroups(conflict).map(
-        group =>
-            group.name ||
-            "(Unnamed group)"
-    );
-}
+    function getConflictRuleEntries(
+        conflict
+    ) {
+        const entries = [];
 
-function getConflictRuleEntries(conflict) {
-    const entries = [];
+        if (!conflict) {
+            return entries;
+        }
 
-    if (!conflict) {
+        const exact =
+            Array.isArray(
+                conflict.exact
+            )
+                ? conflict.exact
+                : [];
+
+        const partial =
+            Array.isArray(
+                conflict.partial
+            )
+                ? conflict.partial
+                : [];
+
+        for (
+            const entry
+            of exact
+        ) {
+            if (
+                !entry ||
+                !entry.group ||
+                !entry.rule
+            ) {
+                continue;
+            }
+
+            entries.push({
+                type: "exact",
+                group: entry.group,
+                rule: entry.rule
+            });
+        }
+
+        for (
+            const entry
+            of partial
+        ) {
+            if (
+                !entry ||
+                !entry.group ||
+                !entry.rule
+            ) {
+                continue;
+            }
+
+            entries.push({
+                type: "partial",
+                group: entry.group,
+                rule: entry.rule
+            });
+        }
+
         return entries;
     }
 
-    const exact =
-        Array.isArray(conflict.exact)
-            ? conflict.exact
-            : [];
+    function escapeRegexLiteral(
+        value
+    ) {
+        return String(
+            value ?? ""
+        ).replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+        );
+    }
 
-    const partial =
-        Array.isArray(conflict.partial)
-            ? conflict.partial
-            : [];
+    function normalizeGeneratedInputSpacing(
+        value
+    ) {
+        return String(
+            value ?? ""
+        )
+            .replace(
+                /\s+/g,
+                " "
+            )
+            .trim();
+    }
 
-    for (const entry of exact) {
-        if (!entry || !entry.group || !entry.rule) {
-            continue;
+    function generateOtherInput(
+        candidate
+    ) {
+        if (!candidate) {
+            return "";
         }
 
-        entries.push({
-            type: "exact",
-            group: entry.group,
-            rule: entry.rule
-        });
+        const name =
+            candidate.name ||
+            candidate.displayName ||
+            candidate.text ||
+            "";
+
+        return normalizeGeneratedInputSpacing(
+            name
+        );
     }
 
-    for (const entry of partial) {
-        if (!entry || !entry.group || !entry.rule) {
-            continue;
+    function isHyphenVariantCandidate(
+        candidate
+    ) {
+        if (!candidate) {
+            return false;
         }
 
-        entries.push({
-            type: "partial",
-            group: entry.group,
-            rule: entry.rule
-        });
+        const name =
+            candidate.name ||
+            candidate.displayName ||
+            candidate.text ||
+            "";
+
+        return /[-\u2010\u2011\u2012\u2013\u2014]/.test(
+            String(name)
+        );
     }
 
-    return entries;
-}
+    function replaceSpacesAndHyphens(
+        value,
+        replacement
+    ) {
+        const text =
+            String(
+                value ?? ""
+            );
 
-      
-function escapeRegexLiteral(value) {
-    return String(value ?? "").replace(
-        /[.*+?^${}()|[\]\\]/g,
-        "\\$&"
-    );
-}
-function normalizeGeneratedInputSpacing(value) {
-    return String(value ?? "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
+        const joiner =
+            String(
+                replacement ?? ""
+            );
 
-function generateOtherInput(candidate) {
-    if (!candidate) {
-        return "";
+        return text
+            .replace(
+                /[\s\u2010\u2011\u2012\u2013\u2014-]+/g,
+                joiner
+            )
+            .trim();
     }
 
-    const name =
-        candidate.name ||
-        candidate.displayName ||
-        candidate.text ||
-        "";
+    function generateKoreanInput(
+        candidate
+    ) {
+        if (!candidate) {
+            return "";
+        }
 
-    return normalizeGeneratedInputSpacing(name);
-}
+        const name =
+            candidate.name ||
+            candidate.displayName ||
+            candidate.text ||
+            "";
 
-function isHyphenVariantCandidate(candidate) {
-    if (!candidate) {
-        return false;
+        return normalizeGeneratedInputSpacing(
+            name
+        );
     }
-
-    const name =
-        candidate.name ||
-        candidate.displayName ||
-        candidate.text ||
-        "";
-
-    return /[-\u2010\u2011\u2012\u2013\u2014]/.test(
-        String(name)
-    );
-}
-    
-function replaceSpacesAndHyphens(value, replacement) {
-    const text = String(value ?? "");
-    const joiner = String(replacement ?? "");
-
-    return text
-        .replace(/[\s\u2010\u2011\u2012\u2013\u2014-]+/g, joiner)
-        .trim();
-}
-
-function generateKoreanInput(candidate) {
-    if (!candidate) {
-        return "";
-    }
-
-    const name =
-        candidate.name ||
-        candidate.displayName ||
-        candidate.text ||
-        "";
-
-    return normalizeGeneratedInputSpacing(name);
-}
 
     function generateJapaneseInput(
         candidate
@@ -3630,14 +4261,6 @@ function generateKoreanInput(candidate) {
             );
         }
 
-        const first =
-            tokens[0];
-
-        const last =
-            tokens[
-                tokens.length - 1
-            ];
-
         const forward =
             tokens
                 .map(
@@ -3647,14 +4270,18 @@ function generateKoreanInput(candidate) {
                     "\\s+"
                 );
 
-        const reverseTokens =
-            [
-                last,
-                ...tokens.slice(
-                    0,
-                    -1
-                )
+        const last =
+            tokens[
+                tokens.length - 1
             ];
+
+        const reverseTokens = [
+            last,
+            ...tokens.slice(
+                0,
+                -1
+            )
+        ];
 
         const reverse =
             reverseTokens
@@ -3774,7 +4401,6 @@ function generateKoreanInput(candidate) {
         }
 
         try {
-
             new RegExp(
                 input
             );
@@ -3788,9 +4414,7 @@ function generateKoreanInput(candidate) {
     function getGeneratedInput(
         candidate
     ) {
-        if (
-            !candidate
-        ) {
+        if (!candidate) {
             return "";
         }
 
@@ -3807,8 +4431,6 @@ function generateKoreanInput(candidate) {
         return candidate.generatedInput;
     }
 
-      
-
     function clearAnalysisResults() {
         state.candidates = [];
         state.groupMatches = [];
@@ -3817,110 +4439,121 @@ function generateKoreanInput(candidate) {
         state.expandedRules.clear();
     }
 
-function buildCandidateResults(processedCandidates) {
-    if (!Array.isArray(processedCandidates)) {
-        return [];
-    }
-
-    const candidates = [];
-
-    for (const candidate of processedCandidates) {
-        const classification =
-            classifyCandidate(candidate);
-
+    function buildCandidateResults(
+        processedCandidates
+    ) {
         if (
-            classification.classification !==
-            "candidate"
+            !Array.isArray(
+                processedCandidates
+            )
         ) {
-            continue;
+            return [];
         }
 
-        candidate.generatedInput =
-            generateCandidateInput(
-                candidate,
-                state.candidateTemplate
-            );
+        const candidates = [];
 
-        candidates.push(candidate);
-    }
-
-    return candidates;
-}
-
-function analyzePage() {
-    clearAnalysisResults();
-
-    const scanInfo =
-        getChapterScanInfo();
-
-    chapterText =
-        scanInfo.text || "";
-
-    if (!chapterText.trim()) {
-        return {
-            candidates: [],
-            groupMatches: [],
-            conflicts: {
-                clusters: [],
-                candidateConflicts: [],
-                ruleOutputConflicts: []
-            }
-        };
-    }
-
-    const scanned =
-        scanChapterCandidates(
-            chapterText
-        );
-
-    const processed =
-        processCandidateClusters(
-            scanned
-        );
-
-    const classifications =
-        processed.candidates.map(
-            candidate =>
+        for (
+            const candidate
+            of processedCandidates
+        ) {
+            const classification =
                 classifyCandidate(
                     candidate
-                )
+                );
+
+            if (
+                classification.classification !==
+                "candidate"
+            ) {
+                continue;
+            }
+
+            candidate.generatedInput =
+                generateCandidateInput(
+                    candidate,
+                    state.candidateTemplate
+                );
+
+            candidates.push(
+                candidate
+            );
+        }
+
+        return candidates;
+    }
+
+    function analyzePage() {
+        clearAnalysisResults();
+
+        const scanInfo =
+            getChapterScanInfo();
+
+        const chapterText =
+            scanInfo.text || "";
+
+        if (
+            !chapterText.trim()
+        ) {
+            return {
+                candidates: [],
+                groupMatches: [],
+                conflicts: []
+            };
+        }
+
+        const scanned =
+            scanChapterCandidates(
+                chapterText
+            );
+
+        const processed =
+            processCandidateClusters(
+                scanned
+            );
+
+        const classifications =
+            processed.candidates.map(
+                candidate =>
+                    classifyCandidate(
+                        candidate
+                    )
+            );
+
+        const groupMatches =
+            buildGroupMatches(
+                classifications
+            );
+
+        const conflicts =
+            buildConflictData(
+                classifications
+            );
+
+        const candidates =
+            buildCandidateResults(
+                processed.candidates
+            );
+
+        state.candidates =
+            candidates;
+
+        state.groupMatches =
+            groupMatches;
+
+        state.conflicts =
+            conflicts;
+
+        regenerateCandidateInputs(
+            state.candidates,
+            state.candidateTemplate
         );
 
-    const groupMatches =
-        buildGroupMatches(
-            classifications
-        );
-
-    const conflicts =
-        buildConflictData(
-            classifications
-        );
-
-    const candidates =
-        buildCandidateResults(
-            processed.candidates
-        );
-
-    state.candidates =
-        candidates;
-
-    state.groupMatches =
-        groupMatches;
-
-    state.conflicts =
-        conflicts;
-
-    regenerateCandidateInputs(
-        state.candidates,
-        state.candidateTemplate
-    );
-
-    return {
-        candidates,
-        groupMatches,
-        conflicts
-    };
-}
+        return {
+            candidates,
+            groupMatches,
+            conflicts
+        };
+    }
 
     function runAnalysisSafely() {
         try {
@@ -3938,7 +4571,7 @@ function analyzePage() {
             return {
                 chapterText: "",
                 candidates: [],
-                groups: [],
+                groupMatches: [],
                 conflicts: [],
                 error
             };
@@ -4058,7 +4691,10 @@ function analyzePage() {
                 return group.name;
 
             case "rules":
-                return group.rules?.length || 0;
+                return (
+                    group.rules?.length ||
+                    0
+                );
 
             case "matches":
                 return (
@@ -4197,7 +4833,7 @@ function analyzePage() {
 
             case "original":
             default:
-                return rule.index;
+                return rule.ruleIndex;
         }
     }
 
@@ -4210,8 +4846,8 @@ function analyzePage() {
             column === "original"
         ) {
             return compareNumbers(
-                a.index,
-                b.index
+                a.ruleIndex,
+                b.ruleIndex
             );
         }
 
@@ -4275,8 +4911,8 @@ function analyzePage() {
                     b
                 ) =>
                     compareNumbers(
-                        a.index,
-                        b.index
+                        a.ruleIndex,
+                        b.ruleIndex
                     )
             );
         }
@@ -4295,13 +4931,17 @@ function analyzePage() {
         );
     }
 
-function getVisibleConflicts() {
-    if (!Array.isArray(state.conflicts)) {
-        return [];
-    }
+    function getVisibleConflicts() {
+        if (
+            !Array.isArray(
+                state.conflicts
+            )
+        ) {
+            return [];
+        }
 
-    return state.conflicts.slice();
-}
+        return state.conflicts.slice();
+    }
 
     function getClusterDisplayId(
         conflict
@@ -4317,47 +4957,7 @@ function getVisibleConflicts() {
 
         return "";
     }
-
-    function sortCandidatesForDisplay(
-        candidates
-    ) {
-        if (
-            !Array.isArray(
-                candidates
-            )
-        ) {
-            return [];
-        }
-
-        return candidates
-            .slice()
-            .sort(
-                (
-                    a,
-                    b
-                ) => {
-                    const frequencyDifference =
-                        compareNumbers(
-                            b.frequency,
-                            a.frequency
-                        );
-
-                    if (
-                        frequencyDifference !==
-                        0
-                    ) {
-                        return frequencyDifference;
-                    }
-
-                    return compareNumbers(
-                        a.firstSeenIndex,
-                        b.firstSeenIndex
-                    );
-                }
-            );
-    }
-
-    function sortDisplayedGroups() {
+      function sortDisplayedGroups() {
         state.groupMatches =
             sortGroupMatches(
                 state.groupMatches
@@ -4417,7 +5017,7 @@ function getVisibleConflicts() {
             ) +
             ":" +
             String(
-                rule?.index ??
+                rule?.ruleIndex ??
                 ""
             )
         );
@@ -4528,9 +5128,8 @@ function getVisibleConflicts() {
         };
     }
 
-      
-
-    const WNC_UI_ID = "wnc-overlay";
+    const WNC_UI_ID =
+        "wnc-overlay";
 
     const WNC_STYLE_ID =
         "wnc-dark-style";
@@ -4626,24 +5225,6 @@ function getVisibleConflicts() {
 
             #${WNC_UI_ID} .wnc-spacer {
                 flex: 1;
-            }
-
-            #${WNC_UI_ID} .wnc-selector {
-                width: 180px;
-                padding: 6px 8px;
-                border: 1px solid #444;
-                border-radius: 4px;
-                background: #17191d;
-                color: #eee;
-            }
-
-            #${WNC_UI_ID} .wnc-save-selector {
-                padding: 6px 9px;
-                border: 1px solid #444;
-                border-radius: 4px;
-                background: #25282d;
-                color: #eee;
-                cursor: pointer;
             }
 
             #${WNC_UI_ID} .wnc-template {
@@ -4919,14 +5500,6 @@ function getVisibleConflicts() {
                 line-height: 1.2;
             }
 
-            #${WNC_UI_ID} .wnc-path {
-                color: #9da3ad;
-                font-size: 13px;
-                line-height: 1.2;
-                margin: 1px;
-                padding: 1px;
-            }
-
             #${WNC_UI_ID} .wnc-clickable {
                 cursor: pointer;
             }
@@ -5095,36 +5668,19 @@ function getVisibleConflicts() {
 
         return (
             '<div class="wnc-toolbar">' +
-
                 '<div class="wnc-title">' +
                     "Webnovel Cleaner" +
                 "</div>" +
-
                 '<div class="wnc-tabs">' +
                     tabs +
                 "</div>" +
-
                 '<div class="wnc-spacer"></div>' +
-
-                '<input class="wnc-selector" data-wnc-selector ' +
-                    'value="' +
-                    escapeHtml(getSavedChapterSelector()) +
-                    '" placeholder="Chapter CSS" />' +
-
-                '<button class="wnc-save-selector" data-wnc-save-selector>' +
-                    'Save' +
-                '</button>' +
-
-                '<select class="wnc-template" ' +
-                    'data-wnc-template>' +
+                '<select class="wnc-template" data-wnc-template>' +
                     templateOptions +
                 "</select>" +
-
-                '<button class="wnc-close" ' +
-                    'data-wnc-close>' +
+                '<button class="wnc-close" data-wnc-close>' +
                     "Close" +
                 "</button>" +
-
             "</div>"
         );
     }
@@ -5168,28 +5724,23 @@ function getVisibleConflicts() {
 
                         return (
                             "<tr>" +
-
                                 "<td>" +
                                     escapeHtml(
                                         name
                                     ) +
                                 "</td>" +
-
                                 '<td class="wnc-number">' +
                                     escapeHtml(
                                         frequency
                                     ) +
                                 "</td>" +
-
                                 '<td class="wnc-input">' +
                                     escapeHtml(
                                         input
                                     ) +
                                 "</td>" +
-
                                 "<td>" +
-                                    '<button class="wnc-copy" ' +
-                                    'data-wnc-copy="' +
+                                    '<button class="wnc-copy" data-wnc-copy="' +
                                     escapeHtml(
                                         input
                                     ) +
@@ -5197,7 +5748,6 @@ function getVisibleConflicts() {
                                         "Copy" +
                                     "</button>" +
                                 "</td>" +
-
                             "</tr>"
                         );
                     }
@@ -5206,11 +5756,8 @@ function getVisibleConflicts() {
 
         return (
             '<div class="wnc-panel">' +
-
                 '<div class="wnc-table-wrap">' +
-
                     "<table>" +
-
                         "<thead>" +
                             "<tr>" +
                                 "<th>Candidate</th>" +
@@ -5219,15 +5766,11 @@ function getVisibleConflicts() {
                                 "<th>Copy</th>" +
                             "</tr>" +
                         "</thead>" +
-
                         "<tbody>" +
                             rows +
                         "</tbody>" +
-
                     "</table>" +
-
                 "</div>" +
-
             "</div>"
         );
     }
@@ -5254,20 +5797,17 @@ function getVisibleConflicts() {
             ) || 0;
 
         return (
-            '<div class="wnc-group-header" ' +
-                'data-wnc-group="' +
+            '<div class="wnc-group-header" data-wnc-group="' +
                 escapeHtml(
                     group.index
                 ) +
             '">' +
-
                 '<span class="wnc-group-name">' +
                     escapeHtml(
                         group.name ||
                         "(Unnamed group)"
                     ) +
                 "</span>" +
-
                 '<span class="wnc-group-meta">' +
                     escapeHtml(
                         ruleCount
@@ -5278,7 +5818,6 @@ function getVisibleConflicts() {
                     ) +
                     " matches" +
                 "</span>" +
-
             "</div>"
         );
     }
@@ -5332,7 +5871,7 @@ function getVisibleConflicts() {
                         '" ' +
                         'data-wnc-rule-index="' +
                         escapeHtml(
-                            rule.index
+                            rule.ruleIndex
                         ) +
                         '"'
                     )
@@ -5381,9 +5920,7 @@ function getVisibleConflicts() {
                             '<div class="wnc-conflict-label">' +
                                 "Chapter candidates matched by this rule:" +
                             "</div>" +
-
                             '<ul class="wnc-detail-list">' +
-
                                 candidates
                                     .map(
                                         candidate =>
@@ -5399,9 +5936,7 @@ function getVisibleConflicts() {
                                             "</li>"
                                     )
                                     .join("") +
-
                             "</ul>" +
-
                         "</div>" +
                     "</td>" +
                 "</tr>";
@@ -5444,19 +5979,13 @@ function getVisibleConflicts() {
                             renderGroupHeader(
                                 group
                             ) +
-
                             '<div class="wnc-table-wrap">' +
-
                                 "<table>" +
-
                                     "<thead>" +
                                         "<tr>" +
-
                                             "<th></th>" +
-
                                             "<th>" +
-                                                '<button class="wnc-sort" ' +
-                                                'data-wnc-rule-sort="input">' +
+                                                '<button class="wnc-sort" data-wnc-rule-sort="input">' +
                                                     "Input" +
                                                     getSortArrow(
                                                         state.ruleSort,
@@ -5464,10 +5993,8 @@ function getVisibleConflicts() {
                                                     ) +
                                                 "</button>" +
                                             "</th>" +
-
                                             "<th>" +
-                                                '<button class="wnc-sort" ' +
-                                                'data-wnc-rule-sort="output">' +
+                                                '<button class="wnc-sort" data-wnc-rule-sort="output">' +
                                                     "Output" +
                                                     getSortArrow(
                                                         state.ruleSort,
@@ -5475,10 +6002,8 @@ function getVisibleConflicts() {
                                                     ) +
                                                 "</button>" +
                                             "</th>" +
-
                                             "<th>" +
-                                                '<button class="wnc-sort" ' +
-                                                'data-wnc-rule-sort="matches">' +
+                                                '<button class="wnc-sort" data-wnc-rule-sort="matches">' +
                                                     "Matches" +
                                                     getSortArrow(
                                                         state.ruleSort,
@@ -5486,12 +6011,9 @@ function getVisibleConflicts() {
                                                     ) +
                                                 "</button>" +
                                             "</th>" +
-
                                         "</tr>" +
                                     "</thead>" +
-
                                     "<tbody>" +
-
                                         rules
                                             .map(
                                                 rule =>
@@ -5501,11 +6023,8 @@ function getVisibleConflicts() {
                                                     )
                                             )
                                             .join("") +
-
                                     "</tbody>" +
-
                                 "</table>" +
-
                             "</div>"
                         );
                     }
@@ -5514,16 +6033,12 @@ function getVisibleConflicts() {
 
         return (
             '<div class="wnc-panel">' +
-
                 '<div class="wnc-table-wrap">' +
-
                     "<table>" +
                         "<thead>" +
                             "<tr>" +
-
                                 "<th>" +
-                                    '<button class="wnc-sort" ' +
-                                    'data-wnc-group-sort="name">' +
+                                    '<button class="wnc-sort" data-wnc-group-sort="name">' +
                                         "Group" +
                                         getSortArrow(
                                             state.groupSort,
@@ -5531,10 +6046,8 @@ function getVisibleConflicts() {
                                         ) +
                                     "</button>" +
                                 "</th>" +
-
                                 "<th>" +
-                                    '<button class="wnc-sort" ' +
-                                    'data-wnc-group-sort="rules">' +
+                                    '<button class="wnc-sort" data-wnc-group-sort="rules">' +
                                         "Rules" +
                                         getSortArrow(
                                             state.groupSort,
@@ -5542,10 +6055,8 @@ function getVisibleConflicts() {
                                         ) +
                                     "</button>" +
                                 "</th>" +
-
                                 "<th>" +
-                                    '<button class="wnc-sort" ' +
-                                    'data-wnc-group-sort="matches">' +
+                                    '<button class="wnc-sort" data-wnc-group-sort="matches">' +
                                         "Matches" +
                                         getSortArrow(
                                             state.groupSort,
@@ -5553,15 +6064,11 @@ function getVisibleConflicts() {
                                         ) +
                                     "</button>" +
                                 "</th>" +
-
                             "</tr>" +
                         "</thead>" +
                     "</table>" +
-
                 "</div>" +
-
                 groupRows +
-
             "</div>"
         );
     }
@@ -5591,7 +6098,6 @@ function getVisibleConflicts() {
 
         return (
             '<div class="wnc-conflict">' +
-
                 '<div>' +
                     '<span class="wnc-conflict-label">' +
                         "Candidate: " +
@@ -5603,15 +6109,12 @@ function getVisibleConflicts() {
                             ""
                         ) +
                     "</span>" +
-
                     '<span class="wnc-badge">' +
                         escapeHtml(
                             type
                         ) +
                     "</span>" +
-
                 "</div>" +
-
                 '<div>' +
                     '<span class="wnc-conflict-label">' +
                         "Frequency: " +
@@ -5622,7 +6125,6 @@ function getVisibleConflicts() {
                         0
                     ) +
                 "</div>" +
-
                 '<div>' +
                     '<span class="wnc-conflict-label">' +
                         "FoxReplace group: " +
@@ -5631,7 +6133,6 @@ function getVisibleConflicts() {
                         groupName
                     ) +
                 "</div>" +
-
                 '<div>' +
                     '<span class="wnc-conflict-label">' +
                         "Rule Input: " +
@@ -5642,7 +6143,6 @@ function getVisibleConflicts() {
                         ) +
                     "</span>" +
                 "</div>" +
-
                 '<div>' +
                     '<span class="wnc-conflict-label">' +
                         "Rule Output: " +
@@ -5653,7 +6153,6 @@ function getVisibleConflicts() {
                         ) +
                     "</span>" +
                 "</div>" +
-
             "</div>"
         );
     }
@@ -5727,12 +6226,10 @@ function getVisibleConflicts() {
 
         return (
             '<div class="wnc-panel">' +
-
                 clusters
                     .map(
                         cluster =>
                             '<div class="wnc-conflict-cluster">' +
-
                                 '<div class="wnc-conflict-cluster-header">' +
                                     "Cluster #" +
                                     escapeHtml(
@@ -5744,17 +6241,14 @@ function getVisibleConflicts() {
                                     ) +
                                     ")" +
                                 "</div>" +
-
                                 cluster.conflicts
                                     .map(
                                         renderConflict
                                     )
                                     .join("") +
-
                             "</div>"
                     )
                     .join("") +
-
             "</div>"
         );
     }
@@ -5776,60 +6270,14 @@ function getVisibleConflicts() {
     }
 
     function renderWncWindow() {
-        const scanInfo =
-            getChapterScanInfo();
-
-        const selector =
-            scanInfo.selector ||
-            "automatic";
-
-        const chapterFound =
-            Boolean(
-                scanInfo.container
-            );
-
-        const error =
-            scanInfo.error;
-
-        let html =
+        return (
             '<div class="wnc-shell">' +
-
                 renderToolbar() +
-
-                '<div class="wnc-path">' +
-                    "Chapter container: " +
-                    escapeHtml(
-                        selector
-                    ) +
-                    " · " +
-                    (
-                        chapterFound
-                            ? "found"
-                            : "not found"
-                    ) +
-                "</div>";
-
-        if (
-            error
-        ) {
-            html +=
-                '<div class="wnc-error">' +
-                    escapeHtml(
-                        error.message ||
-                        error
-                    ) +
-                "</div>";
-        }
-
-        html +=
-            '<div class="wnc-content">' +
-                renderActiveTab() +
-            "</div>";
-
-        html +=
-            "</div>";
-
-        return html;
+                '<div class="wnc-content">' +
+                    renderActiveTab() +
+                "</div>" +
+            "</div>"
+        );
     }
 
     function render() {
@@ -5901,8 +6349,6 @@ function getVisibleConflicts() {
         }
     }
 
-      
-
     function bindWncEvents(
         overlay
     ) {
@@ -5957,17 +6403,6 @@ function getVisibleConflicts() {
                     );
                 }
             );
-        }
-
-        const selectorInput = overlay.querySelector("[data-wnc-selector]");
-        const selectorButton = overlay.querySelector("[data-wnc-save-selector]");
-
-        if (selectorInput && selectorButton) {
-            selectorButton.addEventListener("click", () => {
-                if (!saveChapterSelector(selectorInput.value)) return;
-                runAnalysisSafely();
-                render();
-            });
         }
 
         const closeButton =
@@ -6120,7 +6555,7 @@ function getVisibleConflicts() {
                             const rule =
                                 group.rules?.find(
                                     item =>
-                                        item.index ===
+                                        item.ruleIndex ===
                                         ruleIndex
                                 );
 
@@ -6341,13 +6776,10 @@ function getVisibleConflicts() {
                 file
             );
 
-        let parsed;
-
-        try {
-            parsed = parseImportedText(text);
-        } catch (error) {
-            throw error;
-        }
+        const parsed =
+            parseImportedText(
+                text
+            );
 
         const adapted =
             adaptFoxReplaceDatabase(
@@ -6420,61 +6852,61 @@ function getVisibleConflicts() {
         );
     }
 
-function ensureDatabaseShape() {
-    if (
-        !adaptedDatabase ||
-        !Array.isArray(
-            adaptedDatabase.groups
-        )
-    ) {
-        adaptedDatabase = {
-            groups: []
-        };
+    function ensureDatabaseShape() {
+        if (
+            !adaptedDatabase ||
+            !Array.isArray(
+                adaptedDatabase.groups
+            )
+        ) {
+            adaptedDatabase = {
+                groups: []
+            };
+
+            db =
+                adaptedDatabase;
+        }
+
+        return adaptedDatabase;
+    }
+
+    function initializeWnc() {
+        adaptedDatabase =
+            loadActiveDatabase();
 
         db =
             adaptedDatabase;
-    }
 
-    return adaptedDatabase;
-}
+        ensureDatabaseShape();
 
-function initializeWnc() {
-    adaptedDatabase =
-        loadActiveDatabase();
-
-    db =
-        adaptedDatabase;
-
-    ensureDatabaseShape();
-
-    const runAnalysis =
-        () => {
-            try {
-                analyzePage();
-            } catch (
-                error
-            ) {
-                console.error(
-                    "[WNC] Initial analysis failed:",
+        const runAnalysis =
+            () => {
+                try {
+                    analyzePage();
+                } catch (
                     error
-                );
+                ) {
+                    console.error(
+                        "[WNC] Initial analysis failed:",
+                        error
+                    );
 
-                clearAnalysisResults();
-            }
-        };
+                    clearAnalysisResults();
+                }
+            };
 
-    runAnalysis();
+        runAnalysis();
 
-    setTimeout(
-        runAnalysis,
-        1000
-    );
+        setTimeout(
+            runAnalysis,
+            1000
+        );
 
-    setTimeout(
-        runAnalysis,
-        3000
-    );
-}
+        setTimeout(
+            runAnalysis,
+            3000
+        );
+    }
 
     function startWnc() {
         registerWncMenuCommands();
