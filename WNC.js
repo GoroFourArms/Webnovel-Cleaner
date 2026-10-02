@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.31
+// @version      6.1.32
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -54,6 +54,7 @@
         candidates: [],
         groupMatches: [],
         conflicts: [],
+        conflictClusters: [],
         candidateTemplate: "Other",
         showOtherGroups: false,
         groupSort: {
@@ -1493,81 +1494,11 @@
         );
     }
 
-    function createCluster(
-        root,
-        clusterId
-    ) {
-        return {
-            id: clusterId,
-            root,
-            members: [],
-            memberKeys: new Set()
-        };
-    }
+    
 
-    function addCandidateToCluster(
-        cluster,
-        candidate
-    ) {
-        const key =
-            candidate.normalized;
+    
 
-        if (
-            cluster.memberKeys.has(
-                key
-            )
-        ) {
-            return;
-        }
-
-        cluster.memberKeys.add(
-            key
-        );
-
-        cluster.members.push(
-            candidate
-        );
-    }
-
-    function sortClusterMembers(
-        cluster
-    ) {
-        cluster.members.sort(
-            (
-                left,
-                right
-            ) => {
-                const frequencyDifference =
-                    (
-                        Number(
-                            right.frequency
-                        ) || 0
-                    ) -
-                    (
-                        Number(
-                            left.frequency
-                        ) || 0
-                    );
-
-                if (
-                    frequencyDifference !==
-                    0
-                ) {
-                    return frequencyDifference;
-                }
-
-                return String(
-                    left.name ||
-                        ""
-                ).localeCompare(
-                    String(
-                        right.name ||
-                            ""
-                    )
-                );
-            }
-        );
-    }
+    
 
     function buildCandidateClusters(
         candidates
@@ -1627,7 +1558,6 @@
 
         const clusters = [];
         const assigned = new Set();
-        let nextClusterId = 1;
 
         for (
             const root
@@ -1644,22 +1574,18 @@
                 continue;
             }
 
-            const clusterId =
-                nextClusterId++;
+            const cluster = {
+                root,
+                rootFrequency:
+                    Number(
+                        root.frequency
+                    ) || 0,
+                members: []
+            };
 
-            const cluster =
-                createCluster(
-                    root,
-                    clusterId
-                );
-
-            addCandidateToCluster(
-                cluster,
+            cluster.members.push(
                 root
             );
-
-            root.clusterId =
-                clusterId;
 
             assigned.add(
                 rootKey
@@ -1686,13 +1612,9 @@
                         candidate
                     )
                 ) {
-                    addCandidateToCluster(
-                        cluster,
+                    cluster.members.push(
                         candidate
                     );
-
-                    candidate.clusterId =
-                        clusterId;
 
                     assigned.add(
                         candidateKey
@@ -1700,8 +1622,40 @@
                 }
             }
 
-            sortClusterMembers(
-                cluster
+            cluster.members.sort(
+                (
+                    left,
+                    right
+                ) => {
+                    const frequencyDifference =
+                        (
+                            Number(
+                                right.frequency
+                            ) || 0
+                        ) -
+                        (
+                            Number(
+                                left.frequency
+                            ) || 0
+                        );
+
+                    if (
+                        frequencyDifference !==
+                        0
+                    ) {
+                        return frequencyDifference;
+                    }
+
+                    return String(
+                        left.name ||
+                        ""
+                    ).localeCompare(
+                        String(
+                            right.name ||
+                            ""
+                        )
+                    );
+                }
             );
 
             clusters.push(
@@ -1712,7 +1666,7 @@
         return {
             clusters,
             unclustered:
-                candidates.filter(
+                ordered.filter(
                     candidate =>
                         !assigned.has(
                             candidate.normalized
@@ -1721,48 +1675,7 @@
             assigned
         };
     }
-      function findIsolatedCandidates(
-        candidates
-    ) {
-        const isolated = [];
-
-        for (
-            const candidate
-            of candidates
-        ) {
-            let linked = false;
-
-            for (
-                const other
-                of candidates
-            ) {
-                if (
-                    candidate ===
-                    other
-                ) {
-                    continue;
-                }
-
-                if (
-                    candidatesAreClusterLinked(
-                        candidate,
-                        other
-                    )
-                ) {
-                    linked = true;
-                    break;
-                }
-            }
-
-            if (!linked) {
-                isolated.push(
-                    candidate
-                );
-            }
-        }
-
-        return isolated;
-    }
+      
 
     function applyUnclusteredFrequencyFilter(
         candidates
@@ -1792,10 +1705,22 @@
                 )
             );
 
-        const isolated =
-            findIsolatedCandidates(
+        const clustering =
+            buildCandidateClusters(
                 candidates
             );
+
+        const isolated =
+            clustering.clusters
+                .filter(
+                    cluster =>
+                        cluster.members.length ===
+                        1
+                )
+                .map(
+                    cluster =>
+                        cluster.root
+                );
 
         const threshold =
             maximumFrequency *
@@ -1849,17 +1774,12 @@
     function processCandidateClusters(
         candidates
     ) {
-        const clustering =
-            buildCandidateClusters(
-                candidates
-            );
-
         const filtered =
             applyUnclusteredFrequencyFilter(
                 candidates
             );
 
-        const finalClustering =
+        const clustering =
             buildCandidateClusters(
                 filtered.candidates
             );
@@ -1870,8 +1790,6 @@
             removed:
                 filtered.removed,
             clusters:
-                finalClustering.clusters,
-            initialClusters:
                 clustering.clusters,
             isolated:
                 filtered.isolated,
@@ -1882,48 +1800,7 @@
         };
     }
 
-    function sortClustersByRootFrequency(
-        clusters
-    ) {
-        return clusters
-            .slice()
-            .sort(
-                (
-                    left,
-                    right
-                ) => {
-                    const frequencyDifference =
-                        (
-                            Number(
-                                right.root?.frequency
-                            ) || 0
-                        ) -
-                        (
-                            Number(
-                                left.root?.frequency
-                            ) || 0
-                        );
-
-                    if (
-                        frequencyDifference !==
-                        0
-                    ) {
-                        return frequencyDifference;
-                    }
-
-                    return (
-                        Number(
-                            left.id
-                        ) || 0
-                    ) -
-                    (
-                        Number(
-                            right.id
-                        ) || 0
-                    );
-                }
-            );
-    }
+    
 
     function compileRuleRegex(
         rule
@@ -2554,7 +2431,7 @@
     function buildGroupMatches(
         classifications
     ) {
-        const groups =
+        const matchesByGroup =
             new Map();
 
         for (
@@ -2572,79 +2449,442 @@
                 classification.rule;
 
             const groupIndex =
-                rule.groupIndex;
+                Number(
+                    rule.groupIndex
+                );
 
-            let group =
-                groups.get(
+            if (
+                !Number.isFinite(
+                    groupIndex
+                )
+            ) {
+                continue;
+            }
+
+            if (
+                !matchesByGroup.has(
+                    groupIndex
+                )
+            ) {
+                matchesByGroup.set(
+                    groupIndex,
+                    new Map()
+                );
+            }
+
+            const rules =
+                matchesByGroup.get(
                     groupIndex
                 );
 
-            if (!group) {
-                const sourceGroup =
-                    adaptedDatabase.groups[
-                        groupIndex
-                    ];
-
-                if (!sourceGroup) {
-                    continue;
-                }
-
-                group = {
-                    ...sourceGroup,
-                    rules: []
-                };
-
-                groups.set(
-                    groupIndex,
-                    group
-                );
-            }
-
-            let groupRule =
-                group.rules.find(
-                    item =>
-                        item.ruleIndex ===
-                        rule.ruleIndex
-                );
-
             if (
-                !groupRule
-            ) {
-                groupRule = {
-                    ...rule,
-                    candidates: []
-                };
-
-                group.rules.push(
-                    groupRule
-                );
-            }
-
-            const normalized =
-                classification
-                    .candidate
-                    .normalized;
-
-            if (
-                !groupRule.candidates.some(
-                    item =>
-                        item.normalized ===
-                        normalized
+                !rules.has(
+                    rule.ruleIndex
                 )
             ) {
-                groupRule.candidates.push(
+                rules.set(
+                    rule.ruleIndex,
+                    []
+                );
+            }
+
+            const candidates =
+                rules.get(
+                    rule.ruleIndex
+                );
+
+            if (
+                !candidates.some(
+                    candidate =>
+                        candidate.normalized ===
+                        classification.candidate.normalized
+                )
+            ) {
+                candidates.push(
                     classification.candidate
                 );
             }
         }
 
-        return Array.from(
-            groups.values()
+        const result = [];
+
+        for (
+            let groupIndex = 0;
+            groupIndex <
+                adaptedDatabase.groups.length;
+            groupIndex++
+        ) {
+            const sourceGroup =
+                adaptedDatabase.groups[
+                    groupIndex
+                ];
+
+            const matchedRules =
+                matchesByGroup.get(
+                    groupIndex
+                );
+
+            if (
+                !matchedRules
+            ) {
+                continue;
+            }
+
+            const rules = [];
+
+            for (
+                let ruleIndex = 0;
+                ruleIndex <
+                    (
+                        sourceGroup.rules?.length ||
+                        0
+                    );
+                ruleIndex++
+            ) {
+                if (
+                    !matchedRules.has(
+                        ruleIndex
+                    )
+                ) {
+                    continue;
+                }
+
+                const sourceRule =
+                    sourceGroup.rules[
+                        ruleIndex
+                    ];
+
+                rules.push({
+                    ...sourceRule,
+                    candidates:
+                        matchedRules.get(
+                            ruleIndex
+                        )
+                });
+            }
+
+            if (
+                rules.length
+            ) {
+                result.push({
+                    ...sourceGroup,
+                    index: groupIndex,
+                    rules
+                });
+            }
+        }
+
+        return result;
+    }
+
+      function getConflictRuleKey(
+        rule
+    ) {
+        if (!rule) {
+            return "";
+        }
+
+        return (
+            String(
+                rule.groupIndex ?? ""
+            ) +
+            ":" +
+            String(
+                rule.ruleIndex ?? ""
+            )
         );
     }
 
-      function buildConflictData(
+    function buildConflictClusters(
         classifications
+    ) {
+        const ruleMap = new Map();
+        const adjacency = new Map();
+
+        for (
+            const classification
+            of classifications || []
+        ) {
+            if (
+                classification.type !==
+                "conflict"
+            ) {
+                continue;
+            }
+
+            const uniqueRules =
+                new Map();
+
+            for (
+                const match
+                of (
+                    classification.matches?.all ||
+                    []
+                )
+            ) {
+                const rule =
+                    match.rule;
+
+                const key =
+                    getConflictRuleKey(
+                        rule
+                    );
+
+                if (key) {
+                    uniqueRules.set(
+                        key,
+                        rule
+                    );
+                }
+            }
+
+            const keys =
+                Array.from(
+                    uniqueRules.keys()
+                );
+
+            for (
+                const [key, rule]
+                of uniqueRules
+            ) {
+                ruleMap.set(
+                    key,
+                    rule
+                );
+
+                if (
+                    !adjacency.has(
+                        key
+                    )
+                ) {
+                    adjacency.set(
+                        key,
+                        new Set()
+                    );
+                }
+            }
+
+            for (
+                let index = 0;
+                index < keys.length;
+                index++
+            ) {
+                for (
+                    let next = index + 1;
+                    next < keys.length;
+                    next++
+                ) {
+                    adjacency
+                        .get(
+                            keys[index]
+                        )
+                        .add(
+                            keys[next]
+                        );
+
+                    adjacency
+                        .get(
+                            keys[next]
+                        )
+                        .add(
+                            keys[index]
+                        );
+                }
+            }
+        }
+
+        const rules =
+            Array.from(
+                ruleMap.entries()
+            );
+
+        for (
+            const [
+                sourceKey,
+                sourceRule
+            ]
+            of rules
+        ) {
+            for (
+                const [
+                    targetKey,
+                    targetRule
+                ]
+                of rules
+            ) {
+                if (
+                    sourceKey ===
+                    targetKey
+                ) {
+                    continue;
+                }
+
+                if (
+                    ruleOutputMatchesRuleInput(
+                        sourceRule,
+                        targetRule
+                    )
+                ) {
+                    adjacency
+                        .get(
+                            sourceKey
+                        )
+                        .add(
+                            targetKey
+                        );
+
+                    adjacency
+                        .get(
+                            targetKey
+                        )
+                        .add(
+                            sourceKey
+                        );
+                }
+            }
+        }
+
+        const visited = new Set();
+        const clusters = [];
+        const ruleClusterMap =
+            new Map();
+
+        let nextClusterId = 1;
+
+        for (
+            const [
+                rootKey
+            ]
+            of rules
+        ) {
+            if (
+                visited.has(
+                    rootKey
+                )
+            ) {
+                continue;
+            }
+
+            const stack = [
+                rootKey
+            ];
+
+            const clusterKeys = [];
+
+            visited.add(
+                rootKey
+            );
+
+            while (
+                stack.length
+            ) {
+                const key =
+                    stack.pop();
+
+                clusterKeys.push(
+                    key
+                );
+
+                for (
+                    const neighbor
+                    of (
+                        adjacency.get(
+                            key
+                        ) || new Set()
+                    )
+                ) {
+                    if (
+                        visited.has(
+                            neighbor
+                        )
+                    ) {
+                        continue;
+                    }
+
+                    visited.add(
+                        neighbor
+                    );
+
+                    stack.push(
+                        neighbor
+                    );
+                }
+            }
+
+            clusterKeys.sort(
+                (
+                    left,
+                    right
+                ) => {
+                    const leftRule =
+                        ruleMap.get(
+                            left
+                        );
+
+                    const rightRule =
+                        ruleMap.get(
+                            right
+                        );
+
+                    return (
+                        (
+                            leftRule?.groupIndex ??
+                            0
+                        ) -
+                        (
+                            rightRule?.groupIndex ??
+                            0
+                        )
+                    ) ||
+                    (
+                        (
+                            leftRule?.ruleIndex ??
+                            0
+                        ) -
+                        (
+                            rightRule?.ruleIndex ??
+                            0
+                        )
+                    );
+                }
+            );
+
+            const clusterId =
+                nextClusterId++;
+
+            for (
+                const key
+                of clusterKeys
+            ) {
+                ruleClusterMap.set(
+                    key,
+                    clusterId
+                );
+            }
+
+            clusters.push({
+                id: clusterId,
+                ruleKeys:
+                    clusterKeys,
+                rules:
+                    clusterKeys.map(
+                        key =>
+                            ruleMap.get(
+                                key
+                            )
+                    )
+            });
+        }
+
+        return {
+            clusters,
+            ruleClusterMap
+        };
+    }
+
+    function buildConflictData(
+        classifications,
+        ruleClusterMap
     ) {
         const conflicts = [];
         let discoveryOrder = 0;
@@ -2663,21 +2903,12 @@
             const candidate =
                 classification.candidate;
 
-            const exact =
-                classification.matches
-                    .exact;
-
-            const partial =
-                classification.matches
-                    .partial;
-
-            const all =
-                classification.matches
-                    .all;
-
             for (
                 const match
-                of all
+                of (
+                    classification.matches?.all ||
+                    []
+                )
             ) {
                 const rule =
                     match.rule;
@@ -2691,8 +2922,10 @@
                     continue;
                 }
 
-                const type =
-                    match.type;
+                const ruleKey =
+                    getConflictRuleKey(
+                        rule
+                    );
 
                 conflicts.push({
                     id:
@@ -2708,12 +2941,11 @@
                             candidate.frequency
                         ) || 0,
                     clusterId:
-                        Number.isFinite(
-                            candidate.clusterId
-                        )
-                            ? candidate.clusterId
-                            : 0,
-                    type,
+                        ruleClusterMap?.get(
+                            ruleKey
+                        ) || 0,
+                    type:
+                        match.type,
                     groupName:
                         group.name ||
                         "(Unnamed group)",
@@ -2759,28 +2991,34 @@
     function generateOtherInput(
         candidate
     ) {
-        return normalizeGeneratedInputSpacing(
-            candidate?.name ||
+        const value =
+            normalizeGeneratedInputSpacing(
+                candidate?.name ||
                 candidate?.displayName ||
                 ""
+            );
+
+        if (!value) {
+            return "";
+        }
+
+        return (
+            "(?<![a-z])" +
+            escapeRegexLiteral(
+                value
+            ) +
+            "(?![a-z])"
         );
     }
 
     function generateKoreanInput(
         candidate
     ) {
-        return generateOtherInput(
-            candidate
-        );
-    }
-
-    function generateJapaneseInput(
-        candidate
-    ) {
         const value =
             normalizeGeneratedInputSpacing(
                 candidate?.name ||
-                    ""
+                candidate?.displayName ||
+                ""
             );
 
         if (!value) {
@@ -2796,11 +3034,64 @@
             tokens.length <= 1
         ) {
             return (
-                "(?<![A-Za-z0-9'’-])" +
+                "(?<![a-z])" +
                 escapeRegexLiteral(
                     value
                 ) +
-                "(?![A-Za-z0-9'’-])"
+                "(?![a-z])"
+            );
+        }
+
+        const nameTokens =
+            tokens.slice(1);
+
+        const pattern =
+            nameTokens
+                .map(
+                    token =>
+                        escapeRegexLiteral(
+                            token
+                        )
+                )
+                .join(
+                    "[- ]?"
+                );
+
+        return (
+            "(?<![a-z])" +
+            pattern +
+            "(?![a-z])"
+        );
+    }
+
+    function generateJapaneseInput(
+        candidate
+    ) {
+        const value =
+            normalizeGeneratedInputSpacing(
+                candidate?.name ||
+                candidate?.displayName ||
+                ""
+            );
+
+        if (!value) {
+            return "";
+        }
+
+        const tokens =
+            splitCandidateTokens(
+                value
+            );
+
+        if (
+            tokens.length <= 1
+        ) {
+            return (
+                "(?<![a-z])" +
+                escapeRegexLiteral(
+                    value
+                ) +
+                "(?![a-z])"
             );
         }
 
@@ -2814,9 +3105,15 @@
                 );
 
         const reverse =
-            tokens
-                .slice()
-                .reverse()
+            [
+                tokens[
+                    tokens.length - 1
+                ],
+                ...tokens.slice(
+                    0,
+                    -1
+                )
+            ]
                 .map(
                     escapeRegexLiteral
                 )
@@ -2824,20 +3121,12 @@
                     "\\s+"
                 );
 
-        const alternatives =
-            Array.from(
-                new Set([
-                    forward,
-                    reverse
-                ])
-            );
-
         return (
-            "(?<![A-Za-z0-9'’-])(?:" +
-            alternatives.join(
-                "|"
-            ) +
-            ")(?![A-Za-z0-9'’-])"
+            "(?<![a-z])(?:" +
+            forward +
+            "|" +
+            reverse +
+            ")(?![a-z])"
         );
     }
 
@@ -2951,30 +3240,27 @@
         state.candidates = [];
         state.groupMatches = [];
         state.conflicts = [];
-        state.groupIndex = null;
-        state.expandedRules.clear();
+        state.conflictClusters = [];
     }
 
     function buildCandidateResults(
-        processedCandidates
+        classifications
     ) {
         const candidates = [];
 
         for (
-            const candidate
-            of processedCandidates
+            const classification
+            of classifications
         ) {
-            const classification =
-                classifyCandidate(
-                    candidate
-                );
-
             if (
                 classification.type !==
                 "candidate"
             ) {
                 continue;
             }
+
+            const candidate =
+                classification.candidate;
 
             candidate.generatedInput =
                 generateCandidateInput(
@@ -3032,106 +3318,96 @@ function getChapterScanInfo() {
     };
 }
 function analyzePage() {
-    clearAnalysisResults();
+        clearAnalysisResults();
 
-    const scanInfo =
-        getChapterScanInfo();
+        const scanInfo =
+            getChapterScanInfo();
 
-    chapterText =
-        scanInfo.text || "";
+        chapterText =
+            scanInfo.text || "";
 
-    if (
-        !chapterText.trim()
-    ) {
-        return {
-            chapterText: "",
-            candidates: [],
-            groupMatches: [],
-            conflicts: [],
-            conflictClusters: [],
-            error:
-                scanInfo.error ||
-                null
-        };
-    }
+        if (
+            !chapterText.trim()
+        ) {
+            return {
+                chapterText: "",
+                candidates: [],
+                groupMatches: [],
+                conflicts: [],
+                conflictClusters: [],
+                error:
+                    scanInfo.error ||
+                    null
+            };
+        }
 
-    const scanned =
-        scanChapterCandidates(
-            chapterText
-        );
-
-    const classifications =
-        scanned.map(
-            candidate =>
-                classifyCandidate(
-                    candidate
-                )
-        );
-
-    const candidates =
-        buildCandidateResults(
-            classifications
-        );
-
-    const matched =
-        classifications
-            .filter(
-                classification =>
-                    classification.type !==
-                    "candidate"
-            )
-            .map(
-                classification =>
-                    classification.candidate
+        const scanned =
+            scanChapterCandidates(
+                chapterText
             );
 
-    processCandidateClusters(
-        matched
-    );
+        const classifications =
+            scanned.map(
+                candidate =>
+                    classifyCandidate(
+                        candidate
+                    )
+            );
 
-    const groupMatches =
-        buildGroupMatches(
-            classifications
+        const candidates =
+            buildCandidateResults(
+                classifications
+            );
+
+        const candidateProcessing =
+            processCandidateClusters(
+                candidates
+            );
+
+        const groupMatches =
+            buildGroupMatches(
+                classifications
+            );
+
+        const conflictClustering =
+            buildConflictClusters(
+                classifications
+            );
+
+        const conflicts =
+            buildConflictData(
+                classifications,
+                conflictClustering.ruleClusterMap
+            );
+
+        state.candidates =
+            candidateProcessing.candidates;
+
+        state.groupMatches =
+            groupMatches;
+
+        state.conflicts =
+            conflicts;
+
+        state.conflictClusters =
+            conflictClustering.clusters;
+
+        regenerateCandidateInputs(
+            state.candidates,
+            state.candidateTemplate
         );
 
-    const conflictClustering =
-        buildConflictClusters(
-            classifications
-        );
-
-    const conflicts =
-        buildConflictData(
-            classifications,
-            conflictClustering.ruleClusterMap
-        );
-
-    state.candidates =
-        candidates;
-
-    state.groupMatches =
-        groupMatches;
-
-    state.conflicts =
-        conflicts;
-
-    state.conflictClusters =
-        conflictClustering.clusters;
-
-    regenerateCandidateInputs(
-        state.candidates,
-        state.candidateTemplate
-    );
-
-    return {
-        chapterText,
-        candidates,
-        groupMatches,
-        conflicts,
-        conflictClusters:
-            state.conflictClusters,
-        error: null
-    };
-}
+        return {
+            chapterText,
+            candidates:
+                state.candidates,
+            groupMatches,
+            conflicts,
+            conflictClusters:
+                state.conflictClusters,
+            error: null
+        };
+    }
 
     function runAnalysisSafely() {
         try {
@@ -3898,6 +4174,19 @@ function analyzePage() {
 `;
     }
 
+    function getVisibleCandidates() {
+        const clustering =
+            buildCandidateClusters(
+                state.candidates
+            );
+
+        return clustering.clusters
+            .flatMap(
+                cluster =>
+                    cluster.members
+            );
+    }
+
     function renderCandidatesTab() {
         if (
             !state.candidates.length
@@ -3920,7 +4209,7 @@ function analyzePage() {
         </tr>
     </thead>
     <tbody>
-        ${state.candidates
+        ${getVisibleCandidates()
             .map(
                 candidate => {
                     const input =
