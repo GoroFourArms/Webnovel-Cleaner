@@ -1569,166 +1569,158 @@
         );
     }
 
-        function buildCandidateClusters(
-    candidates
-) {
-    if (
-        !Array.isArray(
-            candidates
-        ) ||
-        !candidates.length
-    ) {
-        return {
-            clusters: [],
-            unclustered: [],
-            assigned: new Set()
-        };
-    }
-
-    const ordered =
+    function buildCandidateClusters(
         candidates
-            .slice()
-            .sort(
-                (
-                    left,
-                    right
-                ) => {
-                    const frequencyDifference =
-                        (
-                            Number(
-                                right.frequency
-                            ) || 0
-                        ) -
-                        (
-                            Number(
-                                left.frequency
-                            ) || 0
-                        );
-
-                    if (
-                        frequencyDifference !==
-                        0
-                    ) {
-                        return frequencyDifference;
-                    }
-
-                    return (
-                        (
-                            left.originalIndex ??
-                            0
-                        ) -
-                        (
-                            right.originalIndex ??
-                            0
-                        )
-                    );
-                }
-            );
-
-    const clusters = [];
-    const assigned = new Set();
-    const unclustered = [];
-    let nextClusterId = 1;
-
-    for (
-        const root
-        of ordered
     ) {
-        const rootKey =
-            root.normalized;
-
         if (
-            assigned.has(
-                rootKey
-            )
+            !Array.isArray(
+                candidates
+            ) ||
+            !candidates.length
         ) {
-            continue;
+            return {
+                clusters: [],
+                unclustered: [],
+                assigned: new Set()
+            };
         }
 
-        const members = [];
+        const ordered =
+            candidates
+                .slice()
+                .sort(
+                    (
+                        left,
+                        right
+                    ) => {
+                        const frequencyDifference =
+                            (
+                                Number(
+                                    right.frequency
+                                ) || 0
+                            ) -
+                            (
+                                Number(
+                                    left.frequency
+                                ) || 0
+                            );
+
+                        if (
+                            frequencyDifference !==
+                            0
+                        ) {
+                            return frequencyDifference;
+                        }
+
+                        return (
+                            (
+                                left.originalIndex ??
+                                0
+                            ) -
+                            (
+                                right.originalIndex ??
+                                0
+                            )
+                        );
+                    }
+                );
+
+        const clusters = [];
+        const assigned = new Set();
+        let nextClusterId = 1;
 
         for (
-            const candidate
+            const root
             of ordered
         ) {
-            const candidateKey =
-                candidate.normalized;
+            const rootKey =
+                root.normalized;
 
             if (
                 assigned.has(
-                    candidateKey
+                    rootKey
                 )
             ) {
                 continue;
             }
 
-            if (
-                candidate === root ||
-                candidatesAreClusterLinked(
+            const clusterId =
+                nextClusterId++;
+
+            const cluster =
+                createCluster(
                     root,
-                    candidate
-                )
-            ) {
-                members.push(
-                    candidate
+                    clusterId
                 );
-            }
-        }
-
-        if (
-            members.length === 1
-        ) {
-            root.clusterId = 0;
-            unclustered.push(
-                root
-            );
-            assigned.add(
-                rootKey
-            );
-            continue;
-        }
-
-        const clusterId =
-            nextClusterId++;
-
-        const cluster =
-            createCluster(
-                root,
-                clusterId
-            );
-
-        for (
-            const candidate
-            of members
-        ) {
-            candidate.clusterId =
-                clusterId;
 
             addCandidateToCluster(
                 cluster,
-                candidate
+                root
             );
 
+            root.clusterId =
+                clusterId;
+
             assigned.add(
-                candidate.normalized
+                rootKey
+            );
+
+            for (
+                const candidate
+                of ordered
+            ) {
+                const candidateKey =
+                    candidate.normalized;
+
+                if (
+                    assigned.has(
+                        candidateKey
+                    )
+                ) {
+                    continue;
+                }
+
+                if (
+                    candidatesAreClusterLinked(
+                        root,
+                        candidate
+                    )
+                ) {
+                    addCandidateToCluster(
+                        cluster,
+                        candidate
+                    );
+
+                    candidate.clusterId =
+                        clusterId;
+
+                    assigned.add(
+                        candidateKey
+                    );
+                }
+            }
+
+            sortClusterMembers(
+                cluster
+            );
+
+            clusters.push(
+                cluster
             );
         }
 
-        sortClusterMembers(
-            cluster
-        );
-
-        clusters.push(
-            cluster
-        );
+        return {
+            clusters,
+            unclustered:
+                candidates.filter(
+                    candidate =>
+                        !assigned.has(
+                            candidate.normalized
+                        )
+                ),
+            assigned
+        };
     }
-
-    return {
-        clusters,
-        unclustered,
-        assigned
-    };
-}
       function findIsolatedCandidates(
         candidates
     ) {
@@ -3039,84 +3031,107 @@ function getChapterScanInfo() {
         error: null
     };
 }
-    function analyzePage() {
-        clearAnalysisResults();
+function analyzePage() {
+    clearAnalysisResults();
 
-        const scanInfo =
-            getChapterScanInfo();
+    const scanInfo =
+        getChapterScanInfo();
 
-        chapterText =
-            scanInfo.text || "";
+    chapterText =
+        scanInfo.text || "";
 
-        if (
-            !chapterText.trim()
-        ) {
-            return {
-                chapterText: "",
-                candidates: [],
-                groupMatches: [],
-                conflicts: [],
-                error:
-                    scanInfo.error ||
-                    null
-            };
-        }
-
-        const scanned =
-            scanChapterCandidates(
-                chapterText
-            );
-
-        const processed =
-            processCandidateClusters(
-                scanned
-            );
-
-        const classifications =
-            processed.candidates.map(
-                candidate =>
-                    classifyCandidate(
-                        candidate
-                    )
-            );
-
-        const groupMatches =
-            buildGroupMatches(
-                classifications
-            );
-
-        const conflicts =
-            buildConflictData(
-                classifications
-            );
-
-        const candidates =
-            buildCandidateResults(
-                processed.candidates
-            );
-
-        state.candidates =
-            candidates;
-
-        state.groupMatches =
-            groupMatches;
-
-        state.conflicts =
-            conflicts;
-
-        regenerateCandidateInputs(
-            state.candidates,
-            state.candidateTemplate
-        );
-
+    if (
+        !chapterText.trim()
+    ) {
         return {
-            chapterText,
-            candidates,
-            groupMatches,
-            conflicts,
-            error: null
+            chapterText: "",
+            candidates: [],
+            groupMatches: [],
+            conflicts: [],
+            conflictClusters: [],
+            error:
+                scanInfo.error ||
+                null
         };
     }
+
+    const scanned =
+        scanChapterCandidates(
+            chapterText
+        );
+
+    const classifications =
+        scanned.map(
+            candidate =>
+                classifyCandidate(
+                    candidate
+                )
+        );
+
+    const candidates =
+        buildCandidateResults(
+            classifications
+        );
+
+    const matched =
+        classifications
+            .filter(
+                classification =>
+                    classification.type !==
+                    "candidate"
+            )
+            .map(
+                classification =>
+                    classification.candidate
+            );
+
+    processCandidateClusters(
+        matched
+    );
+
+    const groupMatches =
+        buildGroupMatches(
+            classifications
+        );
+
+    const conflictClustering =
+        buildConflictClusters(
+            classifications
+        );
+
+    const conflicts =
+        buildConflictData(
+            classifications,
+            conflictClustering.ruleClusterMap
+        );
+
+    state.candidates =
+        candidates;
+
+    state.groupMatches =
+        groupMatches;
+
+    state.conflicts =
+        conflicts;
+
+    state.conflictClusters =
+        conflictClustering.clusters;
+
+    regenerateCandidateInputs(
+        state.candidates,
+        state.candidateTemplate
+    );
+
+    return {
+        chapterText,
+        candidates,
+        groupMatches,
+        conflicts,
+        conflictClusters:
+            state.conflictClusters,
+        error: null
+    };
+}
 
     function runAnalysisSafely() {
         try {
@@ -3553,18 +3568,42 @@ function getChapterScanInfo() {
         };
     }
 
-function getAnalysisSummary() {
-    return {
-        candidates:
-            state.candidates.length,
-        groups:
-            state.groupMatches.length,
-        conflicts:
-            state.conflicts.length,
-        conflictClusters:
-            state.conflictClusters.length
-    };
-}
+    function getAnalysisSummary() {
+        const clusterIds =
+            new Set();
+
+        for (
+            const conflict
+            of state.conflicts
+        ) {
+            const clusterId =
+                Number(
+                    conflict.clusterId
+                );
+
+            if (
+                Number.isFinite(
+                    clusterId
+                ) &&
+                clusterId > 0
+            ) {
+                clusterIds.add(
+                    clusterId
+                );
+            }
+        }
+
+        return {
+            candidates:
+                state.candidates.length,
+            groups:
+                state.groupMatches.length,
+            conflicts:
+                state.conflicts.length,
+            conflictClusters:
+                clusterIds.size
+        };
+    }
 
     const WNC_UI_ID =
         "wnc-overlay";
