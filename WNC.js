@@ -1154,23 +1154,6 @@
             .join(" ");
     }
 
-    function createCandidateOccurrence(
-        text
-    ) {
-        const name =
-            String(
-                text ?? ""
-            ).trim();
-
-        return {
-            name,
-            normalized:
-                normalizeCandidate(
-                    name
-                )
-        };
-    }
-
     function mergeCandidateOccurrences(
         occurrences
     ) {
@@ -1586,158 +1569,166 @@
         );
     }
 
-    function buildCandidateClusters(
-        candidates
+        function buildCandidateClusters(
+    candidates
+) {
+    if (
+        !Array.isArray(
+            candidates
+        ) ||
+        !candidates.length
     ) {
+        return {
+            clusters: [],
+            unclustered: [],
+            assigned: new Set()
+        };
+    }
+
+    const ordered =
+        candidates
+            .slice()
+            .sort(
+                (
+                    left,
+                    right
+                ) => {
+                    const frequencyDifference =
+                        (
+                            Number(
+                                right.frequency
+                            ) || 0
+                        ) -
+                        (
+                            Number(
+                                left.frequency
+                            ) || 0
+                        );
+
+                    if (
+                        frequencyDifference !==
+                        0
+                    ) {
+                        return frequencyDifference;
+                    }
+
+                    return (
+                        (
+                            left.originalIndex ??
+                            0
+                        ) -
+                        (
+                            right.originalIndex ??
+                            0
+                        )
+                    );
+                }
+            );
+
+    const clusters = [];
+    const assigned = new Set();
+    const unclustered = [];
+    let nextClusterId = 1;
+
+    for (
+        const root
+        of ordered
+    ) {
+        const rootKey =
+            root.normalized;
+
         if (
-            !Array.isArray(
-                candidates
-            ) ||
-            !candidates.length
+            assigned.has(
+                rootKey
+            )
         ) {
-            return {
-                clusters: [],
-                unclustered: [],
-                assigned: new Set()
-            };
+            continue;
         }
 
-        const ordered =
-            candidates
-                .slice()
-                .sort(
-                    (
-                        left,
-                        right
-                    ) => {
-                        const frequencyDifference =
-                            (
-                                Number(
-                                    right.frequency
-                                ) || 0
-                            ) -
-                            (
-                                Number(
-                                    left.frequency
-                                ) || 0
-                            );
-
-                        if (
-                            frequencyDifference !==
-                            0
-                        ) {
-                            return frequencyDifference;
-                        }
-
-                        return (
-                            (
-                                left.originalIndex ??
-                                0
-                            ) -
-                            (
-                                right.originalIndex ??
-                                0
-                            )
-                        );
-                    }
-                );
-
-        const clusters = [];
-        const assigned = new Set();
-        let nextClusterId = 1;
+        const members = [];
 
         for (
-            const root
+            const candidate
             of ordered
         ) {
-            const rootKey =
-                root.normalized;
+            const candidateKey =
+                candidate.normalized;
 
             if (
                 assigned.has(
-                    rootKey
+                    candidateKey
                 )
             ) {
                 continue;
             }
 
-            const clusterId =
-                nextClusterId++;
-
-            const cluster =
-                createCluster(
+            if (
+                candidate === root ||
+                candidatesAreClusterLinked(
                     root,
-                    clusterId
+                    candidate
+                )
+            ) {
+                members.push(
+                    candidate
                 );
+            }
+        }
 
-            addCandidateToCluster(
-                cluster,
+        if (
+            members.length === 1
+        ) {
+            root.clusterId = 0;
+            unclustered.push(
                 root
             );
-
-            root.clusterId =
-                clusterId;
-
             assigned.add(
                 rootKey
             );
+            continue;
+        }
 
-            for (
-                const candidate
-                of ordered
-            ) {
-                const candidateKey =
-                    candidate.normalized;
+        const clusterId =
+            nextClusterId++;
 
-                if (
-                    assigned.has(
-                        candidateKey
-                    )
-                ) {
-                    continue;
-                }
-
-                if (
-                    candidatesAreClusterLinked(
-                        root,
-                        candidate
-                    )
-                ) {
-                    addCandidateToCluster(
-                        cluster,
-                        candidate
-                    );
-
-                    candidate.clusterId =
-                        clusterId;
-
-                    assigned.add(
-                        candidateKey
-                    );
-                }
-            }
-
-            sortClusterMembers(
-                cluster
+        const cluster =
+            createCluster(
+                root,
+                clusterId
             );
 
-            clusters.push(
-                cluster
+        for (
+            const candidate
+            of members
+        ) {
+            candidate.clusterId =
+                clusterId;
+
+            addCandidateToCluster(
+                cluster,
+                candidate
+            );
+
+            assigned.add(
+                candidate.normalized
             );
         }
 
-        return {
-            clusters,
-            unclustered:
-                candidates.filter(
-                    candidate =>
-                        !assigned.has(
-                            candidate.normalized
-                        )
-                ),
-            assigned
-        };
+        sortClusterMembers(
+            cluster
+        );
+
+        clusters.push(
+            cluster
+        );
     }
+
+    return {
+        clusters,
+        unclustered,
+        assigned
+    };
+}
       function findIsolatedCandidates(
         candidates
     ) {
@@ -1899,50 +1890,6 @@
         };
     }
 
-    function findClusterForCandidate(
-        clusters,
-        normalized
-    ) {
-        for (
-            const cluster
-            of clusters
-        ) {
-            if (
-                cluster.memberKeys.has(
-                    normalized
-                )
-            ) {
-                return cluster;
-            }
-        }
-
-        return null;
-    }
-
-    function createCandidateClusterIndex(
-        clusters
-    ) {
-        const index =
-            new Map();
-
-        for (
-            const cluster
-            of clusters
-        ) {
-            for (
-                const candidate
-                of cluster.members
-            ) {
-                index.set(
-                    candidate.normalized,
-                    cluster
-                );
-            }
-        }
-
-        return index;
-    }
-
     function sortClustersByRootFrequency(
         clusters
     ) {
@@ -1984,22 +1931,6 @@
                     );
                 }
             );
-    }
-
-    function getClusterDiagnostics(
-        result
-    ) {
-        return {
-            clusterCount:
-                result?.clusters
-                    ?.length || 0,
-            unclusteredCount:
-                result?.unclustered
-                    ?.length || 0,
-            assignedCount:
-                result?.assigned
-                    ?.size || 0
-        };
     }
 
     function compileRuleRegex(
@@ -2588,69 +2519,6 @@
         );
     }
 
-    function findRuleOutputConflicts() {
-        const rules =
-            getCurrentSiteRules();
-
-        const conflicts = [];
-
-        for (
-            let i = 0;
-            i < rules.length;
-            i++
-        ) {
-            for (
-                let j = 0;
-                j < rules.length;
-                j++
-            ) {
-                if (
-                    i === j
-                ) {
-                    continue;
-                }
-
-                const source =
-                    rules[i];
-
-                const target =
-                    rules[j];
-
-                if (
-                    ruleOutputMatchesRuleInput(
-                        source,
-                        target
-                    )
-                ) {
-                    conflicts.push({
-                        type:
-                            "rule-output-input",
-                        source,
-                        target
-                    });
-                }
-            }
-        }
-
-        return conflicts;
-    }
-
-    function createCandidateConflict(
-        candidate,
-        matchData
-    ) {
-        return {
-            type: "candidate",
-            candidate,
-            exact:
-                matchData.exact,
-            partial:
-                matchData.partial,
-            all:
-                matchData.all
-        };
-    }
-
     function classifyCandidate(
         candidate
     ) {
@@ -2783,257 +2651,6 @@
         );
     }
 
-    function buildCandidateConflicts(
-        classifications
-    ) {
-        return classifications
-            .filter(
-                classification =>
-                    classification.type ===
-                    "conflict"
-            )
-            .map(
-                classification =>
-                    createCandidateConflict(
-                        classification.candidate,
-                        classification.matches
-                    )
-            );
-    }
-
-    function getConflictRuleKeys(
-        conflict
-    ) {
-        const keys =
-            new Set();
-
-        for (
-            const entry
-            of conflict?.all ||
-            []
-        ) {
-            const rule =
-                entry.rule;
-
-            if (!rule) {
-                continue;
-            }
-
-            keys.add(
-                `${rule.groupIndex}:${rule.ruleIndex}`
-            );
-        }
-
-        return keys;
-    }
-
-    function conflictsAreLinked(
-        left,
-        right
-    ) {
-        const leftKeys =
-            getConflictRuleKeys(
-                left
-            );
-
-        const rightKeys =
-            getConflictRuleKeys(
-                right
-            );
-
-        for (
-            const key
-            of leftKeys
-        ) {
-            if (
-                rightKeys.has(
-                    key
-                )
-            ) {
-                return true;
-            }
-        }
-
-        return candidatesAreClusterLinked(
-            left.candidate,
-            right.candidate
-        );
-    }
-
-    function clusterCandidateConflicts(
-        conflicts
-    ) {
-        const remaining =
-            new Set(
-                conflicts
-            );
-
-        const clusters = [];
-        let clusterId = 1;
-
-        while (
-            remaining.size
-        ) {
-            const seed =
-                remaining.values()
-                    .next()
-                    .value;
-
-            const queue = [
-                seed
-            ];
-
-            remaining.delete(
-                seed
-            );
-
-            const members = [];
-
-            while (
-                queue.length
-            ) {
-                const current =
-                    queue.shift();
-
-                members.push(
-                    current
-                );
-
-                for (
-                    const candidate
-                    of Array.from(
-                        remaining
-                    )
-                ) {
-                    if (
-                        conflictsAreLinked(
-                            current,
-                            candidate
-                        )
-                    ) {
-                        remaining.delete(
-                            candidate
-                        );
-
-                        queue.push(
-                            candidate
-                        );
-                    }
-                }
-            }
-
-            clusters.push({
-                id:
-                    clusterId++,
-                members
-            });
-        }
-
-        return clusters;
-    }
-
-    function clusterRuleOutputConflicts(
-        conflicts
-    ) {
-        const remaining =
-            new Set(
-                conflicts
-            );
-
-        const clusters = [];
-        let clusterId = 1;
-
-        while (
-            remaining.size
-        ) {
-            const seed =
-                remaining.values()
-                    .next()
-                    .value;
-
-            const queue = [
-                seed
-            ];
-
-            remaining.delete(
-                seed
-            );
-
-            const members = [];
-
-            while (
-                queue.length
-            ) {
-                const current =
-                    queue.shift();
-
-                members.push(
-                    current
-                );
-
-                for (
-                    const candidate
-                    of Array.from(
-                        remaining
-                    )
-                ) {
-                    const currentSource =
-                        current.source;
-
-                    const currentTarget =
-                        current.target;
-
-                    const candidateSource =
-                        candidate.source;
-
-                    const candidateTarget =
-                        candidate.target;
-
-                    const currentKeys =
-                        new Set([
-                            `${currentSource?.groupIndex}:${currentSource?.ruleIndex}`,
-                            `${currentTarget?.groupIndex}:${currentTarget?.ruleIndex}`
-                        ]);
-
-                    const candidateKeys =
-                        new Set([
-                            `${candidateSource?.groupIndex}:${candidateSource?.ruleIndex}`,
-                            `${candidateTarget?.groupIndex}:${candidateTarget?.ruleIndex}`
-                        ]);
-
-                    const linked =
-                        Array.from(
-                            currentKeys
-                        ).some(
-                            key =>
-                                candidateKeys.has(
-                                    key
-                                )
-                        );
-
-                    if (
-                        linked
-                    ) {
-                        remaining.delete(
-                            candidate
-                        );
-
-                        queue.push(
-                            candidate
-                        );
-                    }
-                }
-            }
-
-            clusters.push({
-                id:
-                    clusterId++,
-                members
-            });
-        }
-
-        return clusters;
-    }
       function buildConflictData(
         classifications
     ) {
@@ -3123,66 +2740,6 @@
         return conflicts;
     }
 
-    function getConflictGroups(
-        conflict
-    ) {
-        const groups =
-            new Map();
-
-        for (
-            const entry
-            of conflict?.all ||
-            []
-        ) {
-            const rule =
-                entry.rule;
-
-            if (!rule) {
-                continue;
-            }
-
-            const group =
-                adaptedDatabase.groups[
-                    rule.groupIndex
-                ];
-
-            if (!group) {
-                continue;
-            }
-
-            groups.set(
-                group.index,
-                group
-            );
-        }
-
-        return Array.from(
-            groups.values()
-        );
-    }
-
-    function getConflictGroupNames(
-        conflict
-    ) {
-        return getConflictGroups(
-            conflict
-        ).map(
-            group =>
-                group.name ||
-                "(Unnamed group)"
-        );
-    }
-
-    function getConflictRuleEntries(
-        conflict
-    ) {
-        return Array.isArray(
-            conflict?.all
-        )
-            ? conflict.all
-            : [];
-    }
-
     function escapeRegexLiteral(
         value
     ) {
@@ -3214,31 +2771,6 @@
             candidate?.name ||
                 candidate?.displayName ||
                 ""
-        );
-    }
-
-    function isHyphenVariantCandidate(
-        candidate
-    ) {
-        return getCandidateMatchForms(
-            candidate
-        ).some(
-            value =>
-                /[-‐-‒–—―]/.test(
-                    value
-                )
-        );
-    }
-
-    function replaceSpacesAndHyphens(
-        value,
-        replacement
-    ) {
-        return String(
-            value ?? ""
-        ).replace(
-            /[\s‐-‒–—―-]+/g,
-            replacement
         );
     }
 
@@ -3465,7 +2997,48 @@
 
         return candidates;
     }
+function getChapterScanInfo() {
+    if (!document.body) {
+        return {
+            container: null,
+            text: "",
+            error: null
+        };
+    }
 
+    let container = null;
+
+    for (const selector of CHAPTER_CONTAINER_SELECTORS) {
+        try {
+            const element = document.querySelector(selector);
+
+            if (element) {
+                container = element;
+                break;
+            }
+        } catch {
+            continue;
+        }
+    }
+
+    container = container || document.body;
+
+    const text = String(
+        container.innerText ??
+        container.textContent ??
+        ""
+    )
+        .replace(/\u00A0/g, " ")
+        .replace(/\r/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    return {
+        container,
+        text,
+        error: null
+    };
+}
     function analyzePage() {
         clearAnalysisResults();
 
@@ -3968,18 +3541,6 @@
         render();
     }
 
-    function selectGroup(
-        groupIndex
-    ) {
-        state.groupIndex =
-            groupIndex;
-
-        state.screen =
-            "groups";
-
-        render();
-    }
-
     function resetDisplaySorting() {
         state.groupSort = {
             column: "original",
@@ -3992,42 +3553,18 @@
         };
     }
 
-    function getAnalysisSummary() {
-        const clusterIds =
-            new Set();
-
-        for (
-            const conflict
-            of state.conflicts
-        ) {
-            const clusterId =
-                Number(
-                    conflict.clusterId
-                );
-
-            if (
-                Number.isFinite(
-                    clusterId
-                ) &&
-                clusterId > 0
-            ) {
-                clusterIds.add(
-                    clusterId
-                );
-            }
-        }
-
-        return {
-            candidates:
-                state.candidates.length,
-            groups:
-                state.groupMatches.length,
-            conflicts:
-                state.conflicts.length,
-            conflictClusters:
-                clusterIds.size
-        };
-    }
+function getAnalysisSummary() {
+    return {
+        candidates:
+            state.candidates.length,
+        groups:
+            state.groupMatches.length,
+        conflicts:
+            state.conflicts.length,
+        conflictClusters:
+            state.conflictClusters.length
+    };
+}
 
     const WNC_UI_ID =
         "wnc-overlay";
@@ -4896,51 +4433,23 @@ ${groups
             );
     }
 
-    async function copyText(
-        text
+  async function copyText(
+    text
     ) {
-        const value =
-            String(
-                text ?? ""
-            );
+    const value =
+        String(
+            text ?? ""
+        );
 
-        try {
-            await navigator.clipboard.writeText(
-                value
-            );
+    try {
+        await navigator.clipboard.writeText(
+            value
+        );
 
-            return;
-        } catch {
-            const textarea =
-                document.createElement(
-                    "textarea"
-                );
-
-            textarea.value =
-                value;
-
-            textarea.style.position =
-                "fixed";
-
-            textarea.style.opacity =
-                "0";
-
-            document.body.appendChild(
-                textarea
-            );
-
-            textarea.select();
-
-            try {
-                document.execCommand(
-                    "copy"
-                );
-            } catch {
-                return;
-            } finally {
-                textarea.remove();
-            }
-        }
+        return true;
+    } catch {
+        return false;
+    }
     }
 
     function registerWncMenuCommands() {
@@ -4953,61 +4462,6 @@ ${groups
             "Import FoxReplace JSON",
             openImportPicker
         );
-    }
-
-    function importFoxReplaceJson(
-        database
-    ) {
-        if (
-            !database ||
-            typeof database !==
-                "object"
-        ) {
-            return false;
-        }
-
-        rawFoxReplaceDatabase =
-            database;
-
-        adaptedDatabase =
-            adaptFoxReplaceDatabase(
-                database
-            );
-
-        writeStorage(
-            LAST_IMPORTED_DB_KEY,
-            database
-        );
-
-        return true;
-    }
-
-    async function importFoxReplaceFile(
-        file
-    ) {
-        try {
-            const text =
-                await readFileText(
-                    file
-                );
-
-            const database =
-                parseImportedText(
-                    text
-                );
-
-            if (
-                !database
-            ) {
-                return false;
-            }
-
-            return importFoxReplaceJson(
-                database
-            );
-        } catch {
-            return false;
-        }
     }
 
     function ensureDatabaseShape() {
