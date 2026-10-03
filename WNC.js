@@ -3617,27 +3617,34 @@ function analyzePage() {
         }
 
         if (
-            column ===
-            "matches"
-        ) {
-            return (
-                getGroupRulesWithMatches(
-                    group
-                ).reduce(
+    column ===
+    "matches"
+) {
+    return (
+        getGroupRulesWithMatches(
+            group
+        ).reduce(
+            (
+                total,
+                rule
+            ) =>
+                total +
+                rule.candidates.reduce(
                     (
-                        total,
-                        rule
+                        sum,
+                        candidate
                     ) =>
-                        total +
-                        (
-                            rule.candidates
-                                ?.length ||
+                        sum +
+                        Number(
+                            candidate.frequency ||
                             0
                         ),
                     0
-                )
-            );
-        }
+                ),
+            0
+        )
+    );
+}
 
         return group.index;
     }
@@ -3720,14 +3727,24 @@ function analyzePage() {
         }
 
         if (
-            column ===
-            "matches"
-        ) {
-            return (
-                rule.candidates?.length ||
-                0
-            );
-        }
+    column ===
+    "matches"
+) {
+    return (
+        rule.candidates.reduce(
+            (
+                total,
+                candidate
+            ) =>
+                total +
+                Number(
+                    candidate.frequency ||
+                    0
+                ),
+            0
+        )
+    );
+}
 
         return rule.ruleIndex;
     }
@@ -4446,8 +4463,19 @@ function analyzePage() {
             )}
         </span>
         <span class="wnc-muted">
-            (${candidates.length})
-        </span>
+    (${candidates.reduce(
+        (
+            total,
+            candidate
+        ) =>
+            total +
+            Number(
+                candidate.frequency ||
+                0
+            ),
+        0
+    )})
+</span>
     </div>
     ${
         expanded
@@ -4479,6 +4507,7 @@ function renderGroupsTab() {
     const groups =
         sortDisplayedGroups(
             getVisibleGroupMatches()
+        );sibleGroupMatches()
         );
 
     if (!groups.length) {
