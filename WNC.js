@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.32
+// @version      6.1.33
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -16,16 +16,6 @@
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const LAST_IMPORTED_DB_KEY = "WNC_LAST_IMPORTED_DATABASE_V2";
     const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
-
-    const CHAPTER_CONTAINER_SELECTORS = [
-        ".chapter-container",
-        ".chapter-body",
-        ".entry-content",
-        ".text-left",
-        ".prose",
-        "article",
-        "main"
-    ];
 
     const CANDIDATE_REGEX =
         /(?<![A-Z0-9'’-])((?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*)(?:\s+(?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*))*)(?![A-Za-z0-9'’-])/g;
@@ -42,13 +32,16 @@
         "james","davis","lucas","carlos","thomas"
     ]);
 
-    const INPUT_TEMPLATES = [
-        "Other",
-        "Korean",
-        "Japanese"
-    ];
+const INPUT_TEMPLATES = [
+    "Other",
+    "Korean",
+    "Korean 2",
+    "Japanese"
+];
 
     const state = {
+    collapsedGroups: new Set(),
+    collapsedRules: new Set(),
         screen: "candidates",
         groupIndex: null,
         candidates: [],
@@ -1154,7 +1147,13 @@
             .filter(Boolean)
             .join(" ");
     }
-
+function normalizedCandidateRegexValue(
+    name
+) {
+    return normalizeGeneratedInputSpacing(
+        name || ""
+    );
+}
     function mergeCandidateOccurrences(
         occurrences
     ) {
@@ -1195,12 +1194,16 @@
                 !candidate
             ) {
                 candidate = {
-                    name,
-                    normalized,
-                    frequency: 0,
-                    variants: new Map(),
-                    occurrences: []
-                };
+    name,
+    normalized,
+    regexValue:
+        normalizedCandidateRegexValue(
+            name
+        ),
+    frequency: 0,
+    variants: new Map(),
+    occurrences: []
+};
 
                 map.set(
                     normalized,
@@ -2989,90 +2992,202 @@
     }
 
     function generateOtherInput(
-        candidate
-    ) {
-        const value =
-            normalizeGeneratedInputSpacing(
-                candidate?.name ||
-                candidate?.displayName ||
-                ""
-            );
-
-        if (!value) {
-            return "";
-        }
-
-        return (
-            "(?<![a-z])" +
-            escapeRegexLiteral(
-                value
-            ) +
-            "(?![a-z])"
+    candidate
+) {
+    const value =
+        normalizeGeneratedInputSpacing(
+            candidate?.regexValue ??
+            candidate?.name ??
+            candidate?.displayName ??
+            ""
         );
+
+    if (!value) {
+        return "";
     }
 
+    return (
+        "(?<![a-z])" +
+        escapeRegexLiteral(
+            value
+        ) +
+        "(?![a-z])"
+    );
+}
+
     function generateKoreanInput(
-        candidate
+    candidate
+) {
+    const value =
+        normalizeGeneratedInputSpacing(
+            candidate?.regexValue ??
+            candidate?.name ??
+            candidate?.displayName ??
+            ""
+        );
+
+    if (!value) {
+        return "";
+    }
+
+    const original =
+        normalizeGeneratedInputSpacing(
+            candidate?.name ||
+            candidate?.displayName ||
+            ""
+        );
+
+    const originalTokens =
+        splitCandidateTokens(
+            original
+        );
+
+    const valueTokens =
+        splitCandidateTokens(
+            value
+        );
+
+    let nameTokens =
+        valueTokens;
+
+    if (
+        valueTokens.length > 1 &&
+        originalTokens.length > 1 &&
+        valueTokens[0].toLowerCase() ===
+            originalTokens[0].toLowerCase()
     ) {
-        const value =
-            normalizeGeneratedInputSpacing(
-                candidate?.name ||
-                candidate?.displayName ||
-                ""
+        nameTokens =
+            valueTokens.slice(1);
+    }
+
+    if (
+        nameTokens.length === 0
+    ) {
+        return "";
+    }
+
+    const pattern =
+        nameTokens
+            .map(
+                token =>
+                    escapeRegexLiteral(
+                        token
+                    )
+            )
+            .join(
+                "[- ]?"
             );
 
-        if (!value) {
-            return "";
-        }
+    return (
+        "(?<![a-z])" +
+        pattern +
+        "(?![a-z])"
+    );
+}
+function generateKorean2Input(
+    candidate
+) {
+    const value =
+        normalizeGeneratedInputSpacing(
+            candidate?.regexValue ??
+            candidate?.name ??
+            candidate?.displayName ??
+            ""
+        );
 
-        const tokens =
+    if (!value) {
+        return "";
+    }
+
+    const original =
+        normalizeGeneratedInputSpacing(
+            candidate?.name ||
+            candidate?.displayName ||
+            ""
+        );
+
+    const originalTokens =
+        splitCandidateTokens(
+            original
+        );
+
+    let nameValue = value;
+
+    if (
+        originalTokens.length > 1
+    ) {
+        const firstToken =
+            originalTokens[0];
+
+        const valueTokens =
             splitCandidateTokens(
                 value
             );
 
         if (
-            tokens.length <= 1
+            valueTokens.length > 1 &&
+            valueTokens[0].toLowerCase() ===
+                firstToken.toLowerCase()
         ) {
-            return (
-                "(?<![a-z])" +
-                escapeRegexLiteral(
-                    value
-                ) +
-                "(?![a-z])"
-            );
+            nameValue =
+                valueTokens
+                    .slice(1)
+                    .join(" ");
         }
+    }
 
-        const nameTokens =
-            tokens.slice(1);
+    const nameTokens =
+        splitCandidateTokens(
+            nameValue
+        );
 
-        const pattern =
-            nameTokens
-                .map(
-                    token =>
-                        escapeRegexLiteral(
-                            token
-                        )
-                )
-                .join(
-                    "[- ]?"
-                );
+    if (!nameTokens.length) {
+        return "";
+    }
 
+    const namePattern =
+        nameTokens
+            .map(
+                token =>
+                    escapeRegexLiteral(
+                        token
+                    )
+            )
+            .join(
+                "[- ]?"
+            );
+
+    if (
+        originalTokens.length <= 1
+    ) {
         return (
             "(?<![a-z])" +
-            pattern +
+            namePattern +
             "(?![a-z])"
         );
     }
 
-    function generateJapaneseInput(
-        candidate
-    ) {
-        const value =
-            normalizeGeneratedInputSpacing(
-                candidate?.name ||
-                candidate?.displayName ||
-                ""
-            );
+    return (
+        "(?<![a-z])" +
+        "(?:" +
+        escapeRegexLiteral(
+            originalTokens[0]
+        ) +
+        " )?" +
+        namePattern +
+        "(?![a-z])"
+    );
+}
+function generateJapaneseInput(
+    candidate
+) {
+    const value =
+        normalizeGeneratedInputSpacing(
+            candidate?.regexValue ??
+            candidate?.name ??
+            candidate?.displayName ??
+            ""
+        );
 
         if (!value) {
             return "";
@@ -3131,31 +3246,32 @@
     }
 
     function generateCandidateInput(
-        candidate,
-        template
-    ) {
-        if (
-            template ===
-            "Korean"
-        ) {
+    candidate,
+    template
+) {
+    switch (template) {
+        case "Korean":
             return generateKoreanInput(
                 candidate
             );
-        }
 
-        if (
-            template ===
-            "Japanese"
-        ) {
+        case "Korean 2":
+            return generateKorean2Input(
+                candidate
+            );
+
+        case "Japanese":
             return generateJapaneseInput(
                 candidate
             );
-        }
 
-        return generateOtherInput(
-            candidate
-        );
+        case "Other":
+        default:
+            return generateOtherInput(
+                candidate
+            );
     }
+}
 
     function regenerateCandidateInputs(
         candidates,
@@ -3244,87 +3360,33 @@
     }
 
     function buildCandidateResults(
-        classifications
-    ) {
-        const candidates = [];
-
-        for (
-            const classification
-            of classifications
-        ) {
-            if (
-                classification.type !==
-                "candidate"
-            ) {
-                continue;
-            }
-
-            const candidate =
-                classification.candidate;
-
+    candidates
+) {
+    return candidates.map(
+        candidate => {
             candidate.generatedInput =
                 generateCandidateInput(
                     candidate,
                     state.candidateTemplate
                 );
 
-            candidates.push(
-                candidate
-            );
+            return candidate;
         }
-
-        return candidates;
-    }
-function getChapterScanInfo() {
-    if (!document.body) {
-        return {
-            container: null,
-            text: "",
-            error: null
-        };
-    }
-
-    let container = null;
-
-    for (const selector of CHAPTER_CONTAINER_SELECTORS) {
-        try {
-            const element = document.querySelector(selector);
-
-            if (element) {
-                container = element;
-                break;
-            }
-        } catch {
-            continue;
-        }
-    }
-
-    container = container || document.body;
-
-    const text = String(
-        container.innerText ??
-        container.textContent ??
-        ""
-    )
-        .replace(/\u00A0/g, " ")
-        .replace(/\r/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-
-    return {
-        container,
-        text,
-        error: null
-    };
+    );
 }
+
 function analyzePage() {
         clearAnalysisResults();
 
-        const scanInfo =
-            getChapterScanInfo();
-
-        chapterText =
-            scanInfo.text || "";
+        chapterText = String(
+    document.body?.innerText ??
+    document.body?.textContent ??
+    ""
+)
+    .replace(/\u00A0/g, " ")
+    .replace(/\r/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
         if (
             !chapterText.trim()
@@ -3336,7 +3398,7 @@ function analyzePage() {
                 conflicts: [],
                 conflictClusters: [],
                 error:
-                    scanInfo.error ||
+                  
                     null
             };
         }
@@ -3461,7 +3523,11 @@ function analyzePage() {
                 Array.isArray(
                     rule.candidates
                 ) &&
-                rule.candidates.length
+                rule.candidates.reduce(
+    (total, candidate) =>
+        total + Number(candidate.frequency || 0),
+    0
+)
         );
     }
 
@@ -4167,9 +4233,12 @@ function analyzePage() {
                 )}</option>`
         ).join("")}
     </select>
-    <button data-wnc-close>
-        Close
-    </button>
+    <button data-wnc-scan>
+    Scan
+</button>
+<button data-wnc-close>
+    Close
+</button>
 </div>
 `;
     }
@@ -4188,22 +4257,17 @@ function analyzePage() {
     }
 
     function renderCandidatesTab() {
-        if (
-            !state.candidates.length
-        ) {
-            return `
-<div class="wnc-muted">
-    No unmatched candidates found.
-</div>
-`;
-        }
+    if (!state.candidates.length) {
+        return `<div class="wnc-muted">No unmatched candidates found.</div>`;
+    }
 
-        return `
+    return `
 <table class="wnc-table">
     <thead>
         <tr>
             <th>Name</th>
             <th>Frequency</th>
+            <th>Regex Candidate</th>
             <th>Generated Input</th>
             <th></th>
         </tr>
@@ -4212,6 +4276,11 @@ function analyzePage() {
         ${getVisibleCandidates()
             .map(
                 candidate => {
+                    const regexValue =
+                        candidate.regexValue ??
+                        candidate.name ??
+                        "";
+
                     const input =
                         getGeneratedInput(
                             candidate
@@ -4219,43 +4288,58 @@ function analyzePage() {
 
                     return `
 <tr>
-    <td>${escapeHtml(
-        candidate.name
-    )}</td>
-    <td>${escapeHtml(
-        candidate.frequency
-    )}</td>
     <td>
-        <div class="wnc-code">
-            ${escapeHtml(
-                input
-            )}
+        ${escapeHtml(
+            candidate.name
+        )}
+    </td>
+
+    <td>
+        ${escapeHtml(
+            candidate.frequency
+        )}
+    </td>
+
+    <td>
+        <input
+            class="wnc-input"
+            type="text"
+            value="${escapeHtml(
+                regexValue
+            )}"
+            data-wnc-edit-candidate="${escapeHtml(
+                candidate.normalized
+            )}"
+        >
+    </td>
+
+    <td>
+        <div class="wnc-code"
+             data-wnc-generated-input="${escapeHtml(
+                 candidate.normalized
+             )}">
+            ${escapeHtml(input)}
         </div>
     </td>
+
     <td>
         <button
-            data-wnc-copy="${escapeHtml(
-                input
-            )}"
+            data-wnc-copy="${escapeHtml(input)}"
             ${
-                generatedInputLooksValid(
-                    input
-                )
+                generatedInputLooksValid(input)
                     ? ""
                     : "disabled"
             }>
             Copy
         </button>
     </td>
-</tr>
-`;
+</tr>`;
                 }
             )
             .join("")}
     </tbody>
-</table>
-`;
-    }
+</table>`;
+}
 
     function renderGroupHeader(
         group
@@ -4274,15 +4358,30 @@ function analyzePage() {
                 ) =>
                     total +
                     (
-                        rule.candidates
-                            ?.length ||
-                        0
+                        rule.candidates.reduce(
+    (
+        sum,
+        candidate
+    ) =>
+        sum +
+        Number(
+            candidate.frequency ||
+            0
+        ),
+    0
+)
                     ),
                 0
             );
 
         return `
-<div class="wnc-group-header">
+<div
+    class="wnc-group-header"
+    data-wnc-group-toggle="${escapeHtml(
+        group.name || ""
+    )}"
+    style="cursor:pointer"
+>
     <strong>
         ${escapeHtml(
             group.name ||
@@ -4310,8 +4409,18 @@ function analyzePage() {
             );
 
         const candidates =
-            rule.candidates ||
-            [];
+    [...(
+        rule.candidates ||
+        []
+    )].sort(
+        (a, b) =>
+            Number(
+                b.frequency || 0
+            ) -
+            Number(
+                a.frequency || 0
+            )
+    );
 
         return `
 <div class="wnc-rule">
@@ -4366,21 +4475,21 @@ function analyzePage() {
 `;
     }
 
-    function renderGroupsTab() {
-        const groups =
-            sortDisplayedGroups(
-                getVisibleGroupMatches()
-            );
+function renderGroupsTab() {
+    const groups =
+        sortDisplayedGroups(
+            getVisibleGroupMatches()
+        );
 
-        if (!groups.length) {
-            return `
+    if (!groups.length) {
+        return `
 <div class="wnc-muted">
     No matched groups found.
 </div>
 `;
-        }
+    }
 
-        return `
+    return `
 <div class="wnc-summary">
     <button data-wnc-group-sort="name">
         Group${getSortArrow(
@@ -4428,8 +4537,7 @@ ${groups
     )
     .join("")}
 `;
-    }
-
+}
     function renderConflict(
         conflict
     ) {
@@ -4671,30 +4779,109 @@ ${groups
                     )
             );
 
-        overlay
-            .querySelector(
-                "[data-wnc-close]"
-            )
-            ?.addEventListener(
-                "click",
-                closeWnc
-            );
+overlay
+    .querySelector(
+        "[data-wnc-scan]"
+    )
+    ?.addEventListener(
+        "click",
+        () => {
+            analyzePage();
+            render();
+        }
+    );
 
-        overlay
-            .querySelectorAll(
-                "[data-wnc-copy]"
-            )
-            .forEach(
-                button =>
-                    button.addEventListener(
-                        "click",
-                        () =>
-                            copyText(
-                                button.dataset
-                                    .wncCopy
-                            )
+overlay
+    .querySelector(
+        "[data-wnc-close]"
+    )
+    ?.addEventListener(
+        "click",
+        () => {
+            overlay.remove();
+        }
+    );
+
+overlay
+    .querySelectorAll(
+        "[data-wnc-copy]"
+    )
+    .forEach(
+        button =>
+            button.addEventListener(
+                "click",
+                () =>
+                    copyText(
+                        button.dataset
+                            .wncCopy
                     )
-            );
+            )
+    );
+
+overlay
+    .querySelectorAll(
+        "[data-wnc-edit-candidate]"
+    )
+    .forEach(
+        input =>
+            input.addEventListener(
+                "input",
+                () => {
+                    const normalized =
+                        input.dataset
+                            .wncEditCandidate;
+
+                    const candidate =
+                        state.candidates.find(
+                            item =>
+                                item.normalized ===
+                                normalized
+                        );
+
+                    if (!candidate) {
+                        return;
+                    }
+
+                    candidate.regexValue =
+                        input.value;
+
+                    candidate.generatedInput =
+                        generateCandidateInput(
+                            candidate,
+                            state.candidateTemplate
+                        );
+
+                    const output =
+                        overlay.querySelector(
+                            `[data-wnc-generated-input="${CSS.escape(
+                                normalized
+                            )}"]`
+                        );
+
+                    if (output) {
+                        output.textContent =
+                            candidate.generatedInput;
+                    }
+
+                    const copyButton =
+                        input
+                            .closest("tr")
+                            ?.querySelector(
+                                "[data-wnc-copy]"
+                            );
+
+                    if (copyButton) {
+                        copyButton.dataset.wncCopy =
+                            candidate.generatedInput;
+
+                        copyButton.disabled =
+                            !generatedInputLooksValid(
+                                candidate.generatedInput
+                            );
+                    }
+                }
+            )
+    );
 
         overlay
             .querySelectorAll(
