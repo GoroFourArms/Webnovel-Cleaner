@@ -1,0 +1,8 @@
+"emeraldwalk.runonsave": {
+    "commands": [
+        {
+            "match": "\\.(js|txt)$",
+            "cmd": "powershell -Command \"(Get-Content '${file}') -replace '^\\s*$','' | Set-Content '${file}'\""
+        }
+    ]
+}
