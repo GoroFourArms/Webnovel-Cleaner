@@ -14,7 +14,6 @@
     "use strict";
 
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
-    const LAST_IMPORTED_DB_KEY = "WNC_LAST_IMPORTED_DATABASE_V2";
     const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
 
     const CANDIDATE_REGEX =
@@ -71,11 +70,19 @@
             .trim()
             .toLowerCase();
 
-        if (type === "wholewords") {
+        if (
+            type === "wholewords" ||
+            type === "whole words" ||
+            type === "wholeword"
+        ) {
             return "wholewords";
         }
 
-        if (type === "regexp" || type === "regex") {
+        if (
+            type === "regexp" ||
+            type === "regex" ||
+            type === "regular expression"
+        ) {
             return "regexp";
         }
 
@@ -89,17 +96,6 @@
 
         return type || "text";
     }
-
-    function firstDefined(object, keys, fallback) {
-        for (const key of keys) {
-            if (object && object[key] !== undefined && object[key] !== null) {
-                return object[key];
-            }
-        }
-
-        return fallback;
-    }
-
     function normalizeBoolean(value, fallback = true) {
         if (value === undefined || value === null) {
             return fallback;
@@ -125,42 +121,20 @@
 
         return fallback;
     }
-
     function normalizeRule(rawRule, ruleIndex, groupIndex) {
         const rule = rawRule && typeof rawRule === "object" ? rawRule : {};
-
-        const input = String(
-            firstDefined(rule, ["input", "pattern", "find", "search"], "")
-        );
-
-        const output = String(
-            firstDefined(rule, ["output", "replace", "replacement"], "")
-        );
 
         return {
             raw: rule,
             groupIndex,
             ruleIndex,
-            input,
-            output,
-            inputType: normalizeInputType(
-                firstDefined(rule, ["inputType", "type", "mode"], "text")
-            ),
-            outputType: normalizeOutputType(
-                firstDefined(rule, ["outputType", "replaceType"], "text")
-            ),
-            caseSensitive: normalizeBoolean(
-                firstDefined(rule, ["caseSensitive", "matchCase"], false),
-                false
-            ),
-            enabled: normalizeBoolean(
-                firstDefined(rule, ["enabled", "active"], true),
-                true
-            ),
-            html: normalizeBoolean(
-                firstDefined(rule, ["html", "isHtml"], false),
-                false
-            )
+            input: String(rule.input ?? ""),
+            output: String(rule.output ?? ""),
+            inputType: normalizeInputType(rule.inputType),
+            outputType: normalizeOutputType(rule.outputType),
+            caseSensitive: normalizeBoolean(rule.caseSensitive, false),
+            enabled: normalizeBoolean(rule.enabled, true),
+            html: normalizeBoolean(rule.html, false)
         };
     }
 
@@ -171,59 +145,38 @@
                 .filter(Boolean);
         }
 
-        if (value === undefined || value === null) {
-            return [];
+        if (typeof value === "string") {
+            return value
+                .split(/\r?\n/)
+                .map((item) => item.trim())
+                .filter(Boolean);
         }
 
-        return [String(value).trim()].filter(Boolean);
+        return [];
     }
 
     function normalizeGroup(rawGroup, groupIndex) {
         const group = rawGroup && typeof rawGroup === "object" ? rawGroup : {};
 
-        const rawRules = firstDefined(
-            group,
-            ["rules", "replacements", "items"],
-            []
-        );
-
-        const rules = Array.isArray(rawRules)
-            ? rawRules.map((rule, ruleIndex) =>
-                  normalizeRule(rule, ruleIndex, groupIndex)
-              )
+        const rawRules = Array.isArray(group.substitutions)
+            ? group.substitutions
             : [];
+
+        const rules = rawRules.map((rule, ruleIndex) =>
+            normalizeRule(rule, ruleIndex, groupIndex)
+        );
 
         return {
             raw: group,
             index: groupIndex,
-            name: String(
-                firstDefined(
-                    group,
-                    ["name", "groupName", "title"],
-                    `Group ${groupIndex + 1}`
-                )
-            ),
-            urls: normalizeUrls(
-                firstDefined(group, ["urls", "url", "sites", "site"], [])
-            ),
+            name: String(group.name ?? `Group ${groupIndex + 1}`),
+            urls: normalizeUrls(group.urls),
             rules,
-            enabled: normalizeBoolean(
-                firstDefined(group, ["enabled", "active"], true),
-                true
-            ),
-            mode: firstDefined(group, ["mode", "matchMode"], ""),
-            pageLoad: normalizeBoolean(
-                firstDefined(group, ["pageLoad", "onPageLoad"], false),
-                false
-            ),
-            auto: normalizeBoolean(
-                firstDefined(group, ["auto", "automatic"], false),
-                false
-            ),
-            html: normalizeBoolean(
-                firstDefined(group, ["html", "isHtml"], false),
-                false
-            )
+            enabled: normalizeBoolean(group.enabled, true),
+            mode: String(group.mode ?? ""),
+            pageLoad: normalizeBoolean(group.pageLoad, false),
+            auto: normalizeBoolean(group.auto, false),
+            html: normalizeBoolean(group.html, false)
         };
     }
 
@@ -232,40 +185,7 @@
             return [];
         }
 
-        if (Array.isArray(database.groups)) {
-            return database.groups;
-        }
-
-        if (Array.isArray(database.group)) {
-            return database.group;
-        }
-
-        for (const value of Object.values(database)) {
-            if (Array.isArray(value) && value.length) {
-                const first = value[0];
-
-                if (
-                    first &&
-                    typeof first === "object" &&
-                    ("rules" in first ||
-                        "replacements" in first ||
-                        "name" in first ||
-                        "groupName" in first)
-                ) {
-                    return value;
-                }
-            }
-
-            if (value && typeof value === "object") {
-                const nested = findGroupArray(value);
-
-                if (nested.length) {
-                    return nested;
-                }
-            }
-        }
-
-        return [];
+        return Array.isArray(database.groups) ? database.groups : [];
     }
 
     function adaptFoxReplaceDatabase(rawDatabase) {
@@ -287,17 +207,6 @@
 
         return value;
     }
-
-    function loadLastImportedDatabase() {
-        const value = readStorage(LAST_IMPORTED_DB_KEY, null);
-
-        if (!value || typeof value !== "object") {
-            return null;
-        }
-
-        return value;
-    }
-
     function loadActiveDatabase() {
         const normal = loadNormalDatabase();
 
@@ -305,21 +214,34 @@
             return normal;
         }
 
-        return (
-            loadLastImportedDatabase() || {
-                groups: []
-            }
-        );
+        return {
+            groups: []
+        };
     }
-
     function parseImportedText(text) {
         try {
-            return JSON.parse(text);
+            const database = JSON.parse(text);
+
+            if (
+                !database ||
+                typeof database !== "object" ||
+                !Array.isArray(database.groups) ||
+                !database.groups.length
+            ) {
+                return null;
+            }
+
+            const version = String(database.version ?? "").trim();
+
+            if (version && !/^2\.\d+$/.test(version)) {
+                return null;
+            }
+
+            return database;
         } catch {
             return null;
         }
     }
-
     function readFileText(file) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -348,16 +270,17 @@
 
             try {
                 const text = await readFileText(file);
-
                 const database = parseImportedText(text);
 
                 if (!database) {
                     return;
                 }
 
-                adaptedDatabase = adaptFoxReplaceDatabase(database);
+                if (!writeStorage(DB_KEY, database)) {
+                    return;
+                }
 
-                writeStorage(LAST_IMPORTED_DB_KEY, database);
+                adaptedDatabase = adaptFoxReplaceDatabase(database);
 
                 render();
             } catch {
@@ -1161,34 +1084,33 @@
     }
 
     function findCandidateRuleMatches(candidate) {
-        const rules = getCurrentSiteRules();
-
         const exact = [];
         const partial = [];
-        const all = [];
 
-        for (const rule of rules) {
-            const type = getRuleMatchType(candidate, rule);
+        for (const group of adaptedDatabase.groups || []) {
+            if (!group.enabled) {
+                continue;
+            }
 
-            if (type === "exact") {
-                exact.push(rule);
-                all.push({
-                    rule,
-                    type
-                });
-            } else if (type === "partial") {
-                partial.push(rule);
-                all.push({
-                    rule,
-                    type
-                });
+            for (const rule of group.rules || []) {
+                if (!rule.enabled) {
+                    continue;
+                }
+
+                const matchType = getRuleMatchType(candidate, rule);
+
+                if (matchType === "exact") {
+                    exact.push(rule);
+                } else if (matchType === "partial") {
+                    partial.push(rule);
+                }
             }
         }
 
         return {
             exact,
             partial,
-            all
+            all: [...exact, ...partial]
         };
     }
 
@@ -1260,7 +1182,7 @@
     }
 
     function buildGroupMatches(classifications) {
-        const matchesByGroup = new Map();
+        const groups = new Map();
 
         for (const classification of classifications) {
             if (classification.type !== "group") {
@@ -1268,82 +1190,58 @@
             }
 
             const rule = classification.rule;
-
             const groupIndex = Number(rule.groupIndex);
 
-            if (!Number.isFinite(groupIndex)) {
-                continue;
+            if (!groups.has(groupIndex)) {
+                const group = adaptedDatabase.groups[groupIndex];
+
+                if (!group) {
+                    continue;
+                }
+
+                groups.set(groupIndex, {
+                    index: groupIndex,
+                    name: group.name,
+                    urls: group.urls,
+                    rules: []
+                });
             }
 
-            if (!matchesByGroup.has(groupIndex)) {
-                matchesByGroup.set(groupIndex, new Map());
+            const group = groups.get(groupIndex);
+
+            let groupRule = group.rules.find(
+                (item) => item.ruleIndex === rule.ruleIndex
+            );
+
+            if (!groupRule) {
+                groupRule = {
+                    ...rule,
+                    candidates: []
+                };
+
+                group.rules.push(groupRule);
             }
-
-            const rules = matchesByGroup.get(groupIndex);
-
-            if (!rules.has(rule.ruleIndex)) {
-                rules.set(rule.ruleIndex, []);
-            }
-
-            const candidates = rules.get(rule.ruleIndex);
 
             if (
-                !candidates.some(
+                !groupRule.candidates.some(
                     (candidate) =>
                         candidate.normalized ===
                         classification.candidate.normalized
                 )
             ) {
-                candidates.push(classification.candidate);
+                groupRule.candidates.push(classification.candidate);
             }
         }
 
-        const result = [];
-
-        for (
-            let groupIndex = 0;
-            groupIndex < adaptedDatabase.groups.length;
-            groupIndex++
-        ) {
-            const sourceGroup = adaptedDatabase.groups[groupIndex];
-
-            const matchedRules = matchesByGroup.get(groupIndex);
-
-            if (!matchedRules) {
-                continue;
-            }
-
-            const rules = [];
-
-            for (
-                let ruleIndex = 0;
-                ruleIndex < (sourceGroup.rules?.length || 0);
-                ruleIndex++
-            ) {
-                if (!matchedRules.has(ruleIndex)) {
-                    continue;
-                }
-
-                const sourceRule = sourceGroup.rules[ruleIndex];
-
-                rules.push({
-                    ...sourceRule,
-                    candidates: matchedRules.get(ruleIndex)
-                });
-            }
-
-            if (rules.length) {
-                result.push({
-                    ...sourceGroup,
-                    index: groupIndex,
-                    rules
-                });
-            }
-        }
-
-        return result;
+        return [...groups.values()]
+            .sort((left, right) => left.index - right.index)
+            .map((group) => ({
+                ...group,
+                rules: group.rules.sort(
+                    (left, right) => left.ruleIndex - right.ruleIndex
+                )
+            }));
     }
-
     function getConflictRuleKey(rule) {
         if (!rule) {
             return "";
@@ -2596,7 +2494,6 @@
             };
         }
     }
-
     function initializeWnc() {
         const database = loadActiveDatabase();
 
