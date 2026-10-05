@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.1.33
+// @version      6.2.0
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -25,18 +25,15 @@
     const state = {
         collapsedGroups: new Set(),
         screen: "candidates",
-        groupIndex: null,
         candidates: [],
         candidateClusters: [],
         groupMatches: [],
         conflicts: [],
         conflictClusters: [],
         candidateTemplate: "Other",
-        showOtherGroups: false,
         expandedRules: new Set()
     };
 
-    let rawFoxReplaceDatabase = null;
     let adaptedDatabase = {
         groups: []
     };
@@ -281,22 +278,6 @@
         };
     }
 
-    function countAdaptedRules(database) {
-        return (database?.groups || []).reduce(
-            (total, group) => total + (group.rules || []).length,
-            0
-        );
-    }
-
-    function describeDatabase(database) {
-        const groups = database?.groups || [];
-
-        return {
-            groups: groups.length,
-            rules: countAdaptedRules(database)
-        };
-    }
-
     function loadNormalDatabase() {
         const value = readStorage(DB_KEY, null);
 
@@ -373,8 +354,6 @@
                 if (!database) {
                     return;
                 }
-
-                rawFoxReplaceDatabase = database;
 
                 adaptedDatabase = adaptFoxReplaceDatabase(database);
 
@@ -1721,8 +1700,10 @@
         state.conflictClusters = [];
     }
 
-    function buildCandidateResults(candidates) {
-        return candidates.map((candidate) => {
+    function buildCandidateResults(classifications) {
+        return classifications.map((classification) => {
+            const candidate = classification.candidate;
+
             candidate.generatedInput = generateCandidateInput(
                 candidate,
                 state.candidateTemplate
@@ -1806,6 +1787,9 @@
         const parts = [];
         let node;
 
+        const blockTags =
+            /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H1|H2|H3|H4|H5|H6|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TD|TH|TR|UL)$/;
+
         while ((node = walker.nextNode())) {
             const parent = node.parentElement;
 
@@ -1838,14 +1822,18 @@
             const previous = parts.length ? parts[parts.length - 1] : "";
 
             if (previous && !/\s$/.test(previous) && !/^\s/.test(text)) {
-                const previousElement = node.previousSibling;
+                let previousNode = node.previousSibling;
+                let ancestor = node;
+
+                while (!previousNode && ancestor.parentElement) {
+                    ancestor = ancestor.parentElement;
+                    previousNode = ancestor.previousSibling;
+                }
 
                 if (
-                    previousElement &&
-                    previousElement.nodeType === Node.ELEMENT_NODE &&
-                    /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H1|H2|H3|H4|H5|H6|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TD|TH|TR|UL)$/.test(
-                        previousElement.tagName
-                    )
+                    previousNode &&
+                    previousNode.nodeType === Node.ELEMENT_NODE &&
+                    blockTags.test(previousNode.tagName)
                 ) {
                     parts.push(" ");
                 }
@@ -1989,6 +1977,22 @@
 #${WNC_UI_ID} button:hover {
     background: #333;
 }
+    .wnc-sentence-start {
+    margin-left: 28px;
+    color: #aaa;
+    padding: 3px 0;
+}
+
+.wnc-conflict-cluster-header {
+    font-weight: bold;
+    margin-bottom: 6px;
+}
+
+.wnc-conflict-cluster-items {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
 .wnc-toolbar {
     display: flex;
     align-items: center;
@@ -2077,10 +2081,6 @@
 .wnc-conflict-cluster {
     margin-bottom: 14px;
 }
-.wnc-cluster-title {
-    font-weight: bold;
-    margin-bottom: 6px;
-}
 .wnc-muted {
     color: #999;
 }
@@ -2088,16 +2088,6 @@
     font-family: monospace;
     white-space: pre-wrap;
     word-break: break-word;
-}
-.wnc-summary {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-.wnc-summary-item {
-    border: 1px solid #444;
-    border-radius: 5px;
-    padding: 7px 10px;
 }
 `;
     }
@@ -2608,9 +2598,9 @@
     }
 
     function initializeWnc() {
-        rawFoxReplaceDatabase = loadActiveDatabase();
+        const database = loadActiveDatabase();
 
-        adaptedDatabase = adaptFoxReplaceDatabase(rawFoxReplaceDatabase);
+        adaptedDatabase = adaptFoxReplaceDatabase(database);
 
         ensureDatabaseShape();
 
