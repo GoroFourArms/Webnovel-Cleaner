@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.2.1
+// @version      6.2.2
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -565,30 +565,12 @@
     }
     function mergeCandidateOccurrences(occurrences) {
         const candidateMap = new Map();
-        const sentenceStartMap = new Map();
 
         for (const occurrence of occurrences) {
             const name = String(occurrence?.text || "").trim();
             const normalized = normalizeCandidate(name);
 
             if (!normalized) {
-                continue;
-            }
-
-            if (occurrence.isSentenceStart) {
-                const existing = sentenceStartMap.get(normalized);
-
-                if (existing) {
-                    existing.frequency += 1;
-                } else {
-                    sentenceStartMap.set(normalized, {
-                        text: name,
-                        normalized,
-                        frequency: 1,
-                        index: occurrence.index
-                    });
-                }
-
                 continue;
             }
 
@@ -617,6 +599,14 @@
                 candidate.variants.set(name, 1);
             }
 
+            if (occurrence.isSentenceStart) {
+                candidate.sentenceStarts.push({
+                    text: name,
+                    normalized,
+                    frequency: 1
+                });
+            }
+
             if (occurrence.index < candidate.originalIndex) {
                 candidate.originalIndex = occurrence.index;
             }
@@ -628,11 +618,9 @@
             candidate.name = chooseCandidateDisplayName(candidate);
         }
 
-        const sentenceStarts = Array.from(sentenceStartMap.values());
-
         return {
             candidates,
-            sentenceStarts
+            sentenceStarts: []
         };
     }
     function chooseCandidateDisplayName(candidate) {
@@ -669,7 +657,6 @@
         const merged = mergeCandidateOccurrences(occurrences);
 
         merged.candidates = finalizeCandidateNames(merged.candidates);
-        applySentenceStartMatches(merged.candidates, merged.sentenceStarts);
 
         return {
             candidates: merged.candidates,
@@ -1023,6 +1010,10 @@
 
                         const candidates =
                             candidatesByRule.get(getRuleKey(rule)) || [];
+
+                        if (!candidates.length) {
+                            return null;
+                        }
 
                         return {
                             ...rule,
