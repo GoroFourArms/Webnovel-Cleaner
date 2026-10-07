@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.2.3
+// @version      6.2.4
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -251,7 +251,7 @@
             (group.rules || []).filter((rule) => rule.enabled)
         );
     }
-    function scanOccurrences(text) {
+    function scanCandidateOccurrences(text) {
         const occurrences = [];
         if (!text) {
             return occurrences;
@@ -264,7 +264,10 @@
                 continue;
             }
             const startIndex = match.index;
-            let isSentenceStart = startIndex === 0;
+            if (startIndex === 0) {
+                continue;
+            }
+            let sentenceStart = false;
             for (let index = startIndex - 1; index >= 0; index--) {
                 const character = text[index];
                 if (/\s/.test(character)) {
@@ -273,13 +276,17 @@
                 if (/["'“”‘’([{]/.test(character)) {
                     continue;
                 }
-                isSentenceStart = /[.!?]/.test(character);
+                if (/[.!?]/.test(character)) {
+                    sentenceStart = true;
+                }
                 break;
+            }
+            if (sentenceStart) {
+                continue;
             }
             occurrences.push({
                 text: value,
-                index: startIndex,
-                isSentenceStart
+                index: startIndex
             });
         }
         return occurrences;
@@ -292,31 +299,25 @@
         if (!starterTokens.length) {
             return null;
         }
-        const starterTokenSet = new Set(starterTokens);
         const matches = [];
         for (const candidate of candidates) {
             const candidateTokens = getCandidateTokens(candidate);
-            if (!candidateTokens.length) {
+            if (
+                !candidateTokens.length ||
+                candidateTokens.length > starterTokens.length
+            ) {
                 continue;
             }
             const sharedContiguousTokens = getSharedContiguousTokenCount(
                 starterTokens,
                 candidateTokens
             );
-            if (sharedContiguousTokens <= 0) {
+            if (sharedContiguousTokens !== candidateTokens.length) {
                 continue;
-            }
-            let sharedTokenCount = 0;
-            const candidateTokenSet = new Set(candidateTokens);
-            for (const token of candidateTokenSet) {
-                if (starterTokenSet.has(token)) {
-                    sharedTokenCount++;
-                }
             }
             matches.push({
                 candidate,
                 sharedContiguousTokens,
-                sharedTokenCount,
                 originalIndex: Number(candidate.originalIndex ?? Infinity),
                 candidateTokenCount: candidateTokens.length
             });
@@ -328,13 +329,10 @@
             if (b.sharedContiguousTokens !== a.sharedContiguousTokens) {
                 return b.sharedContiguousTokens - a.sharedContiguousTokens;
             }
-            if (b.sharedTokenCount !== a.sharedTokenCount) {
-                return b.sharedTokenCount - a.sharedTokenCount;
-            }
             if (a.originalIndex !== b.originalIndex) {
                 return a.originalIndex - b.originalIndex;
             }
-            return a.candidateTokenCount - b.candidateTokenCount;
+            return b.candidateTokenCount - a.candidateTokenCount;
         });
         return matches[0].candidate;
     }
@@ -348,10 +346,13 @@
             if (frequencyDifference !== 0) {
                 return frequencyDifference;
             }
-            return Number(a.originalIndex || 0) - Number(b.originalIndex || 0);
+            return (
+                Number(a.originalIndex ?? Infinity) -
+                Number(b.originalIndex ?? Infinity)
+            );
         });
         for (const starter of sentenceStarts) {
-            if (!starter) {
+            if (!starter || starter.matchedCandidate) {
                 continue;
             }
             const frequency = Number(starter.frequency || 0);
@@ -375,7 +376,6 @@
                 frequency
             });
             starter.matchedCandidate = candidate;
-            starter.frequency = 0;
         }
     }
     function splitCandidateTokens(candidate) {
@@ -409,12 +409,8 @@
             .filter(Boolean)
             .join(" ");
     }
-    function normalizedCandidateRegexValue(name) {
-        return normalizeGeneratedInputSpacing(name || "");
-    }
     function mergeCandidateOccurrences(occurrences) {
         const candidateMap = new Map();
-        const sentenceStartMap = new Map();
         for (const occurrence of occurrences || []) {
             const text = String(occurrence?.text || "").trim();
             if (!text) {
@@ -424,37 +420,23 @@
             if (!normalized) {
                 continue;
             }
-            const targetMap = occurrence.isSentenceStart
-                ? sentenceStartMap
-                : candidateMap;
-            let entry = targetMap.get(normalized);
+            let entry = candidateMap.get(normalized);
             if (!entry) {
-                entry = occurrence.isSentenceStart
-                    ? {
-                          text,
-                          normalized,
-                          frequency: 0,
-                          variants: new Map(),
-                          originalIndex: occurrence.index
-                      }
-                    : {
-                          name: text,
-                          normalized,
-                          frequency: 0,
-                          variants: new Map(),
-                          sentenceStarts: [],
-                          originalIndex: occurrence.index
-                      };
-                targetMap.set(normalized, entry);
+                entry = {
+                    name: text,
+                    normalized,
+                    frequency: 0,
+                    variants: new Map(),
+                    sentenceStarts: [],
+                    originalIndex: occurrence.index
+                };
+                candidateMap.set(normalized, entry);
             }
             entry.frequency++;
             const variantCount = Number(entry.variants.get(text) || 0);
             entry.variants.set(text, variantCount + 1);
         }
-        return {
-            candidates: [...candidateMap.values()],
-            sentenceStarts: [...sentenceStartMap.values()]
-        };
+        return [...candidateMap.values()];
     }
     function chooseCandidateDisplayName(candidate) {
         if (!candidate?.variants?.size) {
@@ -499,14 +481,46 @@
         });
     }
     function scanChapterCandidates(text) {
-        const occurrences = scanOccurrences(text);
-        const merged = mergeCandidateOccurrences(occurrences);
-        merged.candidates = finalizeCandidateNames(merged.candidates);
-        applySentenceStartMatches(merged.candidates, merged.sentenceStarts);
+        const candidateOccurrences = scanCandidateOccurrences(text);
+        const sentenceStartOccurrences = scanSentenceStartOccurrences(text);
+        const candidates = mergeCandidateOccurrences(candidateOccurrences);
+        const finalizedCandidates = finalizeCandidateNames(candidates);
+        const sentenceStarts = mergeSentenceStartOccurrences(
+            sentenceStartOccurrences
+        );
+        applySentenceStartMatches(finalizedCandidates, sentenceStarts);
         return {
-            candidates: merged.candidates,
-            sentenceStarts: merged.sentenceStarts
+            candidates: finalizedCandidates,
+            sentenceStarts
         };
+    }
+    function mergeSentenceStartOccurrences(occurrences) {
+        const sentenceStartMap = new Map();
+        for (const occurrence of occurrences || []) {
+            const text = String(occurrence?.text || "").trim();
+            if (!text) {
+                continue;
+            }
+            const normalized = normalizeCandidate(text);
+            if (!normalized) {
+                continue;
+            }
+            let entry = sentenceStartMap.get(normalized);
+            if (!entry) {
+                entry = {
+                    text,
+                    normalized,
+                    frequency: 0,
+                    variants: new Map(),
+                    originalIndex: occurrence.index
+                };
+                sentenceStartMap.set(normalized, entry);
+            }
+            entry.frequency++;
+            const variantCount = Number(entry.variants.get(text) || 0);
+            entry.variants.set(text, variantCount + 1);
+        }
+        return [...sentenceStartMap.values()];
     }
     function getCandidateTokens(value) {
         if (
@@ -659,7 +673,10 @@
     }
     function processCandidateClusters(candidates) {
         const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
-        const clusters = buildCandidateClusters(candidates);
+        const candidateList = Array.isArray(candidates)
+            ? candidates.filter(Boolean)
+            : [];
+        const clusters = buildCandidateClusters(candidateList);
         const maxFrequency = Math.max(
             0,
             ...clusters.map((cluster) => Number(cluster.root?.frequency || 0))
@@ -696,25 +713,6 @@
             return null;
         }
     }
-    function regexpRuleMatches(value, rule) {
-        const regex = compileRuleRegex(rule);
-        if (!regex) {
-            return false;
-        }
-        regex.lastIndex = 0;
-        return regex.test(String(value ?? ""));
-    }
-    function plainRuleMatches(value, rule) {
-        const text = String(value ?? "");
-        const input = String(rule?.input ?? "");
-        if (!text || !input) {
-            return false;
-        }
-        if (rule.caseSensitive) {
-            return text.includes(input);
-        }
-        return text.toLowerCase().includes(input.toLowerCase());
-    }
     function wholeWordRuleMatches(candidateText, ruleText, caseSensitive) {
         const value = String(candidateText ?? "");
         const input = String(ruleText ?? "");
@@ -725,7 +723,7 @@
         try {
             const pattern = new RegExp(
                 "(?<![A-Za-z0-9'’-])" +
-                    escapeRegex(input) +
+                    escapeRegexLiteral(input) +
                     "(?![A-Za-z0-9'’-])",
                 flags
             );
@@ -764,90 +762,81 @@
         }
         return [...forms];
     }
-    function findCandidateRuleMatches(candidate, rules) {
-        const exact = [];
-        const partial = [];
-        const forms = getCandidateMatchForms(candidate);
-        if (!candidate || !forms.length) {
+    function findCandidateRuleMatches(candidate, pageMatchedRules) {
+        if (!candidate || !Array.isArray(pageMatchedRules)) {
             return {
-                exact,
-                partial,
+                exact: [],
+                wholeWord: [],
+                partial: [],
                 all: []
             };
         }
-        for (const rule of rules || []) {
+        const candidateForms = getCandidateMatchForms(candidate);
+        if (!candidateForms.length) {
+            return {
+                exact: [],
+                wholeWord: [],
+                partial: [],
+                all: []
+            };
+        }
+        const exact = [];
+        const wholeWord = [];
+        const partial = [];
+        for (const rule of pageMatchedRules) {
             if (!rule) {
                 continue;
             }
+            const ruleText = String(
+                rule.input ?? rule.text ?? rule.find ?? ""
+            ).trim();
+            if (!ruleText) {
+                continue;
+            }
             let matched = false;
-            let exactMatch = false;
-            for (const form of forms) {
-                let formMatched = false;
-                let formExact = false;
-                if (rule.inputType === "regexp") {
-                    if (!regexpRuleMatches(form, rule)) {
-                        continue;
-                    }
-                    formMatched = true;
-                    const ranges = findRulePageMatchRanges(form, rule);
-                    formExact =
-                        ranges.length === 1 &&
-                        ranges[0].start === 0 &&
-                        ranges[0].end === form.length;
-                } else if (rule.inputType === "wholewords") {
-                    if (
-                        !wholeWordRuleMatches(
-                            form,
-                            rule.input,
-                            rule.caseSensitive
-                        )
-                    ) {
-                        continue;
-                    }
-                    formMatched = true;
-                    const input = String(rule.input ?? "");
-                    const value = String(form ?? "");
-                    const left = rule.caseSensitive
-                        ? value
-                        : value.toLowerCase();
-                    const right = rule.caseSensitive
-                        ? input
-                        : input.toLowerCase();
-                    formExact = left === right;
-                } else if (rule.inputType === "text") {
-                    if (!plainRuleMatches(form, rule)) {
-                        continue;
-                    }
-                    formMatched = true;
-                    const input = String(rule.input ?? "");
-                    const value = String(form ?? "");
-                    const left = rule.caseSensitive
-                        ? value
-                        : value.toLowerCase();
-                    const right = rule.caseSensitive
-                        ? input
-                        : input.toLowerCase();
-                    formExact = left === right;
-                }
-                if (!formMatched) {
+            for (const form of candidateForms) {
+                if (!form) {
                     continue;
                 }
-                matched = true;
-                if (formExact) {
-                    exactMatch = true;
+                if (String(ruleText) === String(form)) {
+                    exact.push(rule);
+                    matched = true;
+                    break;
+                }
+                if (
+                    wholeWordRuleMatches(
+                        form,
+                        ruleText,
+                        Boolean(rule.caseSensitive)
+                    )
+                ) {
+                    wholeWord.push(rule);
+                    matched = true;
+                    break;
+                }
+                if (
+                    String(ruleText)
+                        .toLowerCase()
+                        .includes(String(form).toLowerCase()) ||
+                    String(form)
+                        .toLowerCase()
+                        .includes(String(ruleText).toLowerCase())
+                ) {
+                    partial.push(rule);
+                    matched = true;
                     break;
                 }
             }
-            if (exactMatch) {
-                exact.push(rule);
-            } else if (matched) {
-                partial.push(rule);
+            if (!matched) {
+                continue;
             }
         }
+        const all = [...new Set([...exact, ...wholeWord, ...partial])];
         return {
             exact,
+            wholeWord,
             partial,
-            all: [...exact, ...partial]
+            all
         };
     }
     function buildGroupMatches(
@@ -933,10 +922,7 @@
     }
     function generateOtherInput(candidate) {
         const value = normalizeGeneratedInputSpacing(
-            candidate?.regexValue ??
-                candidate?.name ??
-                candidate?.displayName ??
-                ""
+            candidate?.name || candidate?.normalized || ""
         );
         if (!value) {
             return "";
@@ -945,16 +931,13 @@
     }
     function generateKoreanInput(candidate) {
         const value = normalizeGeneratedInputSpacing(
-            candidate?.regexValue ??
-                candidate?.name ??
-                candidate?.displayName ??
-                ""
+            candidate?.name || candidate?.normalized || ""
         );
         if (!value) {
             return "";
         }
         const original = normalizeGeneratedInputSpacing(
-            candidate?.name || candidate?.displayName || ""
+            candidate?.name || candidate?.normalized || ""
         );
         const originalTokens = splitCandidateTokens(original);
         const valueTokens = splitCandidateTokens(value);
@@ -976,25 +959,21 @@
     }
     function generateKorean2Input(candidate) {
         const value = normalizeGeneratedInputSpacing(
-            candidate?.regexValue ??
-                candidate?.name ??
-                candidate?.displayName ??
-                ""
+            candidate?.name || candidate?.normalized || ""
         );
         if (!value) {
             return "";
         }
         const original = normalizeGeneratedInputSpacing(
-            candidate?.name || candidate?.displayName || ""
+            candidate?.name || candidate?.normalized || ""
         );
         const originalTokens = splitCandidateTokens(original);
         let nameValue = value;
         if (originalTokens.length > 1) {
-            const firstToken = originalTokens[0];
             const valueTokens = splitCandidateTokens(value);
             if (
                 valueTokens.length > 1 &&
-                valueTokens[0].toLowerCase() === firstToken.toLowerCase()
+                valueTokens[0].toLowerCase() === originalTokens[0].toLowerCase()
             ) {
                 nameValue = valueTokens.slice(1).join(" ");
             }
@@ -1020,10 +999,7 @@
     }
     function generateJapaneseInput(candidate) {
         const value = normalizeGeneratedInputSpacing(
-            candidate?.regexValue ??
-                candidate?.name ??
-                candidate?.displayName ??
-                ""
+            candidate?.name || candidate?.normalized || ""
         );
         if (!value) {
             return "";
@@ -1051,38 +1027,9 @@
         if (!identity) {
             return "";
         }
-        const identityTokens = splitCandidateTokens(identity);
-        if (!identityTokens.length) {
-            return "";
-        }
-        const base = identityTokens.join(" ");
-        const forms = new Set([base, `${base}s`, `${base}'s`, `${base}s'`]);
-        if (candidate.variants instanceof Map) {
-            for (const variant of candidate.variants.keys()) {
-                const value = String(variant || "").trim();
-                if (
-                    value &&
-                    normalizeCandidate(value) === normalizeCandidate(base)
-                ) {
-                    forms.add(value);
-                }
-            }
-        } else if (Array.isArray(candidate.variants)) {
-            for (const variant of candidate.variants) {
-                const value = String(variant || "").trim();
-                if (
-                    value &&
-                    normalizeCandidate(value) === normalizeCandidate(base)
-                ) {
-                    forms.add(value);
-                }
-            }
-        }
         const generationCandidate = {
             ...candidate,
-            name: base,
-            normalized: normalizeCandidate(base),
-            variants: new Map([...forms].map((form) => [form, 1]))
+            name: identity
         };
         switch (template) {
             case "Korean":
@@ -1112,10 +1059,11 @@
         state.conflicts = [];
     }
     function buildCandidateResults(candidates) {
-        return candidates.map((candidate) => {
-            candidate.regexValue =
-                candidate.regexValue ||
-                normalizedCandidateRegexValue(candidate.name);
+        return (candidates || []).map((candidate) => {
+            const name = String(
+                candidate?.name || candidate?.normalized || ""
+            ).trim();
+            candidate.name = name;
             candidate.generatedInput =
                 candidate.generatedInput ||
                 generateCandidateInput(candidate, state.candidateTemplate);
@@ -1285,11 +1233,16 @@
     function analyzePage() {
         clearAnalysisResults();
         const pageText = scanPageText();
-        const siteRules = getCurrentSiteRules();
+        // Candidate scan + sentence-start scan.
         const candidateScan = scanChapterCandidates(pageText);
+        // Candidates are already finalized and have matched sentence starts
+        // applied by scanChapterCandidates().
         const candidates = candidateScan.candidates;
+        // Match FoxReplace rules against the page itself.
+        const siteRules = getCurrentSiteRules();
         const pageRuleMatches = scanFoxReplacePage(pageText, siteRules);
         const pageMatchedRules = pageRuleMatches.map(({ rule }) => rule);
+        // Match only finalized Candidates against page-matched rules.
         const candidateRuleMatches = new Map();
         for (const candidate of candidates) {
             candidateRuleMatches.set(
@@ -1297,18 +1250,22 @@
                 findCandidateRuleMatches(candidate, pageMatchedRules)
             );
         }
+        // Remove Candidates already handled by an existing page rule.
         const remainingCandidates = candidates.filter((candidate) => {
             const matches = candidateRuleMatches.get(candidate);
             return !matches?.all?.length;
         });
+        // Cluster only the remaining Candidates.
         const candidatePool = processCandidateClusters(remainingCandidates);
         state.candidates = buildCandidateResults(candidatePool.candidates);
         state.candidateClusters = candidatePool.clusters;
+        // Groups use the retained Candidates and page-matched rules.
         state.groupMatches = buildGroupMatches(
             pageRuleMatches,
             candidateRuleMatches,
             candidatePool.candidates
         );
+        // Conflicts are derived directly from page-matched rules.
         const conflictClusters = buildConflictClusters(pageRuleMatches);
         state.conflicts = buildConflictData(pageRuleMatches, conflictClusters);
         render();
@@ -1705,8 +1662,8 @@
             : [];
     }
     function renderCandidateRow(candidate) {
-        const frequency = Number(candidate.frequency || 0);
-        const sentenceStarts = Array.isArray(candidate.sentenceStarts)
+        const frequency = Number(candidate?.frequency || 0);
+        const sentenceStarts = Array.isArray(candidate?.sentenceStarts)
             ? candidate.sentenceStarts
             : [];
         const sentenceStartHtml = sentenceStarts
@@ -1730,16 +1687,14 @@
         return `
         <tr>
             <td>
-                ${escapeHtml(candidate.name)}
+                ${escapeHtml(candidate?.name || "")}
                 ${sentenceStartHtml}
             </td>
             <td>${escapeHtml(frequency)}</td>
-            <td>${escapeHtml(candidate.regexValue || "")}</td>
-            <td>${escapeHtml(candidate.generatedInput || "")}</td>
             <td>
                 <button
                     type="button"
-                    data-wnc-copy="${escapeHtml(candidate.generatedInput || "")}"
+                    data-wnc-copy="${escapeHtml(candidate?.generatedInput || "")}"
                 >
                     Copy
                 </button>
@@ -1767,8 +1722,6 @@
                     <tr>
                         <th>Name</th>
                         <th>Frequency</th>
-                        <th>Regex Candidate</th>
-                        <th>Generated Input</th>
                         <th>Copy</th>
                     </tr>
                 </thead>
