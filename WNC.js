@@ -2320,6 +2320,624 @@
         }
         ensureDatabaseShape();
     }
+    // ==UserScript==
+    // @name         Webnovel Cleaner (Fixed 6.2.6)
+    // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
+    // @version      6.2.6
+    // @description  Webnovel Cleaner 6.2.5 with import, regex UI, working buttons, persistent panel/column sizing, and sentence-start fixes.
+    // @match        *://*/*
+    // @grant        GM_getValue
+    // @grant        GM_setValue
+    // @grant        GM_registerMenuCommand
+    // @grant        GM_xmlhttpRequest
+    // @connect      raw.githubusercontent.com
+    // ==/UserScript==
+    (function () {
+        "use strict";
+        const SOURCE_URL =
+            "https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/WNC.js";
+        function loadSource() {
+            return new Promise((resolve, reject) => {
+                if (typeof GM_xmlhttpRequest === "function") {
+                    GM_xmlhttpRequest({
+                        method: "GET",
+                        url: SOURCE_URL,
+                        onload: (response) => {
+                            if (
+                                response.status >= 200 &&
+                                response.status < 300
+                            ) {
+                                resolve(String(response.responseText || ""));
+                            } else {
+                                reject(
+                                    new Error(
+                                        "Unable to load WNC.js: HTTP " +
+                                            response.status
+                                    )
+                                );
+                            }
+                        },
+                        onerror: () =>
+                            reject(
+                                new Error("Unable to load WNC.js from GitHub.")
+                            )
+                    });
+                    return;
+                }
+                fetch(SOURCE_URL, { credentials: "omit" })
+                    .then((response) => {
+                        if (!response.ok)
+                            throw new Error("HTTP " + response.status);
+                        return response.text();
+                    })
+                    .then(resolve)
+                    .catch(reject);
+            });
+        }
+        function patchSource(source) {
+            let patched = String(source || "");
+            if (!patched) throw new Error("WNC.js source is empty.");
+            patched = patched.replace(
+                /\/\/ @version\s+\S+/,
+                "// @version      6.2.6"
+            );
+            // Sentence starts are metadata attached to an existing candidate.
+            // They must never increase candidate frequency.
+            patched = patched.replace(
+                /candidate\.frequency\s*=\s*Number\(candidate\.frequency\s*\|\|\s*0\)\s*\+\s*frequency;\s*/m,
+                ""
+            );
+            // Accept the common FoxReplace group container names and direct arrays.
+            patched = patched.replace(
+                `    function findGroupArray(database) {
+        if (!database || typeof database !== "object") {
+            return [];
+        }
+        return Array.isArray(database.groups) ? database.groups : [];
+    }`,
+                `    function findGroupArray(database) {
+        if (Array.isArray(database)) {
+            return database;
+        }
+        if (!database || typeof database !== "object") {
+            return [];
+        }
+        const directKeys = [
+            "groups",
+            "substitutionGroups",
+            "substitutionList",
+            "lists"
+        ];
+        for (const key of directKeys) {
+            if (Array.isArray(database[key])) {
+                return database[key];
+            }
+        }
+        for (const value of Object.values(database)) {
+            if (Array.isArray(value) && value.length && value.every(
+                (item) => item && typeof item === "object"
+            )) {
+                const looksLikeGroups = value.some(
+                    (item) =>
+                        Array.isArray(item.substitutions) ||
+                        Array.isArray(item.rules) ||
+                        item.name !== undefined ||
+                        item.groupName !== undefined
+                );
+                if (looksLikeGroups) {
+                    return value;
+                }
+            }
+        }
+        return [];
+    }`
+            );
+            // Import parser: allow direct group arrays and tolerate FoxReplace
+            // metadata/version formats instead of rejecting otherwise valid data.
+            patched = patched.replace(
+                `        if (
+            !database ||
+            typeof database !== "object" ||
+            Array.isArray(database)
+        ) {
+            return null;
+        }
+        const groups = findGroupArray(database);
+        if (!Array.isArray(groups)) {
+            return null;
+        }
+        const version = String(database.version ?? "").trim();
+        if (version && !/^\d+(?:\.\d+)+$/.test(version)) {
+            return null;
+        }
+        return {
+            ...database,
+            groups
+        };`,
+                `        if (Array.isArray(database)) {
+            database = { groups: database };
+        }
+        if (!database || typeof database !== "object") {
+            return null;
+        }
+        const groups = findGroupArray(database);
+        if (!Array.isArray(groups)) {
+            return null;
+        }
+        return {
+            ...database,
+            groups
+        };`
+            );
+            // Persist the selected template.
+            patched = patched.replace(
+                `        candidateTemplate: "Other",`,
+                `        candidateTemplate: readStorage("WNC_CANDIDATE_TEMPLATE_V1", "Other") || "Other",`
+            );
+            // Candidate template/preview controls are added by the fix layer after render.\n\n        // Replace the dead button calls with the actual in-panel implementations.
+            patched = patched.replace(
+                `                if (value && typeof highlightCandidate === "function") {
+                    highlightCandidate(value);
+                }
+                return;`,
+                `                if (value) {
+                    highlightWncCandidate(value);
+                }
+                return;`
+            );
+            patched = patched.replace(
+                `                if (value && typeof generateRegex === "function") {
+                    generateRegex(value);
+                }
+                return;`,
+                `                if (value) {
+                    showWncRegexPreview(value);
+                }
+                return;`
+            );
+            // Add all remaining fixes inside the existing WNC closure.
+            const marker = "    startWnc();\n})();";
+            const injected = String.raw`
+    // ============================================================
+    // WNC 6.2.6 FIX LAYER
+    // ============================================================
+    const WNC_UI_SETTINGS_KEY = "WNC_UI_SETTINGS_V1";
+    const WNC_DEFAULT_UI_SETTINGS = {
+        width: 1400,
+        height: 0,
+        columns: {
+            candidates: [420, 100, 220],
+            groups: [220, 520, 420, 100],
+            conflicts: [220, 520, 420, 420, 100]
+        }
+    };
+    function getWncUiSettings() {
+        const value = readStorage(WNC_UI_SETTINGS_KEY, null);
+        if (!value || typeof value !== "object") {
+            return JSON.parse(JSON.stringify(WNC_DEFAULT_UI_SETTINGS));
+        }
+        const merged = JSON.parse(JSON.stringify(WNC_DEFAULT_UI_SETTINGS));
+        if (Number.isFinite(Number(value.width))) merged.width = Number(value.width);
+        if (Number.isFinite(Number(value.height))) merged.height = Number(value.height);
+        if (value.columns && typeof value.columns === "object") {
+            for (const tab of Object.keys(merged.columns)) {
+                if (Array.isArray(value.columns[tab])) {
+                    merged.columns[tab] = value.columns[tab].map(Number).filter(
+                        (n) => Number.isFinite(n) && n >= 40
+                    );
+                }
+            }
+        }
+        return merged;
+    }
+    function saveWncUiSettings(settings) {
+        writeStorage(WNC_UI_SETTINGS_KEY, settings);
+    }
+    function applyWncPanelSize(overlay) {
+        if (!overlay || overlay.classList.contains("wnc-minimized")) return;
+        const settings = getWncUiSettings();
+        const viewportWidth = Math.max(320, window.innerWidth - 20);
+        const width = Math.max(320, Math.min(Number(settings.width || 1400), viewportWidth));
+        overlay.style.width = width + "px";
+        if (Number(settings.height) > 0) {
+            const viewportHeight = Math.max(220, window.innerHeight - 20);
+            const height = Math.max(200, Math.min(Number(settings.height), viewportHeight));
+            overlay.style.height = height + "px";
+        } else {
+            overlay.style.height = "auto";
+            overlay.style.maxHeight = "calc(100vh - 20px)";
+        }
+    }
+    function saveWncPanelSize(overlay) {
+        if (!overlay || overlay.classList.contains("wnc-minimized")) return;
+        const settings = getWncUiSettings();
+        const rect = overlay.getBoundingClientRect();
+        if (rect.width >= 320) settings.width = Math.round(rect.width);
+        if (rect.height >= 200) settings.height = Math.round(rect.height);
+        saveWncUiSettings(settings);
+    }
+    function getWncColumnWidths(tab) {
+        const settings = getWncUiSettings();
+        return Array.isArray(settings.columns[tab])
+            ? settings.columns[tab]
+            : WNC_DEFAULT_UI_SETTINGS.columns[tab];
+    }
+    function saveWncColumnWidths(tab, widths) {
+        const settings = getWncUiSettings();
+        settings.columns[tab] = widths.map((n) => Math.max(40, Math.round(Number(n) || 40)));
+        saveWncUiSettings(settings);
+    }
+    function applyWncColumnWidths(table, tab) {
+        if (!table) return;
+        const widths = getWncColumnWidths(tab);
+        const headers = [...table.querySelectorAll("thead th")];
+        headers.forEach((header, index) => {
+            const width = widths[index];
+            if (!Number.isFinite(width)) return;
+            header.style.width = width + "px";
+            header.style.minWidth = width + "px";
+            header.style.maxWidth = width + "px";
+            const cells = table.querySelectorAll(
+                "tbody tr > :nth-child(" + (index + 1) + ")"
+            );
+            cells.forEach((cell) => {
+                cell.style.width = width + "px";
+                cell.style.minWidth = width + "px";
+                cell.style.maxWidth = width + "px";
+            });
+        });
+    }
+    function ensureWncCandidateControls(overlay) {
+        const candidateTable = overlay?.querySelector(".wnc-tab-content .wnc-table");
+        if (!candidateTable || candidateTable.querySelectorAll("thead th").length !== 3) {
+            return;
+        }
+        candidateTable.dataset.wncTable = "candidates";
+        candidateTable.querySelectorAll("thead th").forEach((th, index) => {
+            th.dataset.wncCol = String(index);
+        });
+        let toolbar = overlay.querySelector(".wnc-candidate-toolbar");
+        if (!toolbar) {
+            toolbar = document.createElement("div");
+            toolbar.className = "wnc-candidate-toolbar";
+            candidateTable.parentNode.insertBefore(toolbar, candidateTable);
+        }
+        toolbar.innerHTML = "";
+        const label = document.createElement("label");
+        label.textContent = "Regex template ";
+        const select = document.createElement("select");
+        select.dataset.wncTemplate = "1";
+        for (const item of INPUT_TEMPLATES) {
+            const option = document.createElement("option");
+            option.value = item;
+            option.textContent = item;
+            option.selected = item === state.candidateTemplate;
+            select.appendChild(option);
+        }
+        label.appendChild(select);
+        toolbar.appendChild(label);
+        const preview = document.createElement("div");
+        preview.className = "wnc-regex-preview";
+        preview.dataset.wncRegexPreview = "1";
+        preview.hidden = true;
+        const previewLabel = document.createElement("span");
+        previewLabel.className = "wnc-regex-preview-label";
+        previewLabel.textContent = "Regex preview:";
+        preview.appendChild(previewLabel);
+        const code = document.createElement("code");
+        code.dataset.wncRegexPreviewValue = "1";
+        preview.appendChild(code);
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.textContent = "Copy regex";
+        copy.dataset.wncRegexCopy = "1";
+        preview.appendChild(copy);
+        toolbar.appendChild(preview);
+    }
+    function tagWncTables(overlay) {
+        const candidateTable = overlay?.querySelector(".wnc-tab-content .wnc-table");
+        if (!candidateTable) return;
+        const visibleTab = state.screen || "candidates";
+        if (visibleTab === "candidates") {
+            candidateTable.dataset.wncTable = "candidates";
+            candidateTable.querySelectorAll("thead th").forEach((th, index) => {
+                th.dataset.wncCol = String(index);
+            });
+        } else if (visibleTab === "groups") {
+            candidateTable.dataset.wncTable = "groups";
+            candidateTable.querySelectorAll("thead th").forEach((th, index) => {
+                th.dataset.wncCol = String(index);
+            });
+        } else {
+            overlay.querySelectorAll(".wnc-conflict-cluster .wnc-table").forEach((table) => {
+                table.dataset.wncTable = "conflicts";
+                table.querySelectorAll("thead th").forEach((th, index) => {
+                    th.dataset.wncCol = String(index);
+                });
+            });
+        }
+    }
+    function installWncColumnResizers(overlay) {
+        if (!overlay) return;
+        tagWncTables(overlay);
+        if ((state.screen || "candidates") === "candidates") {
+            ensureWncCandidateControls(overlay);
+        }
+        for (const table of overlay.querySelectorAll("[data-wnc-table]")) {
+            const tab = table.getAttribute("data-wnc-table") || "candidates";
+            applyWncColumnWidths(table, tab);
+            const headers = [...table.querySelectorAll("thead th")];
+            headers.forEach((header, index) => {
+                if (header.querySelector(".wnc-col-resizer")) return;
+                const handle = document.createElement("span");
+                handle.className = "wnc-col-resizer";
+                handle.title = "Drag to resize column";
+                handle.dataset.wncColumnResize = "1";
+                handle.dataset.wncColumn = String(index);
+                handle.dataset.wncTable = tab;
+                header.appendChild(handle);
+            });
+        }
+    }
+    let wncColumnDrag = null;
+    document.addEventListener("pointerup", () => {
+        const overlay = document.getElementById(WNC_UI_ID);
+        if (overlay && !overlay.classList.contains("wnc-minimized")) {
+            saveWncPanelSize(overlay);
+        }
+    }, true);
+    document.addEventListener("pointerdown", (event) => {
+        const handle = event.target.closest("[data-wnc-column-resize]");
+        if (!handle) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const table = handle.closest("table");
+        const header = handle.closest("th");
+        if (!table || !header) return;
+        const tab = handle.dataset.wncTable || "candidates";
+        const index = Number(handle.dataset.wncColumn);
+        const widths = getWncColumnWidths(tab);
+        const startWidth = header.getBoundingClientRect().width;
+        wncColumnDrag = {
+            table,
+            tab,
+            index,
+            startX: event.clientX,
+            startWidth,
+            widths
+        };
+        handle.setPointerCapture?.(event.pointerId);
+        document.body.classList.add("wnc-resizing-column");
+    }, true);
+    document.addEventListener("pointermove", (event) => {
+        if (!wncColumnDrag) return;
+        const drag = wncColumnDrag;
+        const width = Math.max(40, Math.round(
+            drag.startWidth + event.clientX - drag.startX
+        ));
+        drag.widths[drag.index] = width;
+        applyWncColumnWidths(drag.table, drag.tab);
+    }, true);
+    document.addEventListener("pointerup", () => {
+        if (!wncColumnDrag) return;
+        saveWncColumnWidths(wncColumnDrag.tab, wncColumnDrag.widths);
+        document.body.classList.remove("wnc-resizing-column");
+        wncColumnDrag = null;
+    }, true);
+    let wncPanelResizeObserver = null;
+    function startWncPanelResizePersistence() {
+        const overlay = document.getElementById(WNC_UI_ID);
+        if (!overlay) return;
+        if (wncPanelResizeObserver) {
+            wncPanelResizeObserver.disconnect();
+        }
+        wncPanelResizeObserver = new ResizeObserver(() => {
+            if (
+                overlay &&
+                !overlay.classList.contains("wnc-minimized") &&
+                overlay.matches(":hover")
+            ) {
+                saveWncPanelSize(overlay);
+            }
+        });
+        wncPanelResizeObserver.observe(overlay);
+    }
+    function highlightWncCandidate(value) {
+        const needle = String(value || "").trim();
+        if (!needle) return;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const nodes = [];
+        let node;
+        const lowerNeedle = needle.toLowerCase();
+        while ((node = walker.nextNode())) {
+            const parent = node.parentElement;
+            if (!parent || parent.closest("#wnc-overlay,script,style,noscript,textarea,input")) {
+                continue;
+            }
+            if (String(node.nodeValue || "").toLowerCase().includes(lowerNeedle)) {
+                nodes.push(node);
+            }
+        }
+        for (const textNode of nodes) {
+            const parent = textNode.parentElement;
+            if (!parent || parent.closest("#wnc-highlighted-candidate")) continue;
+            const source = String(textNode.nodeValue || "");
+            const lower = source.toLowerCase();
+            let position = 0;
+            const fragment = document.createDocumentFragment();
+            while (true) {
+                const index = lower.indexOf(lowerNeedle, position);
+                if (index < 0) {
+                    fragment.appendChild(document.createTextNode(source.slice(position)));
+                    break;
+                }
+                fragment.appendChild(document.createTextNode(source.slice(position, index)));
+                const mark = document.createElement("mark");
+                mark.id = "wnc-highlighted-candidate";
+                mark.textContent = source.slice(index, index + needle.length);
+                fragment.appendChild(mark);
+                position = index + needle.length;
+            }
+            parent.replaceChild(fragment, textNode);
+        }
+    }
+    function showWncRegexPreview(value) {
+        const preview = document.querySelector("[data-wnc-regex-preview]");
+        const code = document.querySelector("[data-wnc-regex-preview-value]");
+        if (!preview || !code) return;
+        code.textContent = String(value || "");
+        preview.hidden = false;
+        preview.scrollIntoView({ block: "nearest" });
+    }
+    const wncFixStyle = document.createElement("style");
+    wncFixStyle.textContent = \`
+        #wnc-overlay .wnc-candidate-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 4px 0 7px;
+            background: #222 !important;
+            color: #fff !important;
+        }
+        #wnc-overlay .wnc-candidate-toolbar label {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        #wnc-overlay .wnc-candidate-toolbar select {
+            min-width: 110px;
+        }
+        #wnc-overlay .wnc-regex-preview {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            max-width: 100%;
+        }
+        #wnc-overlay .wnc-regex-preview code {
+            display: inline-block;
+            max-width: 760px;
+            overflow: auto;
+            white-space: pre;
+            padding: 3px 5px;
+            border: 1px solid #555;
+            background: #111;
+            color: #fff;
+        }
+        #wnc-overlay .wnc-table {
+            table-layout: fixed !important;
+        }
+        #wnc-overlay .wnc-table th {
+            position: sticky;
+            overflow: visible;
+        }
+        #wnc-overlay .wnc-col-resizer {
+            position: absolute;
+            top: 0;
+            right: -3px;
+            width: 7px;
+            height: 100%;
+            cursor: col-resize;
+            z-index: 30;
+        }
+        #wnc-overlay .wnc-col-resizer:hover {
+            background: rgba(255,255,255,.18);
+        }
+        body.wnc-resizing-column,
+        body.wnc-resizing-column * {
+            cursor: col-resize !important;
+            user-select: none !important;
+        }
+    \`;
+    (document.head || document.documentElement).appendChild(wncFixStyle);
+    // Candidate template selector and regex preview.
+    document.addEventListener("change", (event) => {
+        const select = event.target.closest("[data-wnc-template]");
+        if (!select) return;
+        const template = INPUT_TEMPLATES.includes(select.value)
+            ? select.value
+            : "Other";
+        state.candidateTemplate = template;
+        writeStorage("WNC_CANDIDATE_TEMPLATE_V1", template);
+        regenerateCandidateInputs(state.candidates, template);
+        for (const cluster of state.candidateClusters || []) {
+            regenerateCandidateInputs(cluster.members || [], template);
+        }
+        render();
+    }, true);
+    document.addEventListener("click", (event) => {
+        const regexCopy = event.target.closest("[data-wnc-regex-copy]");
+        if (regexCopy) {
+            const code = document.querySelector("[data-wnc-regex-preview-value]");
+            if (code) copyText(code.textContent || "");
+            return;
+        }
+        const regexButton = event.target.closest("[data-wnc-regex]");
+        if (regexButton) {
+            showWncRegexPreview(regexButton.getAttribute("data-wnc-regex") || "");
+        }
+    }, true);
+    window.addEventListener("resize", () => {
+        const overlay = document.getElementById(WNC_UI_ID);
+        if (overlay) {
+            applyWncPanelSize(overlay);
+            installWncColumnResizers(overlay);
+        }
+    });
+    // Restore saved dimensions after the original renderer has created the panel.
+    const originalRender = render;
+    render = function () {
+        const result = originalRender.apply(this, arguments);
+        const overlay = document.getElementById(WNC_UI_ID);
+        if (overlay) {
+            applyWncPanelSize(overlay);
+            installWncColumnResizers(overlay);
+            startWncPanelResizePersistence();
+        }
+        return result;
+    };
+    // Ensure the initial panel uses the fixed renderer.
+    setTimeout(() => {
+        const overlay = document.getElementById(WNC_UI_ID);
+        if (overlay) {
+            applyWncPanelSize(overlay);
+            installWncColumnResizers(overlay);
+            startWncPanelResizePersistence();
+        }
+    }, 0);
+`;
+            patched = patched.replace(
+                marker,
+                injected + "    startWnc();\n})();"
+            );
+            // Make panel styles compatible with content-sized height and resizers.
+            patched = patched.replace(
+                /height: calc\(100vh - 80px\);/,
+                "height: auto;"
+            );
+            patched = patched.replace(
+                /height: calc\(100% - 26px\);\s*overflow: auto;/,
+                "height: auto;\n            overflow: auto;"
+            );
+            patched = patched.replace(
+                /table-layout: auto;/,
+                "table-layout: fixed;"
+            );
+            return patched;
+        }
+        loadSource()
+            .then(patchSource)
+            .then((patched) => {
+                // Evaluate inside the userscript sandbox so GM_* APIs remain available
+                // to the original WNC source and to the fix layer.
+                eval(patched + "\n//# sourceURL=WNC-6.2.6-fixed.js");
+            })
+            .catch((error) => {
+                console.error("[WNC 6.2.6] Failed to load patched WNC:", error);
+                alert("Webnovel Cleaner failed to load:\n" + error.message);
+            });
+    })();
     function startWnc() {
         registerWncMenuCommands();
         try {
