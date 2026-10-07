@@ -299,7 +299,9 @@
         if (!starterTokens.length) {
             return null;
         }
-        const matches = [];
+        let bestCandidate = null;
+        let bestSharedCount = 0;
+        let bestOriginalIndex = Infinity;
         for (const candidate of candidates) {
             const candidateTokens = getCandidateTokens(candidate);
             if (
@@ -315,26 +317,18 @@
             if (sharedContiguousTokens !== candidateTokens.length) {
                 continue;
             }
-            matches.push({
-                candidate,
-                sharedContiguousTokens,
-                originalIndex: Number(candidate.originalIndex ?? Infinity),
-                candidateTokenCount: candidateTokens.length
-            });
-        }
-        if (!matches.length) {
-            return null;
-        }
-        matches.sort((a, b) => {
-            if (b.sharedContiguousTokens !== a.sharedContiguousTokens) {
-                return b.sharedContiguousTokens - a.sharedContiguousTokens;
+            const originalIndex = Number(candidate.originalIndex ?? Infinity);
+            if (
+                sharedContiguousTokens > bestSharedCount ||
+                (sharedContiguousTokens === bestSharedCount &&
+                    originalIndex < bestOriginalIndex)
+            ) {
+                bestCandidate = candidate;
+                bestSharedCount = sharedContiguousTokens;
+                bestOriginalIndex = originalIndex;
             }
-            if (a.originalIndex !== b.originalIndex) {
-                return a.originalIndex - b.originalIndex;
-            }
-            return b.candidateTokenCount - a.candidateTokenCount;
-        });
-        return matches[0].candidate;
+        }
+        return bestCandidate;
     }
     function applySentenceStartMatches(candidates, sentenceStarts) {
         if (!Array.isArray(candidates) || !Array.isArray(sentenceStarts)) {
@@ -571,19 +565,25 @@
     function buildCandidateClusters(candidates) {
         const remaining = new Set(candidates || []);
         const ordered = [...remaining].sort((a, b) => {
-            if (Number(b.frequency || 0) !== Number(a.frequency || 0)) {
-                return Number(b.frequency || 0) - Number(a.frequency || 0);
+            const frequencyDifference =
+                Number(b.frequency || 0) - Number(a.frequency || 0);
+            if (frequencyDifference !== 0) {
+                return frequencyDifference;
             }
             return Number(a.originalIndex || 0) - Number(b.originalIndex || 0);
         });
         const tokenIndex = new Map();
+        const candidateTokens = new Map();
         for (const candidate of ordered) {
             const tokens = getCandidateTokens(candidate);
+            candidateTokens.set(candidate, tokens);
             for (const token of tokens) {
-                if (!tokenIndex.has(token)) {
-                    tokenIndex.set(token, new Set());
+                let indexed = tokenIndex.get(token);
+                if (!indexed) {
+                    indexed = new Set();
+                    tokenIndex.set(token, indexed);
                 }
-                tokenIndex.get(token).add(candidate);
+                indexed.add(candidate);
             }
         }
         const clusters = [];
@@ -602,7 +602,8 @@
                     continue;
                 }
                 const related = new Set();
-                for (const token of getCandidateTokens(candidate)) {
+                const tokens = candidateTokens.get(candidate) || [];
+                for (const token of tokens) {
                     const indexed = tokenIndex.get(token);
                     if (!indexed) {
                         continue;
@@ -613,13 +614,7 @@
                         }
                     }
                 }
-                for (const other of ordered) {
-                    if (!related.has(other)) {
-                        continue;
-                    }
-                    if (!remaining.has(other)) {
-                        continue;
-                    }
+                for (const other of related) {
                     remaining.delete(other);
                     queue.push({
                         candidate: other,
@@ -628,8 +623,10 @@
                 }
             }
             members.sort((a, b) => {
-                if (Number(b.frequency || 0) !== Number(a.frequency || 0)) {
-                    return Number(b.frequency || 0) - Number(a.frequency || 0);
+                const frequencyDifference =
+                    Number(b.frequency || 0) - Number(a.frequency || 0);
+                if (frequencyDifference !== 0) {
+                    return frequencyDifference;
                 }
                 return (
                     Number(a.originalIndex || 0) - Number(b.originalIndex || 0)
@@ -646,24 +643,19 @@
         if (!rangesA?.length || !rangesB?.length) {
             return false;
         }
-        const first = [...rangesA].sort(
-            (a, b) => Number(a.start || 0) - Number(b.start || 0)
-        );
-        const second = [...rangesB].sort(
-            (a, b) => Number(a.start || 0) - Number(b.start || 0)
-        );
         let i = 0;
         let j = 0;
-        while (i < first.length && j < second.length) {
-            const a = first[i];
-            const b = second[j];
-            if (
-                Number(a.start || 0) < Number(b.end || 0) &&
-                Number(b.start || 0) < Number(a.end || 0)
-            ) {
+        while (i < rangesA.length && j < rangesB.length) {
+            const a = rangesA[i];
+            const b = rangesB[j];
+            const aStart = Number(a.start || 0);
+            const aEnd = Number(a.end || 0);
+            const bStart = Number(b.start || 0);
+            const bEnd = Number(b.end || 0);
+            if (aStart < bEnd && bStart < aEnd) {
                 return true;
             }
-            if (Number(a.end || 0) <= Number(b.end || 0)) {
+            if (aEnd <= bEnd) {
                 i++;
             } else {
                 j++;
@@ -733,6 +725,13 @@
         }
     }
     function getCandidateMatchForms(candidate) {
+        if (
+            candidate &&
+            typeof candidate === "object" &&
+            Array.isArray(candidate.matchForms)
+        ) {
+            return candidate.matchForms;
+        }
         const forms = new Set();
         const addForm = (value) => {
             const text = String(value ?? "").trim();
@@ -760,7 +759,14 @@
         } else {
             addForm(candidate);
         }
-        return [...forms];
+        const result = [...forms].map((text) => ({
+            text,
+            lower: text.toLowerCase()
+        }));
+        if (candidate && typeof candidate === "object") {
+            candidate.matchForms = result;
+        }
+        return result;
     }
     function findCandidateRuleMatches(candidate, pageMatchedRules) {
         if (!candidate || !Array.isArray(pageMatchedRules)) {
@@ -793,19 +799,29 @@
             if (!ruleText) {
                 continue;
             }
+            let ruleLower = rule._wncLowerInput;
+            if (ruleLower === undefined) {
+                ruleLower = ruleText.toLowerCase();
+                try {
+                    Object.defineProperty(rule, "_wncLowerInput", {
+                        value: ruleLower,
+                        configurable: true
+                    });
+                } catch {}
+            }
             let matched = false;
             for (const form of candidateForms) {
-                if (!form) {
+                if (!form?.text) {
                     continue;
                 }
-                if (String(ruleText) === String(form)) {
+                if (ruleText === form.text) {
                     exact.push(rule);
                     matched = true;
                     break;
                 }
                 if (
                     wholeWordRuleMatches(
-                        form,
+                        form.text,
                         ruleText,
                         Boolean(rule.caseSensitive)
                     )
@@ -815,12 +831,8 @@
                     break;
                 }
                 if (
-                    String(ruleText)
-                        .toLowerCase()
-                        .includes(String(form).toLowerCase()) ||
-                    String(form)
-                        .toLowerCase()
-                        .includes(String(ruleText).toLowerCase())
+                    ruleLower.includes(form.lower) ||
+                    form.lower.includes(ruleLower)
                 ) {
                     partial.push(rule);
                     matched = true;
@@ -846,19 +858,12 @@
     ) {
         const retainedSet = new Set(retainedCandidates || []);
         const matchedRules = new Map();
-        const pageMatchMap = new Map();
-        for (const pageMatch of pageRuleMatches || []) {
-            if (!pageMatch?.rule) continue;
-            pageMatchMap.set(pageMatch.rule, pageMatch);
-        }
         for (const [candidate, matches] of candidateRuleMatches || []) {
             if (!retainedSet.has(candidate)) {
                 continue;
             }
             for (const rule of matches?.all || []) {
-                if (!rule) continue;
-                const pageMatch = pageMatchMap.get(rule);
-                if (!pageMatch) {
+                if (!rule) {
                     continue;
                 }
                 let entry = matchedRules.get(rule);
@@ -866,7 +871,7 @@
                     entry = {
                         rule,
                         candidates: [],
-                        matchCount: Number(pageMatch.matchCount || 0)
+                        matchCount: 0
                     };
                     matchedRules.set(rule, entry);
                 }
@@ -875,11 +880,23 @@
                 }
             }
         }
+        for (const pageMatch of pageRuleMatches || []) {
+            const rule = pageMatch?.rule;
+            const entry = rule ? matchedRules.get(rule) : null;
+            if (!entry) {
+                continue;
+            }
+            entry.matchCount = Number(pageMatch.matchCount || 0);
+        }
         const groups = [];
         const groupMap = new Map();
         for (const pageMatch of pageRuleMatches || []) {
             const rule = pageMatch?.rule;
-            if (!rule || !matchedRules.has(rule)) {
+            if (!rule) {
+                continue;
+            }
+            const matchedRule = matchedRules.get(rule);
+            if (!matchedRule) {
                 continue;
             }
             let group = groupMap.get(rule.groupIndex);
@@ -892,7 +909,7 @@
                 groupMap.set(rule.groupIndex, group);
                 groups.push(group);
             }
-            group.rules.push(matchedRules.get(rule));
+            group.rules.push(matchedRule);
         }
         return groups;
     }
@@ -1027,20 +1044,28 @@
         if (!identity) {
             return "";
         }
-        const generationCandidate = {
-            ...candidate,
-            name: identity
-        };
         switch (template) {
             case "Korean":
-                return generateKoreanInput(generationCandidate);
+                return generateKoreanInput({
+                    ...candidate,
+                    name: identity
+                });
             case "Korean 2":
-                return generateKorean2Input(generationCandidate);
+                return generateKorean2Input({
+                    ...candidate,
+                    name: identity
+                });
             case "Japanese":
-                return generateJapaneseInput(generationCandidate);
+                return generateJapaneseInput({
+                    ...candidate,
+                    name: identity
+                });
             case "Other":
             default:
-                return generateOtherInput(generationCandidate);
+                return generateOtherInput({
+                    ...candidate,
+                    name: identity
+                });
         }
     }
     function regenerateCandidateInputs(candidates, template) {
@@ -1064,13 +1089,14 @@
                 candidate?.name || candidate?.normalized || ""
             ).trim();
             candidate.name = name;
-            candidate.generatedInput =
-                candidate.generatedInput ||
-                generateCandidateInput(candidate, state.candidateTemplate);
+            candidate.generatedInput = generateCandidateInput(
+                candidate,
+                state.candidateTemplate
+            );
             return candidate;
         });
     }
-    function findRulePageMatchRanges(text, rule) {
+    function findRulePageMatchRanges(text, rule, lowerSource = null) {
         const source = String(text ?? "");
         if (!source || !rule) {
             return [];
@@ -1125,7 +1151,9 @@
         if (!pattern) {
             return [];
         }
-        const searchSource = rule.caseSensitive ? source : source.toLowerCase();
+        const searchSource = rule.caseSensitive
+            ? source
+            : (lowerSource ?? source.toLowerCase());
         const searchPattern = rule.caseSensitive
             ? pattern
             : pattern.toLowerCase();
@@ -1346,8 +1374,10 @@
     }
     function scanFoxReplacePage(text, rules = getCurrentSiteRules()) {
         const matches = [];
+        const source = String(text ?? "");
+        const lowerSource = source.toLowerCase();
         for (const rule of rules) {
-            const ranges = findRulePageMatchRanges(text, rule);
+            const ranges = findRulePageMatchRanges(source, rule, lowerSource);
             if (!ranges.length) {
                 continue;
             }
