@@ -2023,8 +2023,26 @@
         }
     }
     function registerWncMenuCommands() {
-        GM_registerMenuCommand("Open Webnovel Cleaner", openWnc);
-        GM_registerMenuCommand("Import FoxReplace JSON", openImportPicker);
+        if (typeof GM_registerMenuCommand !== "function") {
+            return false;
+        }
+        GM_registerMenuCommand("Open Webnovel Cleaner", () => {
+            try {
+                openWnc();
+            } catch (error) {
+                state.analysisError = error;
+                render();
+            }
+        });
+        GM_registerMenuCommand("Import FoxReplace JSON", () => {
+            try {
+                openImportPicker();
+            } catch (error) {
+                state.analysisError = error;
+                render();
+            }
+        });
+        return true;
     }
     function ensureDatabaseShape() {
         if (!adaptedDatabase || !Array.isArray(adaptedDatabase.groups)) {
@@ -2034,7 +2052,9 @@
         }
     }
     function initializeWnc() {
-        let database;
+        let database = {
+            groups: []
+        };
         try {
             database = loadActiveDatabase();
         } catch {
@@ -2050,21 +2070,17 @@
             };
         }
         ensureDatabaseShape();
-        registerWncMenuCommands();
     }
     function startWnc() {
+        registerWncMenuCommands();
         try {
             initializeWnc();
         } catch (error) {
             adaptedDatabase = {
                 groups: []
             };
+            ensureDatabaseShape();
             state.analysisError = error;
-            try {
-                registerWncMenuCommands();
-            } catch {
-                return;
-            }
         }
     }
     startWnc();
