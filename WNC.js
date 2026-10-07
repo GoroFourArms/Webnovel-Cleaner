@@ -475,6 +475,43 @@
             };
         });
     }
+    function scanSentenceStartOccurrences(text) {
+        const occurrences = [];
+        if (!text) {
+            return occurrences;
+        }
+        OCCURRENCE_REGEX.lastIndex = 0;
+        let match;
+        while ((match = OCCURRENCE_REGEX.exec(text)) !== null) {
+            const value = String(match[1] || "").trim();
+            if (!value) {
+                continue;
+            }
+            const startIndex = match.index;
+            let isSentenceStart = startIndex === 0;
+            if (!isSentenceStart) {
+                for (let index = startIndex - 1; index >= 0; index--) {
+                    const character = text[index];
+                    if (/\s/.test(character)) {
+                        continue;
+                    }
+                    if (/["'“”‘’([{]/.test(character)) {
+                        continue;
+                    }
+                    isSentenceStart = /[.!?]/.test(character);
+                    break;
+                }
+            }
+            if (!isSentenceStart) {
+                continue;
+            }
+            occurrences.push({
+                text: value,
+                index: startIndex
+            });
+        }
+        return occurrences;
+    }
     function scanChapterCandidates(text) {
         const candidateOccurrences = scanCandidateOccurrences(text);
         const sentenceStartOccurrences = scanSentenceStartOccurrences(text);
