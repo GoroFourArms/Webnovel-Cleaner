@@ -980,9 +980,10 @@
             for (const rule of cluster?.rules || []) {
                 clusterByRule.set(rule, {
                     clusterId: clusterIndex + 1,
-                    targets: Array.isArray(cluster.targets)
-                        ? cluster.targets
-                        : []
+                    targets:
+                        cluster?.targets instanceof Map
+                            ? cluster.targets.get(rule) || new Set()
+                            : new Set()
                 });
             }
         }
@@ -1001,7 +1002,7 @@
                     rule,
                     matchCount: Number(pageMatch.matchCount || 0),
                     clusterId: cluster.clusterId,
-                    target
+                    target: String(target || "")
                 });
             }
         }
@@ -1278,34 +1279,30 @@
             : [];
         const clusters = [];
         const ruleToCluster = new Map();
-        function addCluster(rules, targets) {
+        function matchesEntireTarget(target, rule) {
+            const value = String(target ?? "");
+            if (!value || !rule) {
+                return false;
+            }
+            const ranges = findRulePageMatchRanges(value, rule);
+            return ranges.some(
+                (range) =>
+                    Number(range?.start || 0) === 0 &&
+                    Number(range?.end || 0) === value.length
+            );
+        }
+        function addConflict(rules, target) {
             const uniqueRules = [...new Set(rules)];
-            const uniqueTargets = [
-                ...new Set(
-                    targets
-                        .map((target) => String(target || "").trim())
-                        .filter(Boolean)
-                )
-            ];
-            if (uniqueRules.length < 2) {
+            const value = String(target ?? "").trim();
+            if (uniqueRules.length < 2 || !value) {
                 return;
             }
             const existingClusters = uniqueRules
                 .map((rule) => ruleToCluster.get(rule))
                 .filter((cluster) => cluster && clusters.includes(cluster));
+            let cluster;
             if (existingClusters.length) {
-                const cluster = existingClusters[0];
-                for (const rule of uniqueRules) {
-                    if (!cluster.rules.includes(rule)) {
-                        cluster.rules.push(rule);
-                    }
-                    ruleToCluster.set(rule, cluster);
-                }
-                for (const target of uniqueTargets) {
-                    if (!cluster.targets.includes(target)) {
-                        cluster.targets.push(target);
-                    }
-                }
+                cluster = existingClusters[0];
                 for (const other of existingClusters.slice(1)) {
                     for (const rule of other.rules) {
                         if (!cluster.rules.includes(rule)) {
@@ -1313,9 +1310,14 @@
                         }
                         ruleToCluster.set(rule, cluster);
                     }
-                    for (const target of other.targets) {
-                        if (!cluster.targets.includes(target)) {
-                            cluster.targets.push(target);
+                    for (const [rule, targets] of other.targets) {
+                        let targetSet = cluster.targets.get(rule);
+                        if (!targetSet) {
+                            targetSet = new Set();
+                            cluster.targets.set(rule, targetSet);
+                        }
+                        for (const otherTarget of targets) {
+                            targetSet.add(otherTarget);
                         }
                     }
                     const index = clusters.indexOf(other);
@@ -1323,22 +1325,30 @@
                         clusters.splice(index, 1);
                     }
                 }
-                return;
+            } else {
+                cluster = {
+                    rules: [],
+                    targets: new Map()
+                };
+                clusters.push(cluster);
             }
-            const cluster = {
-                rules: uniqueRules,
-                targets: uniqueTargets
-            };
-            clusters.push(cluster);
             for (const rule of uniqueRules) {
+                if (!cluster.rules.includes(rule)) {
+                    cluster.rules.push(rule);
+                }
                 ruleToCluster.set(rule, cluster);
+                let targetSet = cluster.targets.get(rule);
+                if (!targetSet) {
+                    targetSet = new Set();
+                    cluster.targets.set(rule, targetSet);
+                }
+                targetSet.add(value);
             }
         }
         for (let i = 0; i < matches.length; i++) {
             const left = matches[i];
             for (let j = i + 1; j < matches.length; j++) {
                 const right = matches[j];
-                const sharedTargets = [];
                 for (const range of left.ranges) {
                     const start = Number(range?.start || 0);
                     const end = Number(range?.end || 0);
@@ -1346,11 +1356,8 @@
                         continue;
                     }
                     const target = String(pageText.slice(start, end)).trim();
-                    if (!target) {
-                        continue;
-                    }
-                    if (findRulePageMatchRanges(target, right.rule).length) {
-                        sharedTargets.push(target);
+                    if (target && matchesEntireTarget(target, right.rule)) {
+                        addConflict([left.rule, right.rule], target);
                     }
                 }
                 for (const range of right.ranges) {
@@ -1360,15 +1367,9 @@
                         continue;
                     }
                     const target = String(pageText.slice(start, end)).trim();
-                    if (!target) {
-                        continue;
+                    if (target && matchesEntireTarget(target, left.rule)) {
+                        addConflict([left.rule, right.rule], target);
                     }
-                    if (findRulePageMatchRanges(target, left.rule).length) {
-                        sharedTargets.push(target);
-                    }
-                }
-                if (sharedTargets.length) {
-                    addCluster([left.rule, right.rule], sharedTargets);
                 }
             }
         }
@@ -1381,8 +1382,8 @@
                 if (source.rule === target.rule) {
                     continue;
                 }
-                if (findRulePageMatchRanges(output, target.rule).length) {
-                    addCluster([source.rule, target.rule], [output]);
+                if (matchesEntireTarget(output, target.rule)) {
+                    addConflict([source.rule, target.rule], output);
                 }
             }
         }
@@ -1446,6 +1447,8 @@
                     "script, style, noscript, template, svg, #wnc-overlay"
                 )
             ) {
+                previousNode = null;
+                previousBlock = null;
                 continue;
             }
             let displayElement = parent;
@@ -1460,12 +1463,16 @@
                 displayElement = displayElement.parentElement;
             }
             if (hidden) {
+                previousNode = null;
+                previousBlock = null;
                 continue;
             }
             const ignoredElement = parent.closest(
                 "aside, button, footer, form, h1, h2, h3, h4, h5, h6, header, input, label, nav, option, select, textarea, time"
             );
             if (ignoredElement) {
+                previousNode = null;
+                previousBlock = null;
                 continue;
             }
             let classElement = parent;
@@ -1486,6 +1493,8 @@
                 classElement = classElement.parentElement;
             }
             if (ignored) {
+                previousNode = null;
+                previousBlock = null;
                 continue;
             }
             const rawText = String(node.nodeValue || "");
@@ -1622,34 +1631,6 @@
             (a, b) => Number(a.index || 0) - Number(b.index || 0)
         );
     }
-    function getRuleExpansionKey(group, rule) {
-        return `${Number(group.index)}:${Number(rule.ruleIndex)}`;
-    }
-    function toggleGroupCollapsed(groupIndex) {
-        const index = Number(groupIndex);
-        if (state.collapsedGroups.has(index)) {
-            state.collapsedGroups.delete(index);
-        } else {
-            state.collapsedGroups.add(index);
-        }
-        render();
-    }
-    function toggleRuleExpanded(groupIndex, ruleIndex) {
-        const key = getRuleExpansionKey(
-            {
-                index: groupIndex
-            },
-            {
-                ruleIndex
-            }
-        );
-        if (state.expandedRules.has(key)) {
-            state.expandedRules.delete(key);
-        } else {
-            state.expandedRules.add(key);
-        }
-        render();
-    }
     const WNC_UI_ID = "wnc-overlay";
     const WNC_STYLE_ID = "wnc-dark-style";
     const WNC_TAB_ORDER = ["candidates", "groups", "conflicts"];
@@ -1661,12 +1642,16 @@
             left: 50%;
             transform: translateX(-50%);
             width: min(1400px, calc(100vw - 20px));
+            min-width: 320px;
             max-width: calc(100vw - 20px);
             height: calc(100vh - 80px);
-            overflow: hidden;
+            min-height: 200px;
+            max-height: calc(100vh - 20px);
+            overflow: auto;
+            resize: both;
             z-index: 2147483647;
-            background: #222;
-            color: #fff;
+            background: #222 !important;
+            color: #fff !important;
             border: 1px solid #777;
             border-radius: 4px;
             padding: 6px;
@@ -1677,10 +1662,14 @@
         #${WNC_UI_ID}.wnc-minimized {
             width: auto;
             min-width: 160px;
+            min-height: 0;
             height: auto;
             max-width: none;
+            max-height: none;
             overflow: visible;
+            resize: none;
             padding: 4px 6px;
+            background: #222 !important;
         }
         #${WNC_UI_ID}.wnc-minimized .wnc-panel-body {
             display: none;
@@ -1691,11 +1680,13 @@
             justify-content: space-between;
             align-items: center;
             margin: 0;
+            background: #222 !important;
         }
         #${WNC_UI_ID} .wnc-panel-title {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            color: #fff !important;
         }
         #${WNC_UI_ID} .wnc-panel-actions {
             display: flex;
@@ -1713,6 +1704,8 @@
         #${WNC_UI_ID} .wnc-panel-body {
             height: calc(100% - 26px);
             overflow: auto;
+            background: #222 !important;
+            color: #fff !important;
         }
         #${WNC_UI_ID} .wnc-tab-bar {
             display: flex;
@@ -1720,15 +1713,21 @@
             position: sticky;
             top: 0;
             z-index: 20;
-            background: #222;
+            background: #222 !important;
             padding: 3px 0;
             border-bottom: 1px solid #555;
+        }
+        #${WNC_UI_ID} .wnc-tab-content {
+            background: #222 !important;
+            color: #fff !important;
         }
         #${WNC_UI_ID} .wnc-table {
             width: max-content;
             min-width: 100%;
             border-collapse: collapse;
             table-layout: auto;
+            background: #111 !important;
+            color: #fff !important;
         }
         #${WNC_UI_ID} .wnc-table th,
         #${WNC_UI_ID} .wnc-table td {
@@ -1742,10 +1741,12 @@
             position: sticky;
             top: 0;
             z-index: 10;
-            background: #181818;
+            background: #181818 !important;
+            color: #fff !important;
         }
         #${WNC_UI_ID} .wnc-table td {
-            background: #111;
+            background: #111 !important;
+            color: #fff !important;
         }
         #${WNC_UI_ID} .wnc-table td.wnc-code {
             max-width: min(700px, 55vw);
@@ -1808,41 +1809,6 @@
             )
         );
         return `Conflicts (${clusterIds.size})`;
-    }
-    function renderToolbar() {
-        return `
-<div class="wnc-toolbar">
-    <div class="wnc-title">
-        Webnovel Cleaner
-    </div>
-    <div class="wnc-tabs">
-        ${WNC_TAB_ORDER.map(
-            (tab) =>
-                `<button class="wnc-tab ${
-                    state.screen === tab ? "active" : ""
-                }" data-wnc-tab="${tab}">${escapeHtml(getTabLabel(tab))}</button>`
-        ).join("")}
-    </div>
-    <div class="wnc-spacer"></div>
-    <select
-        id="wnc-template"
-        data-wnc-template
-    >
-        ${INPUT_TEMPLATES.map(
-            (template) =>
-                `<option value="${escapeHtml(template)}" ${
-                    state.candidateTemplate === template ? "selected" : ""
-                }>${escapeHtml(template)}</option>`
-        ).join("")}
-    </select>
-    <button data-wnc-scan>
-        Scan
-    </button>
-    <button data-wnc-close>
-        Close
-    </button>
-</div>
-`;
     }
     function getVisibleCandidateClusters() {
         return Array.isArray(state.candidateClusters)
@@ -2086,40 +2052,6 @@
         </div>
     `;
     }
-    function renderActiveTab() {
-        if (state.analysisError) {
-            return `
-            <div class="wnc-analysis-error">
-                <div class="wnc-conflict-cluster-header">
-                    Analysis failed
-                </div>
-                <div class="wnc-code">
-                    ${escapeHtml(
-                        state.analysisError?.message ||
-                            String(state.analysisError)
-                    )}
-                </div>
-            </div>
-        `;
-        }
-        if (state.screen === "groups") {
-            return renderGroupsTab();
-        }
-        if (state.screen === "conflicts") {
-            return renderConflictsTab();
-        }
-        return renderCandidatesTab();
-    }
-    function renderWncWindow() {
-        return `
-<div id="${WNC_UI_ID}">
-    ${renderToolbar()}
-    <div class="wnc-content">
-        ${renderActiveTab()}
-    </div>
-</div>
-`;
-    }
     function renderGroupRule(group, rule) {
         const sourceRule = rule?.rule || rule || {};
         return `
@@ -2148,6 +2080,10 @@
             document.body.appendChild(overlay);
         }
         const minimized = overlay.classList.contains("wnc-minimized");
+        const savedWidth =
+            !minimized && overlay.style.width ? overlay.style.width : "";
+        const savedHeight =
+            !minimized && overlay.style.height ? overlay.style.height : "";
         overlay.innerHTML = `
         <div class="wnc-panel-header">
             <div class="wnc-panel-title">
@@ -2204,21 +2140,33 @@
             margin: "0",
             padding: minimized ? "4px 6px" : "6px",
             boxSizing: "border-box",
-            width: minimized ? "auto" : "min(1400px, calc(100vw - 20px))",
-            minWidth: minimized ? "160px" : "0",
+            minWidth: minimized ? "160px" : "320px",
             maxWidth: minimized ? "none" : "calc(100vw - 20px)",
-            height: minimized ? "auto" : "calc(100vh - 80px)",
-            maxHeight: minimized ? "none" : "calc(100vh - 80px)",
-            overflow: minimized ? "visible" : "hidden",
+            minHeight: minimized ? "0" : "200px",
+            maxHeight: minimized ? "none" : "calc(100vh - 20px)",
             zIndex: "2147483647",
             display: "block",
             visibility: "visible",
             opacity: "1"
         });
         if (minimized) {
+            overlay.style.width = "auto";
+            overlay.style.height = "auto";
             overlay.classList.add("wnc-minimized");
         } else {
             overlay.classList.remove("wnc-minimized");
+            if (savedWidth) {
+                overlay.style.width = savedWidth;
+            } else {
+                overlay.style.width = "min(1400px, calc(100vw - 20px))";
+            }
+            if (savedHeight) {
+                overlay.style.height = savedHeight;
+            } else {
+                overlay.style.height = "calc(100vh - 80px)";
+            }
+            overlay.style.overflow = "auto";
+            overlay.style.resize = "both";
         }
         overlay.onclick = (event) => {
             const expandButton = event.target.closest(
@@ -2295,61 +2243,6 @@
     }
     function closeWnc() {
         document.getElementById(WNC_UI_ID)?.remove();
-    }
-    function bindWncEvents(overlay) {
-        if (!overlay) {
-            return;
-        }
-        overlay.onclick = (event) => {
-            const tabButton = event.target.closest("[data-wnc-tab]");
-            if (tabButton) {
-                state.screen =
-                    tabButton.getAttribute("data-wnc-tab") || "candidates";
-                render();
-                return;
-            }
-            const template = event.target.closest("[data-wnc-template]");
-            if (template) {
-                state.candidateTemplate = template.value;
-                regenerateCandidateInputs(
-                    state.candidates,
-                    state.candidateTemplate
-                );
-                render();
-                return;
-            }
-            const scanButton = event.target.closest("[data-wnc-scan]");
-            if (scanButton) {
-                state.analysisError = null;
-                runAnalysisSafely();
-                render();
-                return;
-            }
-            const closeButton = event.target.closest("[data-wnc-close]");
-            if (closeButton) {
-                closeWnc();
-                return;
-            }
-            const groupToggle = event.target.closest("[data-wnc-group-toggle]");
-            if (groupToggle) {
-                toggleGroupCollapsed(
-                    groupToggle.getAttribute("data-wnc-group-toggle")
-                );
-                return;
-            }
-            const ruleToggle = event.target.closest("[data-wnc-rule-toggle]");
-            if (ruleToggle) {
-                toggleRuleExpanded(
-                    ruleToggle.getAttribute("data-wnc-group-index"),
-                    ruleToggle.getAttribute("data-wnc-rule-index")
-                );
-                return;
-            }
-            const copyButton = event.target.closest("[data-wnc-copy]");
-            if (copyButton) {
-                copyText(copyButton.getAttribute("data-wnc-copy") || "");
-            }
-        };
     }
     async function copyText(text) {
         const value = String(text ?? "");
