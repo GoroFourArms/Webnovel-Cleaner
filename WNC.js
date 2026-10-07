@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.2.4
+// @version      6.2.5
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -24,7 +24,8 @@
         groupMatches: [],
         conflicts: [],
         candidateTemplate: "Other",
-        expandedRules: new Set()
+        expandedRules: new Set(),
+        analysisError: null
     };
     const RULE_REGEX_CACHE = new WeakMap();
     let adaptedDatabase = {
@@ -1237,18 +1238,14 @@
         return clusters;
     }
     function analyzePage() {
+        state.analysisError = null;
         clearAnalysisResults();
         const pageText = scanPageText();
-        // Candidate scan + sentence-start scan.
         const candidateScan = scanChapterCandidates(pageText);
-        // Candidates are already finalized and have matched sentence starts
-        // applied by scanChapterCandidates().
         const candidates = candidateScan.candidates;
-        // Match FoxReplace rules against the page itself.
         const siteRules = getCurrentSiteRules();
         const pageRuleMatches = scanFoxReplacePage(pageText, siteRules);
         const pageMatchedRules = pageRuleMatches.map(({ rule }) => rule);
-        // Match only finalized Candidates against page-matched rules.
         const candidateRuleMatches = new Map();
         for (const candidate of candidates) {
             candidateRuleMatches.set(
@@ -1256,22 +1253,18 @@
                 findCandidateRuleMatches(candidate, pageMatchedRules)
             );
         }
-        // Remove Candidates already handled by an existing page rule.
         const remainingCandidates = candidates.filter((candidate) => {
             const matches = candidateRuleMatches.get(candidate);
             return !matches?.all?.length;
         });
-        // Cluster only the remaining Candidates.
         const candidatePool = processCandidateClusters(remainingCandidates);
         state.candidates = buildCandidateResults(candidatePool.candidates);
         state.candidateClusters = candidatePool.clusters;
-        // Groups use the retained Candidates and page-matched rules.
         state.groupMatches = buildGroupMatches(
             pageRuleMatches,
             candidateRuleMatches,
             candidatePool.candidates
         );
-        // Conflicts are derived directly from page-matched rules.
         const conflictClusters = buildConflictClusters(pageRuleMatches);
         state.conflicts = buildConflictData(pageRuleMatches, conflictClusters);
         render();
@@ -1392,16 +1385,12 @@
     }
     function runAnalysisSafely() {
         try {
-            return analyzePage();
+            analyzePage();
+            return true;
         } catch (error) {
             clearAnalysisResults();
-            return {
-                candidates: [],
-                candidateClusters: [],
-                groupMatches: [],
-                conflicts: [],
-                error
-            };
+            state.analysisError = error;
+            return false;
         }
     }
     function getVisibleGroupMatches() {
@@ -1807,7 +1796,7 @@
         const conflicts = getVisibleConflicts();
         const clusters = new Map();
         for (const conflict of conflicts) {
-            const clusterId = conflict.clusterId;
+            const clusterId = Number(conflict.clusterId || 0);
             if (!clusters.has(clusterId)) {
                 clusters.set(clusterId, []);
             }
@@ -1840,6 +1829,21 @@
     `;
     }
     function renderActiveTab() {
+        if (state.analysisError) {
+            return `
+            <div class="wnc-analysis-error">
+                <div class="wnc-conflict-cluster-header">
+                    Analysis failed
+                </div>
+                <div class="wnc-code">
+                    ${escapeHtml(
+                        state.analysisError?.message ||
+                            String(state.analysisError)
+                    )}
+                </div>
+            </div>
+        `;
+        }
         if (state.screen === "groups") {
             return renderGroupsTab();
         }
@@ -1914,22 +1918,26 @@
     `;
     }
     function render() {
+        if (!document.body) {
+            return false;
+        }
         ensureWncStyles();
         let overlay = document.getElementById(WNC_UI_ID);
         if (!overlay) {
             overlay = document.createElement("div");
             overlay.id = WNC_UI_ID;
-            document.body?.appendChild(overlay);
-        }
-        if (!overlay) {
-            return;
+            document.body.appendChild(overlay);
         }
         overlay.innerHTML = renderWncWindow();
         bindWncEvents(overlay);
+        return true;
     }
     function openWnc() {
         state.screen = "candidates";
+        state.analysisError = null;
+        render();
         runAnalysisSafely();
+        render();
     }
     function closeWnc() {
         document.getElementById(WNC_UI_ID)?.remove();
@@ -1956,7 +1964,9 @@
         });
         overlay.querySelectorAll("[data-wnc-scan]").forEach((button) => {
             button.addEventListener("click", () => {
-                analyzePage();
+                state.analysisError = null;
+                runAnalysisSafely();
+                render();
             });
         });
         overlay.querySelectorAll("[data-wnc-close]").forEach((button) => {
@@ -2024,13 +2034,38 @@
         }
     }
     function initializeWnc() {
-        const database = loadActiveDatabase();
-        adaptedDatabase = adaptFoxReplaceDatabase(database);
+        let database;
+        try {
+            database = loadActiveDatabase();
+        } catch {
+            database = {
+                groups: []
+            };
+        }
+        try {
+            adaptedDatabase = adaptFoxReplaceDatabase(database);
+        } catch {
+            adaptedDatabase = {
+                groups: []
+            };
+        }
         ensureDatabaseShape();
         registerWncMenuCommands();
     }
     function startWnc() {
-        initializeWnc();
+        try {
+            initializeWnc();
+        } catch (error) {
+            adaptedDatabase = {
+                groups: []
+            };
+            state.analysisError = error;
+            try {
+                registerWncMenuCommands();
+            } catch {
+                return;
+            }
+        }
     }
     startWnc();
 })();
