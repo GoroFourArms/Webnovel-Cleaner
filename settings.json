@@ -2,7 +2,8 @@
     "commands": [
         {
             "match": "\\.(js|txt)$",
-            "cmd": "powershell -Command \"(Get-Content '${file}') -replace '^\\s*$','' | Set-Content '${file}'\""
+            "cmd": "powershell -NoProfile -Command \"$c = (Get-Content -Path '${file}') | Where-Object { $_.Trim() -ne '' }; [System.IO.File]::WriteAllLines('${file}', $c)\"",
+            "isAsync": false
         }
     ]
 }
