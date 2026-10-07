@@ -110,10 +110,14 @@
     }
     function normalizeGroup(rawGroup, groupIndex) {
         const group = rawGroup && typeof rawGroup === "object" ? rawGroup : {};
-        const name = String(group.name ?? `Group ${groupIndex + 1}`);
+        const name = String(
+            group.name ?? group.groupName ?? `Group ${groupIndex + 1}`
+        );
         const rawRules = Array.isArray(group.substitutions)
             ? group.substitutions
-            : [];
+            : Array.isArray(group.rules)
+              ? group.rules
+              : [];
         const rules = rawRules.map((rule, ruleIndex) =>
             normalizeRule(rule, ruleIndex, groupIndex, name)
         );
@@ -121,7 +125,7 @@
             raw: group,
             index: groupIndex,
             name,
-            urls: normalizeUrls(group.urls),
+            urls: normalizeUrls(group.urls ?? group.url ?? group.urlPatterns),
             rules,
             enabled: normalizeBoolean(group.enabled, true),
             mode: String(group.mode ?? ""),
@@ -138,19 +142,15 @@
     }
     function adaptFoxReplaceDatabase(rawDatabase) {
         const groups = findGroupArray(rawDatabase);
-
         if (!Array.isArray(groups) || !groups.length) {
             return {
                 groups: []
             };
         }
-
         const normalizedGroups = [];
-
         for (let index = 0; index < groups.length; index++) {
             normalizedGroups.push(normalizeGroup(groups[index], index));
         }
-
         return {
             groups: normalizedGroups
         };
@@ -173,35 +173,34 @@
     }
     function parseImportedText(text) {
         const source = String(text ?? "").trim();
-
         if (!source) {
             return null;
         }
-
         let database;
-
         try {
             database = JSON.parse(source);
         } catch {
             return null;
         }
-
         if (
             !database ||
             typeof database !== "object" ||
-            !Array.isArray(database.groups) ||
-            !database.groups.length
+            Array.isArray(database)
         ) {
             return null;
         }
-
-        const version = String(database.version ?? "").trim();
-
-        if (version && !/^2\.\d+$/.test(version)) {
+        const groups = findGroupArray(database);
+        if (!Array.isArray(groups)) {
             return null;
         }
-
-        return database;
+        const version = String(database.version ?? "").trim();
+        if (version && !/^\d+(?:\.\d+)+$/.test(version)) {
+            return null;
+        }
+        return {
+            ...database,
+            groups
+        };
     }
     function readFileText(file) {
         return new Promise((resolve, reject) => {
@@ -216,68 +215,39 @@
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".json,application/json";
-
-        input.addEventListener("change", async () => {
-            const file = input.files?.[0];
-
-            if (!file) {
-                return;
-            }
-
-            try {
-                const text = await readFileText(file);
-
-                await new Promise((resolve) => {
-                    setTimeout(resolve, 0);
-                });
-
-                let database;
-
+        input.addEventListener(
+            "change",
+            async () => {
+                const file = input.files?.[0];
+                if (!file) {
+                    return;
+                }
                 try {
-                    database = parseImportedText(text);
-                } catch (error) {
-                    state.analysisError = error;
-                    render();
-                    return;
-                }
-
-                await new Promise((resolve) => {
-                    setTimeout(resolve, 0);
-                });
-
-                if (!database) {
-                    return;
-                }
-
-                if (!writeStorage(DB_KEY, database)) {
-                    return;
-                }
-
-                await new Promise((resolve) => {
-                    setTimeout(resolve, 0);
-                });
-
-                try {
+                    const text = await readFileText(file);
+                    const database = parseImportedText(text);
+                    if (!database) {
+                        throw new Error("Invalid FoxReplace JSON");
+                    }
+                    if (!writeStorage(DB_KEY, database)) {
+                        throw new Error("Unable to save FoxReplace database");
+                    }
                     adaptedDatabase = adaptFoxReplaceDatabase(database);
                     ensureDatabaseShape();
-                } catch (error) {
-                    adaptedDatabase = {
-                        groups: []
-                    };
-                    state.analysisError = error;
+                    state.analysisError = null;
+                    clearAnalysisResults();
                     render();
-                    return;
+                    runAnalysisSafely();
+                    render();
+                } catch (error) {
+                    state.analysisError =
+                        error instanceof Error
+                            ? error
+                            : new Error(String(error));
+                    render();
                 }
-
-                state.analysisError = null;
-                clearAnalysisResults();
-                render();
-            } catch (error) {
-                state.analysisError = error;
-                render();
-            }
-        });
-
+            },
+            { once: true }
+        );
         input.click();
     }
     function wildcardToRegex(value) {
@@ -742,49 +712,38 @@
         }
         return clusters;
     }
-    function rangesOverlap(rangesA, rangesB) {
-        if (!rangesA?.length || !rangesB?.length) {
-            return false;
-        }
-        let i = 0;
-        let j = 0;
-        while (i < rangesA.length && j < rangesB.length) {
-            const a = rangesA[i];
-            const b = rangesB[j];
-            const aStart = Number(a.start || 0);
-            const aEnd = Number(a.end || 0);
-            const bStart = Number(b.start || 0);
-            const bEnd = Number(b.end || 0);
-            if (aStart < bEnd && bStart < aEnd) {
-                return true;
-            }
-            if (aEnd <= bEnd) {
-                i++;
-            } else {
-                j++;
-            }
-        }
-        return false;
-    }
     function processCandidateClusters(candidates) {
         const UNCLUSTERED_FREQUENCY_RATIO = 0.05;
         const candidateList = Array.isArray(candidates)
             ? candidates.filter(Boolean)
             : [];
+        if (!candidateList.length) {
+            return {
+                candidates: [],
+                clusters: []
+            };
+        }
         const clusters = buildCandidateClusters(candidateList);
         const maxFrequency = Math.max(
-            0,
-            ...clusters.map((cluster) => Number(cluster.root?.frequency || 0))
+            ...candidateList.map((candidate) =>
+                Number(candidate?.frequency || 0)
+            )
         );
         const threshold = maxFrequency * UNCLUSTERED_FREQUENCY_RATIO;
         const retainedClusters = clusters.filter((cluster) => {
-            if (cluster.members.length > 1) {
+            const members = Array.isArray(cluster?.members)
+                ? cluster.members
+                : [];
+            if (members.length > 1) {
                 return true;
             }
-            return Number(cluster.root?.frequency || 0) >= threshold;
+            const frequency = Number(
+                members[0]?.frequency || cluster?.root?.frequency || 0
+            );
+            return frequency >= threshold;
         });
-        const retainedCandidates = retainedClusters.flatMap(
-            (cluster) => cluster.members
+        const retainedCandidates = retainedClusters.flatMap((cluster) =>
+            Array.isArray(cluster?.members) ? cluster.members : []
         );
         return {
             candidates: retainedCandidates,
@@ -866,7 +825,9 @@
                 all: []
             };
         }
-        const candidateForms = getCandidateMatchForms(candidate);
+        const candidateForms = getCandidateMatchForms(candidate)
+            .map((value) => String(value || "").trim())
+            .filter(Boolean);
         if (!candidateForms.length) {
             return {
                 exact: [],
@@ -888,40 +849,59 @@
             if (!ruleText) {
                 continue;
             }
-            const ruleLower = ruleText.toLowerCase();
-            let matched = false;
+            let exactMatch = false;
+            let wholeWordMatch = false;
+            let partialMatch = false;
             for (const form of candidateForms) {
-                if (!form) {
-                    continue;
-                }
-                if (ruleText === String(form)) {
-                    exact.push(rule);
-                    matched = true;
-                    break;
-                }
-                if (
-                    wholeWordRuleMatches(
-                        form,
-                        ruleText,
-                        Boolean(rule.caseSensitive)
-                    )
-                ) {
-                    wholeWord.push(rule);
-                    matched = true;
-                    break;
-                }
-                const formLower = String(form).toLowerCase();
-                if (
-                    ruleLower.includes(formLower) ||
-                    formLower.includes(ruleLower)
-                ) {
-                    partial.push(rule);
-                    matched = true;
+                if (rule.caseSensitive) {
+                    if (form === ruleText) {
+                        exactMatch = true;
+                        break;
+                    }
+                } else if (form.toLowerCase() === ruleText.toLowerCase()) {
+                    exactMatch = true;
                     break;
                 }
             }
-            if (!matched) {
+            if (exactMatch) {
+                exact.push(rule);
                 continue;
+            }
+            for (const form of candidateForms) {
+                if (
+                    wholeWordRuleMatches(
+                        ruleText,
+                        form,
+                        Boolean(rule.caseSensitive)
+                    )
+                ) {
+                    wholeWordMatch = true;
+                    break;
+                }
+            }
+            if (wholeWordMatch) {
+                wholeWord.push(rule);
+                continue;
+            }
+            for (const form of candidateForms) {
+                const candidateValue = rule.caseSensitive
+                    ? form
+                    : form.toLowerCase();
+                const ruleValue = rule.caseSensitive
+                    ? ruleText
+                    : ruleText.toLowerCase();
+                if (
+                    candidateValue.length >= 2 &&
+                    ruleValue.length >= 2 &&
+                    (ruleValue.includes(candidateValue) ||
+                        candidateValue.includes(ruleValue))
+                ) {
+                    partialMatch = true;
+                    break;
+                }
+            }
+            if (partialMatch) {
+                partial.push(rule);
             }
         }
         const all = [...new Set([...exact, ...wholeWord, ...partial])];
@@ -932,42 +912,36 @@
             all
         };
     }
-    function buildGroupMatches(
-        pageRuleMatches,
-        candidateRuleMatches,
-        retainedCandidates
-    ) {
-        const retainedSet = new Set(retainedCandidates || []);
-        const matchedRules = new Map();
+    function buildGroupMatches(pageRuleMatches, candidateRuleMatches) {
+        const candidateMatchesByRule = new Map();
         for (const [candidate, matches] of candidateRuleMatches || []) {
-            if (!retainedSet.has(candidate)) {
-                continue;
-            }
             for (const rule of matches?.all || []) {
                 if (!rule) {
                     continue;
                 }
-                let entry = matchedRules.get(rule);
+                let entry = candidateMatchesByRule.get(rule);
                 if (!entry) {
                     entry = {
                         rule,
                         candidates: [],
                         matchCount: 0
                     };
-                    matchedRules.set(rule, entry);
+                    candidateMatchesByRule.set(rule, entry);
                 }
                 if (!entry.candidates.includes(candidate)) {
                     entry.candidates.push(candidate);
                 }
             }
         }
+        const pageMatchesByRule = new Map();
         for (const pageMatch of pageRuleMatches || []) {
-            const rule = pageMatch?.rule;
-            const entry = rule ? matchedRules.get(rule) : null;
-            if (!entry) {
+            if (!pageMatch?.rule) {
                 continue;
             }
-            entry.matchCount = Number(pageMatch.matchCount || 0);
+            pageMatchesByRule.set(
+                pageMatch.rule,
+                Number(pageMatch.matchCount || 0)
+            );
         }
         const groups = [];
         const groupMap = new Map();
@@ -976,15 +950,16 @@
             if (!rule) {
                 continue;
             }
-            const matchedRule = matchedRules.get(rule);
+            const matchedRule = candidateMatchesByRule.get(rule);
             if (!matchedRule) {
                 continue;
             }
+            matchedRule.matchCount = pageMatchesByRule.get(rule) || 0;
             let group = groupMap.get(rule.groupIndex);
             if (!group) {
                 group = {
-                    index: rule.groupIndex,
-                    name: rule.groupName,
+                    index: Number(rule.groupIndex || 0),
+                    name: String(rule.groupName || ""),
                     rules: []
                 };
                 groupMap.set(rule.groupIndex, group);
@@ -995,20 +970,42 @@
         return groups;
     }
     function buildConflictData(pageRuleMatches, conflictClusters) {
-        const clusterMap = new Map();
-        conflictClusters.forEach((cluster, clusterIndex) => {
-            const clusterId = clusterIndex + 1;
-            for (const rule of cluster) {
-                clusterMap.set(rule, clusterId);
+        const clusterByRule = new Map();
+        for (
+            let clusterIndex = 0;
+            clusterIndex < (conflictClusters || []).length;
+            clusterIndex++
+        ) {
+            const cluster = conflictClusters[clusterIndex];
+            for (const rule of cluster?.rules || []) {
+                clusterByRule.set(rule, {
+                    clusterId: clusterIndex + 1,
+                    targets: Array.isArray(cluster.targets)
+                        ? cluster.targets
+                        : []
+                });
             }
-        });
-        return pageRuleMatches
-            .filter(({ rule }) => clusterMap.has(rule))
-            .map(({ rule, matchCount }) => ({
-                rule,
-                matchCount,
-                clusterId: clusterMap.get(rule)
-            }));
+        }
+        const results = [];
+        for (const pageMatch of pageRuleMatches || []) {
+            const rule = pageMatch?.rule;
+            if (!rule) {
+                continue;
+            }
+            const cluster = clusterByRule.get(rule);
+            if (!cluster) {
+                continue;
+            }
+            for (const target of cluster.targets) {
+                results.push({
+                    rule,
+                    matchCount: Number(pageMatch.matchCount || 0),
+                    clusterId: cluster.clusterId,
+                    target
+                });
+            }
+        }
+        return results;
     }
     function escapeRegexLiteral(value) {
         return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1169,12 +1166,28 @@
             const name = String(
                 candidate?.name || candidate?.normalized || ""
             ).trim();
-            candidate.name = name;
-            candidate.generatedInput = generateCandidateInput(
-                candidate,
-                state.candidateTemplate
-            );
-            return candidate;
+            const sentenceStarts = Array.isArray(candidate?.sentenceStarts)
+                ? candidate.sentenceStarts.filter(
+                      (start) =>
+                          start &&
+                          String(start.text || "").trim() &&
+                          Number(start.frequency || 0) > 0
+                  )
+                : [];
+            return {
+                ...candidate,
+                name,
+                sentenceStarts,
+                frequency: Number(candidate?.frequency || 0),
+                generatedInput: generateCandidateInput(
+                    {
+                        ...candidate,
+                        name,
+                        sentenceStarts
+                    },
+                    state.candidateTemplate
+                )
+            };
         });
     }
     function findRulePageMatchRanges(text, rule, lowerSource = null) {
@@ -1253,88 +1266,124 @@
         }
         return matches;
     }
-    function buildConflictClusters(pageRuleMatches) {
-        const rangesByRule = new Map();
-        for (const pageMatch of pageRuleMatches || []) {
-            if (!pageMatch?.rule) {
-                continue;
-            }
-            rangesByRule.set(pageMatch.rule, pageMatch.ranges || []);
-        }
-        const rules = [...rangesByRule.keys()];
-        const connections = new Map();
-        for (const rule of rules) {
-            connections.set(rule, new Set());
-        }
-        const inputMatchesOutput = (inputRule, outputRule) => {
-            const input = String(inputRule?.input ?? "");
-            const output = String(outputRule?.output ?? "");
-            if (!input || !output) {
-                return false;
-            }
-            if (inputRule.inputType === "regexp") {
-                const regex = compileRuleRegex(inputRule);
-                if (!regex) {
-                    return false;
-                }
-                regex.lastIndex = 0;
-                return regex.test(output);
-            }
-            if (inputRule.inputType === "wholewords") {
-                return wholeWordRuleMatches(
-                    output,
-                    input,
-                    inputRule.caseSensitive
-                );
-            }
-            if (inputRule.inputType === "text") {
-                if (inputRule.caseSensitive) {
-                    return output.includes(input);
-                }
-                return output.toLowerCase().includes(input.toLowerCase());
-            }
-            return false;
-        };
-        for (let i = 0; i < rules.length; i++) {
-            const rule = rules[i];
-            const ranges = rangesByRule.get(rule) || [];
-            for (let j = i + 1; j < rules.length; j++) {
-                const otherRule = rules[j];
-                const otherRanges = rangesByRule.get(otherRule) || [];
-                const overlaps = rangesOverlap(ranges, otherRanges);
-                const chain =
-                    inputMatchesOutput(otherRule, rule) ||
-                    inputMatchesOutput(rule, otherRule);
-                if (!overlaps && !chain) {
-                    continue;
-                }
-                connections.get(rule).add(otherRule);
-                connections.get(otherRule).add(rule);
-            }
-        }
+    function buildConflictClusters(pageRuleMatches, pageText = "") {
+        const matches = Array.isArray(pageRuleMatches)
+            ? pageRuleMatches.filter(
+                  (entry) =>
+                      entry &&
+                      entry.rule &&
+                      Array.isArray(entry.ranges) &&
+                      entry.ranges.length
+              )
+            : [];
         const clusters = [];
-        const visited = new Set();
-        for (const rule of rules) {
-            if (visited.has(rule)) {
-                continue;
+        const ruleToCluster = new Map();
+        function addCluster(rules, targets) {
+            const uniqueRules = [...new Set(rules)];
+            const uniqueTargets = [
+                ...new Set(
+                    targets
+                        .map((target) => String(target || "").trim())
+                        .filter(Boolean)
+                )
+            ];
+            if (uniqueRules.length < 2) {
+                return;
             }
-            const cluster = [];
-            const queue = [rule];
-            let queueIndex = 0;
-            visited.add(rule);
-            while (queueIndex < queue.length) {
-                const current = queue[queueIndex++];
-                cluster.push(current);
-                for (const next of connections.get(current) || []) {
-                    if (visited.has(next)) {
+            const existingClusters = uniqueRules
+                .map((rule) => ruleToCluster.get(rule))
+                .filter((cluster) => cluster && clusters.includes(cluster));
+            if (existingClusters.length) {
+                const cluster = existingClusters[0];
+                for (const rule of uniqueRules) {
+                    if (!cluster.rules.includes(rule)) {
+                        cluster.rules.push(rule);
+                    }
+                    ruleToCluster.set(rule, cluster);
+                }
+                for (const target of uniqueTargets) {
+                    if (!cluster.targets.includes(target)) {
+                        cluster.targets.push(target);
+                    }
+                }
+                for (const other of existingClusters.slice(1)) {
+                    for (const rule of other.rules) {
+                        if (!cluster.rules.includes(rule)) {
+                            cluster.rules.push(rule);
+                        }
+                        ruleToCluster.set(rule, cluster);
+                    }
+                    for (const target of other.targets) {
+                        if (!cluster.targets.includes(target)) {
+                            cluster.targets.push(target);
+                        }
+                    }
+                    const index = clusters.indexOf(other);
+                    if (index !== -1) {
+                        clusters.splice(index, 1);
+                    }
+                }
+                return;
+            }
+            const cluster = {
+                rules: uniqueRules,
+                targets: uniqueTargets
+            };
+            clusters.push(cluster);
+            for (const rule of uniqueRules) {
+                ruleToCluster.set(rule, cluster);
+            }
+        }
+        for (let i = 0; i < matches.length; i++) {
+            const left = matches[i];
+            for (let j = i + 1; j < matches.length; j++) {
+                const right = matches[j];
+                const sharedTargets = [];
+                for (const range of left.ranges) {
+                    const start = Number(range?.start || 0);
+                    const end = Number(range?.end || 0);
+                    if (end <= start) {
                         continue;
                     }
-                    visited.add(next);
-                    queue.push(next);
+                    const target = String(pageText.slice(start, end)).trim();
+                    if (!target) {
+                        continue;
+                    }
+                    if (findRulePageMatchRanges(target, right.rule).length) {
+                        sharedTargets.push(target);
+                    }
+                }
+                for (const range of right.ranges) {
+                    const start = Number(range?.start || 0);
+                    const end = Number(range?.end || 0);
+                    if (end <= start) {
+                        continue;
+                    }
+                    const target = String(pageText.slice(start, end)).trim();
+                    if (!target) {
+                        continue;
+                    }
+                    if (findRulePageMatchRanges(target, left.rule).length) {
+                        sharedTargets.push(target);
+                    }
+                }
+                if (sharedTargets.length) {
+                    addCluster([left.rule, right.rule], sharedTargets);
                 }
             }
-            if (cluster.length > 1) {
-                clusters.push(cluster);
+        }
+        for (const source of matches) {
+            const output = String(source.rule.output || "").trim();
+            if (!output) {
+                continue;
+            }
+            for (const target of matches) {
+                if (source.rule === target.rule) {
+                    continue;
+                }
+                if (findRulePageMatchRanges(output, target.rule).length) {
+                    addCluster([source.rule, target.rule], [output]);
+                }
             }
         }
         return clusters;
@@ -1357,17 +1406,19 @@
         }
         const remainingCandidates = candidates.filter((candidate) => {
             const matches = candidateRuleMatches.get(candidate);
-            return !matches?.all?.length;
+            return !matches?.exact?.length;
         });
         const candidatePool = processCandidateClusters(remainingCandidates);
         state.candidates = buildCandidateResults(candidatePool.candidates);
         state.candidateClusters = candidatePool.clusters;
         state.groupMatches = buildGroupMatches(
             pageRuleMatches,
-            candidateRuleMatches,
-            candidatePool.candidates
+            candidateRuleMatches
         );
-        const conflictClusters = buildConflictClusters(pageRuleMatches);
+        const conflictClusters = buildConflictClusters(
+            pageRuleMatches,
+            pageText
+        );
         state.conflicts = buildConflictData(pageRuleMatches, conflictClusters);
         render();
     }
@@ -1378,10 +1429,13 @@
         }
         const blockTags =
             /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H1|H2|H3|H4|H5|H6|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TD|TH|TR|UL)$/;
+        const ignoredClassPattern =
+            /(?:breadcrumb|pagination|pager|chapter[-_ ]?(?:nav|navigation|list|link)|next[-_ ]?(?:chapter|page)|prev(?:ious)?[-_ ]?(?:chapter|page)|report[-_ ]?(?:chapter|issue)|chapter[-_ ]?issue|comment|comments|sidebar|toolbar|navigation|nav[-_ ]?bar|menu)/i;
         const parts = [];
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         let node;
         let previousNode = null;
+        let previousBlock = null;
         while ((node = walker.nextNode())) {
             const parent = node.parentElement;
             if (!parent) {
@@ -1394,6 +1448,46 @@
             ) {
                 continue;
             }
+            let displayElement = parent;
+            let hidden = false;
+            while (displayElement && displayElement !== root) {
+                if (
+                    window.getComputedStyle(displayElement).display === "none"
+                ) {
+                    hidden = true;
+                    break;
+                }
+                displayElement = displayElement.parentElement;
+            }
+            if (hidden) {
+                continue;
+            }
+            const ignoredElement = parent.closest(
+                "aside, button, footer, form, h1, h2, h3, h4, h5, h6, header, input, label, nav, option, select, textarea, time"
+            );
+            if (ignoredElement) {
+                continue;
+            }
+            let classElement = parent;
+            let ignored = false;
+            while (classElement && classElement !== root) {
+                const className =
+                    typeof classElement.className === "string"
+                        ? classElement.className
+                        : "";
+                const id = String(classElement.id || "");
+                if (
+                    ignoredClassPattern.test(className) ||
+                    ignoredClassPattern.test(id)
+                ) {
+                    ignored = true;
+                    break;
+                }
+                classElement = classElement.parentElement;
+            }
+            if (ignored) {
+                continue;
+            }
             const rawText = String(node.nodeValue || "");
             if (!rawText || !rawText.trim()) {
                 continue;
@@ -1404,6 +1498,14 @@
             if (!text.trim()) {
                 continue;
             }
+            let currentBlock = parent;
+            while (
+                currentBlock &&
+                currentBlock !== root &&
+                !blockTags.test(currentBlock.tagName)
+            ) {
+                currentBlock = currentBlock.parentElement;
+            }
             if (previousNode) {
                 const previousParent = previousNode.parentElement;
                 if (previousParent) {
@@ -1411,12 +1513,12 @@
                         previousParent,
                         parent
                     );
-                    const previousBlock = findNearestBlockElement(
+                    const previousBlockElement = findNearestBlockElement(
                         previousParent,
                         commonAncestor,
                         blockTags
                     );
-                    const currentBlock = findNearestBlockElement(
+                    const currentBlockElement = findNearestBlockElement(
                         parent,
                         commonAncestor,
                         blockTags
@@ -1425,6 +1527,12 @@
                         previousBlock &&
                         currentBlock &&
                         previousBlock !== currentBlock
+                    ) {
+                        parts.push(" ");
+                    } else if (
+                        previousBlockElement &&
+                        currentBlockElement &&
+                        previousBlockElement !== currentBlockElement
                     ) {
                         parts.push(" ");
                     } else {
@@ -1442,6 +1550,7 @@
             }
             parts.push(text);
             previousNode = node;
+            previousBlock = currentBlock;
         }
         return parts.join("").replace(/\s+/g, " ").trim();
     }
@@ -1496,18 +1605,14 @@
         }
     }
     function getVisibleGroupMatches() {
-        return state.groupMatches.filter((group) => {
-            const rules = getGroupRulesWithMatches(group);
-            if (!rules.length) {
-                return false;
-            }
-            return true;
+        return (state.groupMatches || []).filter((group) => {
+            return Array.isArray(group?.rules) && group.rules.length > 0;
         });
     }
     function getGroupRulesWithMatches(group) {
-        return (group?.rules || []).filter(
-            (rule) => Number(rule.matchCount || 0) > 0
-        );
+        return Array.isArray(group?.rules)
+            ? group.rules.filter((rule) => rule?.rule)
+            : [];
     }
     function getVisibleConflicts() {
         return state.conflicts.slice();
@@ -1550,149 +1655,128 @@
     const WNC_TAB_ORDER = ["candidates", "groups", "conflicts"];
     function getWncStyles() {
         return `
-#${WNC_UI_ID} {
-    position: fixed;
-    inset: 20px;
-    z-index: 2147483647;
-    background: #111;
-    color: #eee;
-    border: 1px solid #444;
-    border-radius: 8px;
-    box-shadow: 0 10px 40px rgba(0,0,0,.6);
-    font-family: Arial, sans-serif;
-    font-size: 14px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-#${WNC_UI_ID} * {
-    box-sizing: border-box;
-}
-#${WNC_UI_ID} button,
-#${WNC_UI_ID} select {
-    background: #222;
-    color: #eee;
-    border: 1px solid #555;
-    border-radius: 4px;
-    padding: 6px 9px;
-}
-#${WNC_UI_ID} button {
-    cursor: pointer;
-}
-#${WNC_UI_ID} button:hover {
-    background: #333;
-}
-    .wnc-sentence-start {
-    margin-left: 28px;
-    color: #aaa;
-    padding: 3px 0;
-}
-.wnc-conflict-cluster-header {
-    font-weight: bold;
-    margin-bottom: 6px;
-}
-.wnc-conflict-cluster-items {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.wnc-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px;
-    border-bottom: 1px solid #444;
-}
-.wnc-title {
-    font-weight: bold;
-    margin-right: 10px;
-}
-.wnc-tabs {
-    display: flex;
-    gap: 4px;
-}
-.wnc-tab.active {
-    background: #555;
-}
-.wnc-spacer {
-    flex: 1;
-}
-.wnc-content {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    padding: 12px;
-}
-.wnc-table {
-    width: 100%;
-    border-collapse: collapse;
-}
-.wnc-table th,
-.wnc-table td {
-    border-bottom: 1px solid #333;
-    padding: 7px;
-    text-align: left;
-    vertical-align: top;
-}
-.wnc-table th {
-    position: sticky;
-    top: 0;
-    background: #181818;
-}
-.wnc-input {
-    width: 100%;
-    min-width: 200px;
-    background: #181818;
-    color: #eee;
-    border: 1px solid #444;
-    padding: 5px;
-}
-.wnc-group {
-    border: 1px solid #444;
-    border-radius: 6px;
-    margin-bottom: 10px;
-    overflow: hidden;
-}
-.wnc-group-header {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    padding: 9px;
-    background: #191919;
-}
-.wnc-group-rules {
-    padding: 0 9px 9px;
-}
-.wnc-rule {
-    border-top: 1px solid #333;
-    padding: 8px 0;
-}
-.wnc-rule-header {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-.wnc-rule-body {
-    padding: 8px 0 0 28px;
-}
-.wnc-conflict {
-    border: 1px solid #444;
-    border-radius: 6px;
-    margin-bottom: 8px;
-    padding: 9px;
-}
-.wnc-conflict-cluster {
-    margin-bottom: 14px;
-}
-.wnc-muted {
-    color: #999;
-}
-.wnc-code {
-    font-family: monospace;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-`;
+        #${WNC_UI_ID} {
+            position: fixed;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(1400px, calc(100vw - 20px));
+            max-width: calc(100vw - 20px);
+            height: calc(100vh - 80px);
+            overflow: hidden;
+            z-index: 2147483647;
+            background: #222;
+            color: #fff;
+            border: 1px solid #777;
+            border-radius: 4px;
+            padding: 6px;
+            box-sizing: border-box;
+            font: 12px Arial, sans-serif;
+            box-shadow: 0 4px 20px rgba(0,0,0,.5);
+        }
+        #${WNC_UI_ID}.wnc-minimized {
+            width: auto;
+            min-width: 160px;
+            height: auto;
+            max-width: none;
+            overflow: visible;
+            padding: 4px 6px;
+        }
+        #${WNC_UI_ID}.wnc-minimized .wnc-panel-body {
+            display: none;
+        }
+        #${WNC_UI_ID} .wnc-panel-header {
+            height: 26px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 0;
+        }
+        #${WNC_UI_ID} .wnc-panel-title {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #${WNC_UI_ID} .wnc-panel-actions {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            flex-shrink: 0;
+        }
+        #${WNC_UI_ID} .wnc-panel-actions button {
+            height: 22px;
+            min-width: 24px;
+            padding: 2px 6px;
+            box-sizing: border-box;
+            cursor: pointer;
+        }
+        #${WNC_UI_ID} .wnc-panel-body {
+            height: calc(100% - 26px);
+            overflow: auto;
+        }
+        #${WNC_UI_ID} .wnc-tab-bar {
+            display: flex;
+            gap: 3px;
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            background: #222;
+            padding: 3px 0;
+            border-bottom: 1px solid #555;
+        }
+        #${WNC_UI_ID} .wnc-table {
+            width: max-content;
+            min-width: 100%;
+            border-collapse: collapse;
+            table-layout: auto;
+        }
+        #${WNC_UI_ID} .wnc-table th,
+        #${WNC_UI_ID} .wnc-table td {
+            border: 1px solid #333;
+            padding: 7px;
+            text-align: left;
+            vertical-align: top;
+            white-space: nowrap;
+        }
+        #${WNC_UI_ID} .wnc-table th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: #181818;
+        }
+        #${WNC_UI_ID} .wnc-table td {
+            background: #111;
+        }
+        #${WNC_UI_ID} .wnc-table td.wnc-code {
+            max-width: min(700px, 55vw);
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #${WNC_UI_ID} .wnc-candidate-name-row {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        #${WNC_UI_ID} .wnc-candidate-expand,
+        #${WNC_UI_ID} .wnc-candidate-expand-placeholder {
+            width: 20px;
+            min-width: 20px;
+            height: 20px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #${WNC_UI_ID} .wnc-sentence-start-list {
+            margin-top: 4px;
+            margin-left: 24px;
+        }
+        #${WNC_UI_ID} .wnc-sentence-start {
+            white-space: nowrap;
+        }
+        #${WNC_UI_ID} .wnc-muted {
+            opacity: .7;
+        }
+    `;
     }
     function ensureWncStyles() {
         let style = document.getElementById(WNC_STYLE_ID);
@@ -1716,9 +1800,14 @@
             return `Candidates (${state.candidates.length})`;
         }
         if (tab === "groups") {
-            return `Groups (${state.groupMatches.length})`;
+            return `Groups (${getVisibleGroupMatches().length})`;
         }
-        return `Conflicts (${state.conflicts.length})`;
+        const clusterIds = new Set(
+            getVisibleConflicts().map((conflict) =>
+                Number(conflict?.clusterId || 0)
+            )
+        );
+        return `Conflicts (${clusterIds.size})`;
     }
     function renderToolbar() {
         return `
@@ -1763,37 +1852,92 @@
     function renderCandidateRow(candidate) {
         const frequency = Number(candidate?.frequency || 0);
         const sentenceStarts = Array.isArray(candidate?.sentenceStarts)
-            ? candidate.sentenceStarts
+            ? candidate.sentenceStarts.filter(
+                  (start) =>
+                      start &&
+                      Number(start.frequency || 0) > 0 &&
+                      String(start.text || "").trim()
+              )
             : [];
-        const sentenceStartHtml = sentenceStarts
-            .filter(
-                (start) =>
-                    start &&
-                    Number(start.frequency || 0) > 0 &&
-                    String(start.text || "").trim()
-            )
-            .map(
-                (start) => `
-                <div class="wnc-sentence-start">
-                    ${escapeHtml(start.text)}
-                    <span class="wnc-muted">
-                        (${escapeHtml(Number(start.frequency || 0))})
-                    </span>
-                </div>
-            `
-            )
-            .join("");
+        const candidateName = String(
+            candidate?.name || candidate?.normalized || ""
+        ).trim();
+        const generatedInput = String(candidate?.generatedInput || "").trim();
+        const hasStarts = sentenceStarts.length > 0;
+        const startsHtml = hasStarts
+            ? `
+            <div class="wnc-sentence-start-list">
+                ${sentenceStarts
+                    .map(
+                        (start) => `
+                            <div class="wnc-sentence-start">
+                                ${escapeHtml(start.text)}
+                                <span class="wnc-muted">
+                                    ${escapeHtml(Number(start.frequency || 0))}
+                                </span>
+                            </div>
+                        `
+                    )
+                    .join("")}
+            </div>
+        `
+            : "";
+        const expandButton = hasStarts
+            ? `
+            <button
+                type="button"
+                class="wnc-candidate-expand"
+                data-wnc-expand-candidate="1"
+                aria-expanded="false"
+                title="Show sentence starts"
+            >
+                +
+            </button>
+        `
+            : `
+            <span class="wnc-candidate-expand-placeholder"></span>
+        `;
         return `
         <tr>
             <td>
-                ${escapeHtml(candidate?.name || "")}
-                ${sentenceStartHtml}
+                <div class="wnc-candidate-name-row">
+                    ${expandButton}
+                    <span class="wnc-candidate-name">
+                        ${escapeHtml(candidateName)}
+                    </span>
+                </div>
+                ${
+                    hasStarts
+                        ? `
+                            <div
+                                class="wnc-sentence-starts"
+                                hidden
+                            >
+                                ${startsHtml}
+                            </div>
+                        `
+                        : ""
+                }
             </td>
-            <td>${escapeHtml(frequency)}</td>
+            <td>
+                ${escapeHtml(frequency)}
+            </td>
             <td>
                 <button
                     type="button"
-                    data-wnc-copy="${escapeHtml(candidate?.generatedInput || "")}"
+                    data-wnc-highlight="${escapeHtml(candidateName)}"
+                >
+                    Highlight
+                </button>
+                <button
+                    type="button"
+                    data-wnc-regex="${escapeHtml(generatedInput)}"
+                >
+                    Regex
+                </button>
+                <button
+                    type="button"
+                    data-wnc-copy="${escapeHtml(generatedInput)}"
                 >
                     Copy
                 </button>
@@ -1803,6 +1947,13 @@
     }
     function renderCandidatesTab() {
         const clusters = getVisibleCandidateClusters();
+        if (!clusters.length) {
+            return `
+            <div class="wnc-muted">
+                No candidates found.
+            </div>
+        `;
+        }
         const rows = clusters
             .map(
                 (cluster) => `
@@ -1821,7 +1972,7 @@
                     <tr>
                         <th>Name</th>
                         <th>Frequency</th>
-                        <th>Copy</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 ${rows}
@@ -1831,74 +1982,71 @@
     }
     function renderGroupsTab() {
         const groups = sortDisplayedGroups(getVisibleGroupMatches());
+        if (!groups.length) {
+            return `
+            <div class="wnc-muted">
+                No matching FoxReplace groups found.
+            </div>
+        `;
+        }
+        const rows = groups
+            .flatMap((group) => {
+                const rules = getGroupRulesWithMatches(group);
+                return rules.map((rule) => renderGroupRule(group, rule));
+            })
+            .join("");
         return `
-        <div class="wnc-groups">
-            ${groups
-                .map((group) => {
-                    const groupIndex = group.index;
-                    const collapsed = state.collapsedGroups.has(groupIndex);
-                    const rules = getGroupRulesWithMatches(group);
-                    return `
-                        <section
-                            class="wnc-group${collapsed ? " is-collapsed" : ""}"
-                        >
-                            <button
-                                type="button"
-                                class="wnc-group-header"
-                                data-wnc-group-toggle="${escapeHtml(
-                                    groupIndex
-                                )}"
-                            >
-                                <span class="wnc-group-chevron">
-                                    ${collapsed ? "▶" : "▼"}
-                                </span>
-                                <span class="wnc-group-name">
-                                    ${escapeHtml(group.name)}
-                                </span>
-                            </button>
-                            ${
-                                collapsed
-                                    ? ""
-                                    : `
-                                        <div class="wnc-group-rules">
-                                            ${rules
-                                                .map((rule) =>
-                                                    renderGroupRule(group, rule)
-                                                )
-                                                .join("")}
-                                        </div>
-                                    `
-                            }
-                        </section>
-                    `;
-                })
-                .join("")}
+        <div class="wnc-tab-content">
+            <table class="wnc-table">
+                <thead>
+                    <tr>
+                        <th>Group</th>
+                        <th>Input</th>
+                        <th>Output</th>
+                        <th>Matches</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
         </div>
     `;
     }
     function renderConflict(conflict) {
-        const rule = conflict.rule || {};
+        const rule = conflict?.rule || {};
         return `
-        <div class="wnc-conflict">
-            <div class="wnc-conflict-header">
-                <span class="wnc-conflict-name">
-                    ${escapeHtml(rule.groupName || "")}
-                </span>
-                <span class="wnc-muted">
-                    (${escapeHtml(conflict.matchCount)})
-                </span>
-            </div>
-            <div class="wnc-conflict-rule">
+        <tr class="wnc-conflict-row">
+            <td>
+                ${escapeHtml(rule.groupName || "")}
+            </td>
+            <td>
                 ${escapeHtml(rule.input || "")}
-            </div>
-        </div>
+            </td>
+            <td>
+                ${escapeHtml(rule.output || "")}
+            </td>
+            <td>
+                ${escapeHtml(conflict?.target || "")}
+            </td>
+            <td>
+                ${escapeHtml(Number(conflict?.matchCount || 0))}
+            </td>
+        </tr>
     `;
     }
     function renderConflictsTab() {
         const conflicts = getVisibleConflicts();
+        if (!conflicts.length) {
+            return `
+            <div class="wnc-muted">
+                No conflicts found.
+            </div>
+        `;
+        }
         const clusters = new Map();
         for (const conflict of conflicts) {
-            const clusterId = Number(conflict.clusterId || 0);
+            const clusterId = Number(conflict?.clusterId || 0);
             if (!clusters.has(clusterId)) {
                 clusters.set(clusterId, []);
             }
@@ -1909,21 +2057,29 @@
             ${Array.from(clusters.entries())
                 .map(
                     ([clusterId, items]) => `
-                        <section
-                            class="wnc-conflict-cluster"
-                            data-wnc-conflict-cluster="${escapeHtml(
-                                String(clusterId)
-                            )}"
-                        >
+                        <div class="wnc-conflict-cluster">
                             <div class="wnc-conflict-cluster-header">
-                                Conflict cluster
+                                Conflict ${escapeHtml(String(clusterId))}
                             </div>
-                            <div class="wnc-conflict-cluster-items">
-                                ${items
-                                    .map((conflict) => renderConflict(conflict))
-                                    .join("")}
-                            </div>
-                        </section>
+                            <table class="wnc-table">
+                                <thead>
+                                    <tr>
+                                        <th>Group</th>
+                                        <th>Input</th>
+                                        <th>Output</th>
+                                        <th>Target</th>
+                                        <th>Matches</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${items
+                                        .map((conflict) =>
+                                            renderConflict(conflict)
+                                        )
+                                        .join("")}
+                                </tbody>
+                            </table>
+                        </div>
                     `
                 )
                 .join("")}
@@ -1965,64 +2121,25 @@
 `;
     }
     function renderGroupRule(group, rule) {
-        const sourceRule = rule?.rule || rule;
-        const candidates = Array.isArray(rule?.candidates)
-            ? rule.candidates
-            : [];
-        const expansionKey = getRuleExpansionKey(group, sourceRule);
-        const expanded = state.expandedRules.has(expansionKey);
-        const candidateHtml = candidates
-            .map(
-                (candidate) => `
-                <div class="wnc-muted">
-                    ${escapeHtml(candidate?.name || "")}
-                    <span>
-                        (${escapeHtml(Number(candidate?.frequency || 0))})
-                    </span>
-                </div>
-            `
-            )
-            .join("");
+        const sourceRule = rule?.rule || rule || {};
         return `
-        <div class="wnc-rule">
-            <div class="wnc-rule-header">
-                <button
-                    type="button"
-                    data-wnc-rule-toggle="${escapeHtml(expansionKey)}"
-                    data-wnc-group-index="${escapeHtml(group.index)}"
-                    data-wnc-rule-index="${escapeHtml(sourceRule.ruleIndex)}"
-                >
-                    ${expanded ? "▼" : "▶"}
-                </button>
-                <span class="wnc-code">
-                    ${escapeHtml(sourceRule.input || "")}
-                </span>
-                <span class="wnc-muted">
-                    (${escapeHtml(Number(rule?.matchCount || 0))})
-                </span>
-            </div>
-            ${
-                expanded
-                    ? `
-                        <div class="wnc-rule-body">
-                            <div class="wnc-code">
-                                ${escapeHtml(sourceRule.output || "")}
-                            </div>
-                            ${
-                                candidateHtml ||
-                                `<div class="wnc-muted">No candidates</div>`
-                            }
-                        </div>
-                    `
-                    : ""
-            }
-        </div>
+        <tr class="wnc-group-row">
+            <td>
+                ${escapeHtml(group?.name || "")}
+            </td>
+            <td class="wnc-code">
+                ${escapeHtml(sourceRule.input || "")}
+            </td>
+            <td class="wnc-code">
+                ${escapeHtml(sourceRule.output || "")}
+            </td>
+            <td>
+                ${escapeHtml(Number(rule?.matchCount || 0))}
+            </td>
+        </tr>
     `;
     }
     function render() {
-        if (!document.body) {
-            return false;
-        }
         ensureWncStyles();
         let overlay = document.getElementById(WNC_UI_ID);
         if (!overlay) {
@@ -2030,9 +2147,144 @@
             overlay.id = WNC_UI_ID;
             document.body.appendChild(overlay);
         }
-        overlay.innerHTML = renderWncWindow();
-        bindWncEvents(overlay);
-        return true;
+        const minimized = overlay.classList.contains("wnc-minimized");
+        overlay.innerHTML = `
+        <div class="wnc-panel-header">
+            <div class="wnc-panel-title">
+                Webnovel Cleaner
+            </div>
+            <div class="wnc-panel-actions">
+                <button
+                    type="button"
+                    data-wnc-minimize="1"
+                    title="${minimized ? "Restore" : "Minimize"}"
+                >
+                    ${minimized ? "□" : "−"}
+                </button>
+                <button
+                    type="button"
+                    data-wnc-close="1"
+                    title="Close"
+                >
+                    ×
+                </button>
+            </div>
+        </div>
+        <div class="wnc-panel-body">
+            <div class="wnc-tab-bar">
+                ${WNC_TAB_ORDER.map(
+                    (tab) => `
+                        <button
+                            type="button"
+                            data-wnc-tab="${escapeHtml(tab)}"
+                        >
+                            ${escapeHtml(getTabLabel(tab))}
+                        </button>
+                    `
+                ).join("")}
+            </div>
+            <div class="wnc-tab-content">
+                ${
+                    state.screen === "groups"
+                        ? renderGroupsTab()
+                        : state.screen === "conflicts"
+                          ? renderConflictsTab()
+                          : renderCandidatesTab()
+                }
+            </div>
+        </div>
+    `;
+        Object.assign(overlay.style, {
+            position: "fixed",
+            top: minimized ? "10px" : "40px",
+            left: "50%",
+            right: "auto",
+            bottom: "auto",
+            transform: "translateX(-50%)",
+            margin: "0",
+            padding: minimized ? "4px 6px" : "6px",
+            boxSizing: "border-box",
+            width: minimized ? "auto" : "min(1400px, calc(100vw - 20px))",
+            minWidth: minimized ? "160px" : "0",
+            maxWidth: minimized ? "none" : "calc(100vw - 20px)",
+            height: minimized ? "auto" : "calc(100vh - 80px)",
+            maxHeight: minimized ? "none" : "calc(100vh - 80px)",
+            overflow: minimized ? "visible" : "hidden",
+            zIndex: "2147483647",
+            display: "block",
+            visibility: "visible",
+            opacity: "1"
+        });
+        if (minimized) {
+            overlay.classList.add("wnc-minimized");
+        } else {
+            overlay.classList.remove("wnc-minimized");
+        }
+        overlay.onclick = (event) => {
+            const expandButton = event.target.closest(
+                "[data-wnc-expand-candidate]"
+            );
+            if (expandButton) {
+                const row = expandButton.closest("tr");
+                if (!row) {
+                    return;
+                }
+                const starts = row.querySelector(".wnc-sentence-starts");
+                if (!starts) {
+                    return;
+                }
+                const expanded = starts.hidden === false;
+                starts.hidden = expanded;
+                expandButton.textContent = expanded ? "+" : "−";
+                expandButton.setAttribute(
+                    "aria-expanded",
+                    expanded ? "false" : "true"
+                );
+                return;
+            }
+            const highlightButton = event.target.closest(
+                "[data-wnc-highlight]"
+            );
+            if (highlightButton) {
+                const value =
+                    highlightButton.getAttribute("data-wnc-highlight");
+                if (value && typeof highlightCandidate === "function") {
+                    highlightCandidate(value);
+                }
+                return;
+            }
+            const regexButton = event.target.closest("[data-wnc-regex]");
+            if (regexButton) {
+                const value = regexButton.getAttribute("data-wnc-regex");
+                if (value && typeof generateRegex === "function") {
+                    generateRegex(value);
+                }
+                return;
+            }
+            const copyButton = event.target.closest("[data-wnc-copy]");
+            if (copyButton) {
+                copyText(copyButton.getAttribute("data-wnc-copy") || "");
+                return;
+            }
+            const minimizeButton = event.target.closest("[data-wnc-minimize]");
+            if (minimizeButton) {
+                overlay.classList.toggle("wnc-minimized");
+                render();
+                return;
+            }
+            const closeButton = event.target.closest("[data-wnc-close]");
+            if (closeButton) {
+                overlay.remove();
+                return;
+            }
+            const tabButton = event.target.closest("[data-wnc-tab]");
+            if (tabButton) {
+                state.screen =
+                    tabButton.getAttribute("data-wnc-tab") || "candidates";
+                render();
+            }
+        };
+        return overlay;
     }
     function openWnc() {
         state.screen = "candidates";
@@ -2048,54 +2300,56 @@
         if (!overlay) {
             return;
         }
-        overlay.querySelectorAll("[data-wnc-tab]").forEach((button) => {
-            button.addEventListener("click", () => {
-                state.screen = button.dataset.wncTab;
+        overlay.onclick = (event) => {
+            const tabButton = event.target.closest("[data-wnc-tab]");
+            if (tabButton) {
+                state.screen =
+                    tabButton.getAttribute("data-wnc-tab") || "candidates";
                 render();
-            });
-        });
-        overlay.querySelectorAll("[data-wnc-template]").forEach((select) => {
-            select.addEventListener("change", () => {
-                state.candidateTemplate = select.value;
+                return;
+            }
+            const template = event.target.closest("[data-wnc-template]");
+            if (template) {
+                state.candidateTemplate = template.value;
                 regenerateCandidateInputs(
                     state.candidates,
                     state.candidateTemplate
                 );
                 render();
-            });
-        });
-        overlay.querySelectorAll("[data-wnc-scan]").forEach((button) => {
-            button.addEventListener("click", () => {
+                return;
+            }
+            const scanButton = event.target.closest("[data-wnc-scan]");
+            if (scanButton) {
                 state.analysisError = null;
                 runAnalysisSafely();
                 render();
-            });
-        });
-        overlay.querySelectorAll("[data-wnc-close]").forEach((button) => {
-            button.addEventListener("click", closeWnc);
-        });
-        overlay
-            .querySelectorAll("[data-wnc-group-toggle]")
-            .forEach((element) => {
-                element.addEventListener("click", () => {
-                    toggleGroupCollapsed(element.dataset.wncGroupToggle);
-                });
-            });
-        overlay
-            .querySelectorAll("[data-wnc-rule-toggle]")
-            .forEach((element) => {
-                element.addEventListener("click", () => {
-                    toggleRuleExpanded(
-                        element.dataset.wncGroupIndex,
-                        element.dataset.wncRuleIndex
-                    );
-                });
-            });
-        overlay.querySelectorAll("[data-wnc-copy]").forEach((button) => {
-            button.addEventListener("click", () => {
-                copyText(button.dataset.wncCopy);
-            });
-        });
+                return;
+            }
+            const closeButton = event.target.closest("[data-wnc-close]");
+            if (closeButton) {
+                closeWnc();
+                return;
+            }
+            const groupToggle = event.target.closest("[data-wnc-group-toggle]");
+            if (groupToggle) {
+                toggleGroupCollapsed(
+                    groupToggle.getAttribute("data-wnc-group-toggle")
+                );
+                return;
+            }
+            const ruleToggle = event.target.closest("[data-wnc-rule-toggle]");
+            if (ruleToggle) {
+                toggleRuleExpanded(
+                    ruleToggle.getAttribute("data-wnc-group-index"),
+                    ruleToggle.getAttribute("data-wnc-rule-index")
+                );
+                return;
+            }
+            const copyButton = event.target.closest("[data-wnc-copy]");
+            if (copyButton) {
+                copyText(copyButton.getAttribute("data-wnc-copy") || "");
+            }
+        };
     }
     async function copyText(text) {
         const value = String(text ?? "");
