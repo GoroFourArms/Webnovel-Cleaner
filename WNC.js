@@ -138,10 +138,21 @@
     }
     function adaptFoxReplaceDatabase(rawDatabase) {
         const groups = findGroupArray(rawDatabase);
+
+        if (!Array.isArray(groups) || !groups.length) {
+            return {
+                groups: []
+            };
+        }
+
+        const normalizedGroups = [];
+
+        for (let index = 0; index < groups.length; index++) {
+            normalizedGroups.push(normalizeGroup(groups[index], index));
+        }
+
         return {
-            groups: groups.map((group, groupIndex) =>
-                normalizeGroup(group, groupIndex)
-            )
+            groups: normalizedGroups
         };
     }
     function loadNormalDatabase() {
@@ -161,24 +172,36 @@
         };
     }
     function parseImportedText(text) {
+        const source = String(text ?? "").trim();
+
+        if (!source) {
+            return null;
+        }
+
+        let database;
+
         try {
-            const database = JSON.parse(text);
-            if (
-                !database ||
-                typeof database !== "object" ||
-                !Array.isArray(database.groups) ||
-                !database.groups.length
-            ) {
-                return null;
-            }
-            const version = String(database.version ?? "").trim();
-            if (version && !/^2\.\d+$/.test(version)) {
-                return null;
-            }
-            return database;
+            database = JSON.parse(source);
         } catch {
             return null;
         }
+
+        if (
+            !database ||
+            typeof database !== "object" ||
+            !Array.isArray(database.groups) ||
+            !database.groups.length
+        ) {
+            return null;
+        }
+
+        const version = String(database.version ?? "").trim();
+
+        if (version && !/^2\.\d+$/.test(version)) {
+            return null;
+        }
+
+        return database;
     }
     function readFileText(file) {
         return new Promise((resolve, reject) => {
@@ -193,26 +216,68 @@
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".json,application/json";
+
         input.addEventListener("change", async () => {
             const file = input.files?.[0];
+
             if (!file) {
                 return;
             }
+
             try {
                 const text = await readFileText(file);
-                const database = parseImportedText(text);
+
+                await new Promise((resolve) => {
+                    setTimeout(resolve, 0);
+                });
+
+                let database;
+
+                try {
+                    database = parseImportedText(text);
+                } catch (error) {
+                    state.analysisError = error;
+                    render();
+                    return;
+                }
+
+                await new Promise((resolve) => {
+                    setTimeout(resolve, 0);
+                });
+
                 if (!database) {
                     return;
                 }
+
                 if (!writeStorage(DB_KEY, database)) {
                     return;
                 }
-                adaptedDatabase = adaptFoxReplaceDatabase(database);
+
+                await new Promise((resolve) => {
+                    setTimeout(resolve, 0);
+                });
+
+                try {
+                    adaptedDatabase = adaptFoxReplaceDatabase(database);
+                    ensureDatabaseShape();
+                } catch (error) {
+                    adaptedDatabase = {
+                        groups: []
+                    };
+                    state.analysisError = error;
+                    render();
+                    return;
+                }
+
+                state.analysisError = null;
+                clearAnalysisResults();
                 render();
-            } catch {
-                return;
+            } catch (error) {
+                state.analysisError = error;
+                render();
             }
         });
+
         input.click();
     }
     function wildcardToRegex(value) {
