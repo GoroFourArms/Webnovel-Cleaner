@@ -725,13 +725,6 @@
         }
     }
     function getCandidateMatchForms(candidate) {
-        if (
-            candidate &&
-            typeof candidate === "object" &&
-            Array.isArray(candidate.matchForms)
-        ) {
-            return candidate.matchForms;
-        }
         const forms = new Set();
         const addForm = (value) => {
             const text = String(value ?? "").trim();
@@ -759,14 +752,7 @@
         } else {
             addForm(candidate);
         }
-        const result = [...forms].map((text) => ({
-            text,
-            lower: text.toLowerCase()
-        }));
-        if (candidate && typeof candidate === "object") {
-            candidate.matchForms = result;
-        }
-        return result;
+        return [...forms];
     }
     function findCandidateRuleMatches(candidate, pageMatchedRules) {
         if (!candidate || !Array.isArray(pageMatchedRules)) {
@@ -799,29 +785,20 @@
             if (!ruleText) {
                 continue;
             }
-            let ruleLower = rule._wncLowerInput;
-            if (ruleLower === undefined) {
-                ruleLower = ruleText.toLowerCase();
-                try {
-                    Object.defineProperty(rule, "_wncLowerInput", {
-                        value: ruleLower,
-                        configurable: true
-                    });
-                } catch {}
-            }
+            const ruleLower = ruleText.toLowerCase();
             let matched = false;
             for (const form of candidateForms) {
-                if (!form?.text) {
+                if (!form) {
                     continue;
                 }
-                if (ruleText === form.text) {
+                if (ruleText === String(form)) {
                     exact.push(rule);
                     matched = true;
                     break;
                 }
                 if (
                     wholeWordRuleMatches(
-                        form.text,
+                        form,
                         ruleText,
                         Boolean(rule.caseSensitive)
                     )
@@ -830,9 +807,10 @@
                     matched = true;
                     break;
                 }
+                const formLower = String(form).toLowerCase();
                 if (
-                    ruleLower.includes(form.lower) ||
-                    form.lower.includes(ruleLower)
+                    ruleLower.includes(formLower) ||
+                    formLower.includes(ruleLower)
                 ) {
                     partial.push(rule);
                     matched = true;
