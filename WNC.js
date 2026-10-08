@@ -12,6 +12,7 @@
 // ==/UserScript==
 (function () {
     "use strict";
+    const WNC_VERSION = "6.2.7";
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const OCCURRENCE_REGEX =
         /(?<![A-Z0-9'’-])((?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*)(?:\s+(?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*))*)(?![A-Za-z0-9'’-])/g;
@@ -32,6 +33,164 @@
     let adaptedDatabase = {
         groups: []
     };
+    const WNC_UI_SETTINGS_KEY = "WNC_UI_SETTINGS_V1";
+    const WNC_DEFAULT_UI_SETTINGS = {
+        width: 1400,
+        height: null,
+        minimized: false
+    };
+    const WNC_UI_RESIZE_CSS = `
+.wnc-panel {
+    min-width: 500px;
+    min-height: 200px;
+    max-width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+    overflow: hidden;
+    resize: both;
+}
+.wnc-body,
+.wnc-panel-body {
+    height: auto;
+    max-height: calc(100vh - 80px);
+    overflow: auto;
+}
+`;
+    function ensureWncResizeStyles() {
+        if (document.getElementById("WNC_RESIZE_STYLE")) {
+            return;
+        }
+        const style = document.createElement("style");
+        style.id = "WNC_RESIZE_STYLE";
+        style.textContent = WNC_UI_RESIZE_CSS;
+        document.head.appendChild(style);
+    }
+    function getWncUiSettings() {
+        try {
+            const raw = GM_getValue(WNC_UI_SETTINGS_KEY, null);
+            if (!raw) {
+                return {
+                    ...WNC_DEFAULT_UI_SETTINGS
+                };
+            }
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+            return {
+                ...WNC_DEFAULT_UI_SETTINGS,
+                ...(parsed && typeof parsed === "object" ? parsed : {})
+            };
+        } catch (error) {
+            console.warn("[WNC] Unable to load UI settings:", error);
+            return {
+                ...WNC_DEFAULT_UI_SETTINGS
+            };
+        }
+    }
+    function saveWncUiSettings(settings) {
+        try {
+            GM_setValue(
+                WNC_UI_SETTINGS_KEY,
+                JSON.stringify({
+                    ...WNC_DEFAULT_UI_SETTINGS,
+                    ...(settings || {})
+                })
+            );
+        } catch (error) {
+            console.warn("[WNC] Unable to save UI settings:", error);
+        }
+    }
+    function applyWncPanelSize(element) {
+        if (!element) {
+            return;
+        }
+        const panel = element.classList?.contains("wnc-panel")
+            ? element
+            : element.querySelector?.(".wnc-panel") || element;
+        const settings = getWncUiSettings();
+        if (Number.isFinite(Number(settings.width))) {
+            panel.style.width = `${Math.max(500, Number(settings.width))}px`;
+        }
+        if (
+            settings.height !== null &&
+            Number.isFinite(Number(settings.height))
+        ) {
+            panel.style.height = `${Math.max(200, Number(settings.height))}px`;
+        } else {
+            panel.style.height = "auto";
+        }
+        panel.style.maxWidth = "calc(100vw - 20px)";
+        panel.style.maxHeight = "calc(100vh - 20px)";
+    }
+    function saveWncPanelSize(element) {
+        if (!element) {
+            return;
+        }
+        const panel = element.classList?.contains("wnc-panel")
+            ? element
+            : element.querySelector?.(".wnc-panel") || element;
+        if (!panel || panel.classList.contains("wnc-minimized")) {
+            return;
+        }
+        const settings = getWncUiSettings();
+        const rect = panel.getBoundingClientRect();
+        if (rect.width >= 500) {
+            settings.width = Math.round(rect.width);
+        }
+        if (rect.height >= 200) {
+            settings.height = Math.round(rect.height);
+        }
+        saveWncUiSettings(settings);
+    }
+    function startWncPanelResizePersistence(element) {
+        if (!element) {
+            return;
+        }
+        const panel = element.classList?.contains("wnc-panel")
+            ? element
+            : element.querySelector?.(".wnc-panel") || element;
+        if (!panel || panel.dataset.wncResizePersistence === "1") {
+            return;
+        }
+        panel.dataset.wncResizePersistence = "1";
+        let timer = null;
+        const saveSize = () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                saveWncPanelSize(panel);
+            }, 150);
+        };
+        if (typeof ResizeObserver !== "undefined") {
+            const observer = new ResizeObserver(saveSize);
+            observer.observe(panel);
+            panel._wncResizeObserver = observer;
+        }
+        if (!window._wncResizeHandler) {
+            window._wncResizeHandler = () => {
+                const currentPanel = document.querySelector(".wnc-panel");
+                if (!currentPanel) {
+                    return;
+                }
+                const settings = getWncUiSettings();
+                if (
+                    Number.isFinite(Number(settings.width)) &&
+                    Number(settings.width) > window.innerWidth - 20
+                ) {
+                    currentPanel.style.width = `${Math.max(
+                        500,
+                        window.innerWidth - 20
+                    )}px`;
+                }
+                if (
+                    Number.isFinite(Number(settings.height)) &&
+                    Number(settings.height) > window.innerHeight - 20
+                ) {
+                    currentPanel.style.height = `${Math.max(
+                        200,
+                        window.innerHeight - 20
+                    )}px`;
+                }
+            };
+            window.addEventListener("resize", window._wncResizeHandler);
+        }
+    }
     function readStorage(key, fallback = null) {
         try {
             const value = GM_getValue(key, fallback);
@@ -240,36 +399,50 @@
     }
     function openImportPicker() {
         const input = document.createElement("input");
+
         input.type = "file";
         input.accept = ".json,application/json";
+
         input.addEventListener(
             "change",
             async () => {
                 const file = input.files?.[0];
+
                 if (!file) {
                     return;
                 }
+
                 try {
                     const text = await readFileText(file);
                     const database = parseImportedText(text);
+
                     if (!database) {
                         throw new Error("Invalid FoxReplace JSON");
                     }
+
                     if (!writeStorage(DB_KEY, database)) {
                         throw new Error("Unable to save FoxReplace database");
                     }
+
                     adaptedDatabase = adaptFoxReplaceDatabase(database);
+
                     ensureDatabaseShape();
+
                     state.analysisError = null;
+
                     clearAnalysisResults();
-                    render();
+
                     runAnalysisSafely();
+
                     render();
                 } catch (error) {
                     state.analysisError =
                         error instanceof Error
                             ? error
                             : new Error(String(error));
+
+                    console.error("[WNC] Import error:", state.analysisError);
+
                     render();
                 }
             },
@@ -277,6 +450,7 @@
                 once: true
             }
         );
+
         input.click();
     }
     function wildcardToRegex(value) {
@@ -318,44 +492,75 @@
     }
     function scanCandidateOccurrences(text) {
         const occurrences = [];
+
         if (!text) {
             return occurrences;
         }
+
+        const source = String(text);
+
         OCCURRENCE_REGEX.lastIndex = 0;
+
         let match;
-        while ((match = OCCURRENCE_REGEX.exec(text)) !== null) {
+
+        while ((match = OCCURRENCE_REGEX.exec(source)) !== null) {
             const value = String(match[1] || "").trim();
+
             if (!value) {
                 continue;
             }
+
             const startIndex = match.index;
+
             if (startIndex === 0) {
                 continue;
             }
+
+            /*
+             * Sentence-start occurrences are Starts, not Candidates.
+             *
+             * This function therefore rejects them completely.
+             * It must never create, promote, or modify a Candidate.
+             */
             let sentenceStart = false;
+
             for (let index = startIndex - 1; index >= 0; index--) {
-                const character = text[index];
+                const character = source[index];
+
                 if (/\s/.test(character)) {
                     continue;
                 }
-                if (/["'“”‘’([{]/.test(character)) {
+
+                /*
+                 * Opening punctuation does not establish that the
+                 * occurrence is a sentence start. Keep walking
+                 * backwards until we find meaningful punctuation
+                 * or another character.
+                 */
+                if (/["'“”‘’([{「『【《〈（［｛]/.test(character)) {
                     continue;
                 }
-                if (/[.!?]/.test(character)) {
+
+                if (/[.!?。！？]/.test(character)) {
                     sentenceStart = true;
                 }
+
                 break;
             }
+
             if (sentenceStart) {
                 continue;
             }
+
             occurrences.push({
                 text: value,
                 index: startIndex
             });
         }
+
         return occurrences;
     }
+
     function findBestCandidateForStart(starter, candidates) {
         if (!starter || !Array.isArray(candidates) || !candidates.length) {
             return null;
@@ -1236,30 +1441,20 @@
         });
         return matches;
     }
-    function candidateMatchesRule(candidate, matchedRule) {
-        if (!candidate || !matchedRule) {
+    function candidateMatchesRule(candidate, ruleMatch) {
+        if (!candidate || !ruleMatch) {
             return false;
-        }
-        const candidateName = String(candidate.name || "").trim();
-        const ruleName = String(matchedRule.text || "").trim();
-        if (!candidateName || !ruleName) {
-            return false;
-        }
-        const candidateIdentity = normalizeCandidateIdentity(candidateName);
-        const ruleIdentity = normalizeCandidateIdentity(ruleName);
-        if (candidateIdentity && candidateIdentity === ruleIdentity) {
-            return true;
         }
         const candidateTokens = getCandidateTokens(candidate);
-        const ruleTokens = tokenizeCandidate(ruleName);
+        const ruleTextValue = ruleText(ruleMatch);
+        const ruleTokens = tokenizeCandidate(ruleTextValue);
         if (!candidateTokens.length || !ruleTokens.length) {
             return false;
         }
-        /*
-         * A rule may contain additional words, so use the same
-         * contiguous-token matching logic used by Start -> Candidate.
-         */
-        return findTokenSubsequence(ruleTokens, candidateTokens) !== -1;
+        return (
+            findTokenSubsequence(candidateTokens, ruleTokens) !== null ||
+            findTokenSubsequence(ruleTokens, candidateTokens) !== null
+        );
     }
     function filterCandidatesAgainstRules(candidates, pageRuleMatches) {
         const source = Array.isArray(candidates) ? candidates : [];
@@ -1354,10 +1549,9 @@
          * This operates exclusively on page-matched FoxReplace
          * rules. Candidates and Starts are not consulted here.
          */
-        return (
-            findTokenSubsequence(firstTokens, secondTokens) !== -1 ||
-            findTokenSubsequence(secondTokens, firstTokens) !== -1
-        );
+        const firstInSecond = findTokenSubsequence(firstTokens, secondTokens);
+        const secondInFirst = findTokenSubsequence(secondTokens, firstTokens);
+        return firstInSecond !== null || secondInFirst !== null;
     }
     function buildConflictClusters(pageRuleMatches) {
         const rules = Array.isArray(pageRuleMatches) ? pageRuleMatches : [];
@@ -2451,69 +2645,70 @@
         });
     }
     function createPanel() {
-        injectStyles();
-        const old = document.getElementById("wnc-panel");
-        if (old) {
-            old.remove();
+        let overlay = document.getElementById(WNC_UI_ID);
+        if (overlay) {
+            applyWncPanelSize(overlay);
+            startWncPanelResizePersistence(overlay);
+            return overlay;
         }
+        ensureWncStyles();
+        overlay = document.createElement("div");
+        overlay.id = WNC_UI_ID;
+        overlay.className = "wnc-overlay";
         const panel = document.createElement("div");
-        panel.id = "wnc-panel";
-        const header = createElement("div", "wnc-header");
-        const title = createElement("div", "wnc-title", "Webnovel Cleaner");
+        panel.className = "wnc-panel";
+        const header = document.createElement("div");
+        header.className = "wnc-header";
+        const title = document.createElement("div");
+        title.className = "wnc-title";
+        title.textContent = `Webnovel Cleaner ${WNC_VERSION}`;
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "wnc-close";
+        closeButton.textContent = "×";
+        closeButton.title = "Close";
+        closeButton.addEventListener("click", () => {
+            overlay.remove();
+        });
         header.appendChild(title);
-        header.appendChild(
-            createElement("span", "wnc-version", `v${WNC_VERSION}`)
-        );
-        const close = createElement("button", "", "×");
-        close.type = "button";
-        close.title = "Close";
-        close.addEventListener("click", () => {
-            panel.remove();
-        });
-        header.appendChild(close);
+        header.appendChild(closeButton);
+        const body = document.createElement("div");
+        body.className = "wnc-body";
         panel.appendChild(header);
-        const tabs = createElement("div", "wnc-tabs");
-        [
-            ["candidates", "Candidates"],
-            ["groups", "Groups"],
-            ["conflicts", "Conflicts"]
-        ].forEach(([screen, label]) => {
-            const tab = createElement("button", "wnc-tab", label);
-            tab.type = "button";
-            tab.dataset.screen = screen;
-            tab.addEventListener("click", () => {
-                state.screen = screen;
-                renderCurrentScreen();
-            });
-            tabs.appendChild(tab);
-        });
-        panel.appendChild(tabs);
-        const body = createElement("div", "wnc-body");
         panel.appendChild(body);
-        document.body.appendChild(panel);
-        restorePanelSize(panel);
-        addPanelResizeHandle(panel);
-        makePanelDraggable(panel, header);
-        renderCurrentScreen();
-        return panel;
+        overlay.appendChild(panel);
+        document.documentElement.appendChild(overlay);
+        applyWncPanelSize(panel);
+        startWncPanelResizePersistence(panel);
+        return overlay;
     }
     function showAnalysisError(error) {
-        state.analysisError = error;
-        console.error("[WNC] Analysis error:", error);
-        const panel = createPanel();
-        const body = panel.querySelector(".wnc-body");
-        if (!body) {
-            return;
+        state.analysisError =
+            error instanceof Error ? error : new Error(String(error));
+        console.error("[WNC] Analysis error:", state.analysisError);
+        try {
+            const panel = createPanel();
+            const body =
+                panel?.querySelector(".wnc-body") ||
+                panel?.querySelector(".wnc-panel-body");
+            if (!body) {
+                return;
+            }
+            body.textContent = "";
+            const section = document.createElement("section");
+            section.className = "wnc-section";
+            const title = document.createElement("div");
+            title.className = "wnc-section-title";
+            title.textContent = "Analysis Error";
+            const message = document.createElement("div");
+            message.className = "wnc-empty";
+            message.textContent = state.analysisError.message;
+            section.appendChild(title);
+            section.appendChild(message);
+            body.appendChild(section);
+        } catch (panelError) {
+            console.error("[WNC] Unable to create error UI:", panelError);
         }
-        body.textContent = "";
-        const section = createElement("section", "wnc-section");
-        section.appendChild(
-            createElement("div", "wnc-section-title", "Analysis Error")
-        );
-        const message = createElement("div", "wnc-empty");
-        message.textContent = error?.message || String(error);
-        section.appendChild(message);
-        body.appendChild(section);
     }
     function getPageText() {
         if (document.body) {
