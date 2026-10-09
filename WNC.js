@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.3.2
+// @version      6.3.3
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -12,7 +12,7 @@
 // ==/UserScript==
 (function () {
     "use strict";
-    const WNC_VERSION = "6.3.2";
+    const WNC_VERSION = "6.3.3";
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const OCCURRENCE_REGEX =
         /(?<![A-Z0-9'’-])((?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*)(?:\s+(?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*))*)(?![A-Za-z0-9'’-])/g;
@@ -57,7 +57,6 @@
     let adaptedDatabase = {
         groups: []
     };
-    const WNC_UI_ID = "wnc-overlay";
     const WNC_UI_SETTINGS_KEY = "WNC_UI_SETTINGS_V1";
     const WNC_DEFAULT_UI_SETTINGS = {
         width: 1400,
@@ -497,15 +496,6 @@
     }
 }
 `;
-    function ensureWncResizeStyles() {
-        if (document.getElementById("WNC_RESIZE_STYLE")) {
-            return;
-        }
-        const style = document.createElement("style");
-        style.id = "WNC_RESIZE_STYLE";
-        style.textContent = WNC_UI_RESIZE_CSS;
-        document.head.appendChild(style);
-    }
     function getWncUiSettings() {
         try {
             const raw = GM_getValue(WNC_UI_SETTINGS_KEY, null);
@@ -823,6 +813,105 @@
         }
         return adaptedDatabase;
     }
+    function normalizeGeneratedInputSpacing(value) {
+        return String(value ?? "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+    function generateOtherInput(candidate) {
+        const value = normalizeGeneratedInputSpacing(
+            candidate?.name || candidate?.normalized || ""
+        );
+        if (!value) {
+            return "";
+        }
+        return "(?<![a-z])" + escapeRegExp(value) + "(?![a-z])";
+    }
+    function generateKoreanInput(candidate) {
+        const value = normalizeGeneratedInputSpacing(
+            candidate?.name || candidate?.normalized || ""
+        );
+        if (!value) {
+            return "";
+        }
+        const original = normalizeGeneratedInputSpacing(
+            candidate?.name || candidate?.normalized || ""
+        );
+        const originalTokens = tokenizeCandidate(original);
+        const valueTokens = tokenizeCandidate(value);
+        let nameTokens = valueTokens;
+        if (
+            valueTokens.length > 1 &&
+            originalTokens.length > 1 &&
+            valueTokens[0].toLowerCase() === originalTokens[0].toLowerCase()
+        ) {
+            nameTokens = valueTokens.slice(1);
+        }
+        if (!nameTokens.length) {
+            return "";
+        }
+        const pattern = nameTokens
+            .map((token) => escapeRegExp(token))
+            .join("[- ]?");
+        return "(?<![a-z])" + pattern + "(?![a-z])";
+    }
+    function generateKorean2Input(candidate) {
+        const value = normalizeGeneratedInputSpacing(
+            candidate?.name || candidate?.normalized || ""
+        );
+        if (!value) {
+            return "";
+        }
+        const original = normalizeGeneratedInputSpacing(
+            candidate?.name || candidate?.normalized || ""
+        );
+        const originalTokens = tokenizeCandidate(original);
+        let nameValue = value;
+        if (originalTokens.length > 1) {
+            const valueTokens = tokenizeCandidate(value);
+            if (
+                valueTokens.length > 1 &&
+                valueTokens[0].toLowerCase() === originalTokens[0].toLowerCase()
+            ) {
+                nameValue = valueTokens.slice(1).join(" ");
+            }
+        }
+        const nameTokens = tokenizeCandidate(nameValue);
+        if (!nameTokens.length) {
+            return "";
+        }
+        const namePattern = nameTokens
+            .map((token) => escapeRegExp(token))
+            .join("[- ]?");
+        if (originalTokens.length <= 1) {
+            return "(?<![a-z])" + namePattern + "(?![a-z])";
+        }
+        return (
+            "(?<![a-z])" +
+            "(?:" +
+            escapeRegExp(originalTokens[0]) +
+            " )?" +
+            namePattern +
+            "(?![a-z])"
+        );
+    }
+    function generateJapaneseInput(candidate) {
+        const value = normalizeGeneratedInputSpacing(
+            candidate?.name || candidate?.normalized || ""
+        );
+        if (!value) {
+            return "";
+        }
+        const tokens = tokenizeCandidate(value);
+        if (tokens.length <= 1) {
+            return "(?<![a-z])" + escapeRegExp(value) + "(?![a-z])";
+        }
+        const forward = tokens.map((token) => escapeRegExp(token)).join("\\s+");
+        const reverse = [tokens[tokens.length - 1], ...tokens.slice(0, -1)]
+            .map((token) => escapeRegExp(token))
+            .join("\\s+");
+        return "(?<![a-z])(?:" + forward + "|" + reverse + ")(?![a-z])";
+    }
     function openImportPicker() {
         const input = document.createElement("input");
         input.type = "file";
@@ -864,7 +953,7 @@
         input.click();
     }
     function wildcardToRegex(value) {
-        const escaped = escapeRegexLiteral(value);
+        const escaped = escapeRegExp(value);
         return new RegExp("^" + escaped.replace(/\\\*/g, ".*") + "$");
     }
     function urlPatternMatches(pattern, url) {
@@ -889,6 +978,11 @@
         }
         const url = location.href;
         return urls.some((pattern) => urlPatternMatches(pattern, url));
+    }
+    function getCurrentSiteGroups() {
+        return (adaptedDatabase.groups || []).filter(
+            (group) => group.enabled && groupMatchesCurrentSite(group)
+        );
     }
     function findBestCandidateForStart(starter, candidates) {
         if (!starter || !Array.isArray(candidates) || !candidates.length) {
@@ -934,6 +1028,13 @@
                 const originalIndex = Number(
                     candidate.originalIndex ?? Infinity
                 );
+                /*
+                 * Selection priority:
+                 *
+                 * 1. Longest Candidate token sequence.
+                 * 2. Earliest occurrence inside the Start.
+                 * 3. Earliest original Candidate occurrence.
+                 */
                 if (
                     candidateTokens.length > bestLength ||
                     (candidateTokens.length === bestLength &&
@@ -978,8 +1079,18 @@
         if (!value) {
             return "";
         }
+        // Normalize possessives.
         value = value.replace(/['’]s$/i, "");
         value = value.replace(/s['’]$/i, "s");
+        /*
+         * Normalize only the plural forms that are reasonably safe.
+         *
+         * Do NOT blindly strip a final "s":
+         * James -> jame
+         * Chris -> chri
+         * Lucas -> luca
+         * This is especially dangerous for names.
+         */
         if (value.length > 4 && /ies$/.test(value)) {
             value = value.slice(0, -3) + "y";
         } else if (value.length > 4 && /(ches|shes|xes|zes)$/.test(value)) {
@@ -1054,59 +1165,42 @@
             starts
         };
     }
-    function collectOccurrences(occurrences) {
-        const map = new Map();
-        for (const occurrence of occurrences || []) {
-            const display = normalizeCandidateDisplay(occurrence.text);
+    function mergeCandidateRecords(records) {
+        const candidatesByIdentity = new Map();
+        for (const record of records || []) {
+            const display = normalizeCandidateDisplay(record?.text);
             const identity = normalizeCandidateIdentity(display);
-            if (!identity) {
-                continue;
-            }
-            let item = map.get(identity);
-            if (!item) {
-                item = {
+            if (!identity) continue;
+            let candidate = candidatesByIdentity.get(identity);
+            if (!candidate) {
+                candidate = {
                     name: display,
                     identity,
                     frequency: 0,
-                    occurrences: [],
                     variants: new Map(),
-                    originalIndex: occurrence.index
+                    originalIndex: Number(record?.index ?? Infinity)
                 };
-                map.set(identity, item);
+                candidatesByIdentity.set(identity, candidate);
             }
-            item.frequency += 1;
-            item.occurrences.push(occurrence);
-            const variant = display || occurrence.text;
-            item.variants.set(variant, (item.variants.get(variant) || 0) + 1);
-            if (occurrence.index < item.originalIndex) {
-                item.originalIndex = occurrence.index;
-            }
+            candidate.frequency += 1;
+            const variant = display || String(record?.text ?? "");
+            candidate.variants.set(
+                variant,
+                (candidate.variants.get(variant) || 0) + 1
+            );
+            candidate.originalIndex = Math.min(
+                candidate.originalIndex,
+                Number(record?.index ?? Infinity)
+            );
         }
-        return [...map.values()];
-    }
-    function chooseCanonicalName(item) {
-        if (!item || !item.variants) {
-            return item?.name || "";
-        }
-        let best = item.name || "";
-        let bestFrequency = item.variants.get(best) || 0;
-        for (const [variant, frequency] of item.variants) {
-            if (
-                frequency > bestFrequency ||
-                (frequency === bestFrequency && variant.length > best.length)
-            ) {
-                best = variant;
-                bestFrequency = frequency;
-            }
-        }
-        return best;
+        return [...candidatesByIdentity.values()];
     }
     function finalizeCandidates(rawCandidates) {
         return (rawCandidates || []).map((candidate, index) => {
             const finalized = {
                 ...candidate,
                 originalIndex: candidate.originalIndex ?? index,
-                name: chooseCanonicalName(candidate),
+                name: String(candidate.name ?? "").trim(),
                 frequency: Number(candidate.frequency || 0),
                 variants: candidate.variants
                     ? [...candidate.variants.entries()].map(
@@ -1270,6 +1364,26 @@
     function applyTwoPassStartMatching(candidates, starts) {
         const finalizedCandidates = Array.isArray(candidates) ? candidates : [];
         const startRecords = Array.isArray(starts) ? starts : [];
+        /*
+         * ========================================================
+         * PASS 1
+         *
+         * IDENTICAL STARTS
+         *
+         * A Start whose normalized token sequence is exactly the
+         * same as a Candidate belongs to that Candidate.
+         *
+         * The Start is consumed without changing candidate frequency.
+         *
+         * It contributes no Prefix/Suffix data.
+         *
+         * It does NOT:
+         *   - become a child row
+         *   - create prefix information
+         *   - create suffix information
+         *   - remain available to Pass 2
+         * ========================================================
+         */
         const remainingStarts = [];
         for (const start of startRecords) {
             if (!start || !start.identity) {
@@ -1286,7 +1400,36 @@
                 remainingStarts.push(start);
                 continue;
             }
+            /*
+             * Starts are metadata, not candidate occurrences. Do not
+             * add their frequency to the candidate.
+             *
+             * Intentionally do NOT add this Start to:
+             *
+             * candidate.starts
+             * candidate.prefixCounts
+             * candidate.suffixCounts
+             *
+             * It has been completely consumed.
+             */
         }
+        /*
+         * ========================================================
+         * PASS 2
+         *
+         * REMAINING STARTS
+         *
+         * Each remaining Start gets at most one Candidate.
+         *
+         * The strongest match is:
+         *
+         *   1. longest Candidate
+         *   2. earliest position in Start
+         *   3. earliest original Candidate
+         *
+         * Only non-identical matches produce Prefix/Suffix data.
+         * ========================================================
+         */
         const orderedCandidates = finalizedCandidates
             .slice()
             .sort(
@@ -1299,14 +1442,30 @@
             );
         for (const start of remainingStarts) {
             const match = findBestCandidateForStart(start, orderedCandidates);
+            /*
+             * IMPORTANT:
+             *
+             * An unmatched Start is discarded.
+             *
+             * It NEVER becomes a Candidate.
+             */
             if (!match) {
                 continue;
             }
             const candidate = match.candidate;
             const frequency = Number(start.frequency) || 0;
+            /*
+             * Start frequency is used only to weight Prefix/Suffix
+             * metadata. It never changes candidate frequency.
+             */
             const affixes = extractStartAffixes(start, candidate);
             addPrefix(candidate, affixes.prefix, frequency);
             addSuffix(candidate, affixes.suffix, frequency);
+            /*
+             * Keep this as internal metadata only.
+             *
+             * The UI must NOT render this as a child Start row.
+             */
             candidate.starts.push({
                 name: start.name,
                 frequency,
@@ -1412,12 +1571,19 @@
             const members = Array.isArray(cluster.members)
                 ? cluster.members
                 : [];
+            /*
+             * All multi-member clusters survive.
+             */
             if (members.length > 1) {
                 for (const member of members) {
                     retained.add(member);
                 }
                 continue;
             }
+            /*
+             * A singleton survives only if it reaches
+             * the 5% threshold.
+             */
             const member = members[0];
             if (member && getCandidateFrequency(member) >= minimumFrequency) {
                 retained.add(member);
@@ -1428,15 +1594,12 @@
     function getCandidateRuleInput(candidate) {
         return String(candidate?.name || "").trim();
     }
-    function escapeRegexLiteral(value) {
-        return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
     function generateRegex(value, template = state.candidateTemplate) {
         const source = String(value ?? "").trim();
         if (!source) {
             return "";
         }
-        const escaped = escapeRegexLiteral(source);
+        const escaped = escapeRegExp(source);
         switch (String(template || "Other")) {
             case "Korean":
                 return (
@@ -1469,8 +1632,8 @@
     }
     function buildCandidateResults(pageText) {
         const scanned = scanPageText(pageText);
-        const rawCandidates = collectOccurrences(scanned.candidates);
-        const candidates = finalizeCandidates(rawCandidates);
+        const mergedCandidates = mergeCandidateRecords(scanned.candidates);
+        const candidates = finalizeCandidates(mergedCandidates);
         const starts = collectStartRecords(scanned.starts);
         applyTwoPassStartMatching(candidates, starts);
         return {
@@ -1489,29 +1652,11 @@
         if (RULE_REGEX_CACHE.has(rule)) {
             return RULE_REGEX_CACHE.get(rule);
         }
-        const source = ruleText(rule);
+        let source = ruleText(rule);
         if (!source) {
             RULE_REGEX_CACHE.set(rule, null);
             return null;
         }
-        const inputType = String(rule.inputType ?? rule.type ?? "text")
-            .trim()
-            .toLowerCase();
-        const regexMode =
-            ["regex", "regexp", "regular expression"].includes(inputType) ||
-            rule.regex === true ||
-            rule.isRegex === true ||
-            rule.regexp === true;
-        const caseSensitive = normalizeBoolean(rule.caseSensitive, false);
-        const withFlags = (flags = "") => {
-            let normalized = String(flags).replace(/g/g, "");
-            if (caseSensitive) {
-                normalized = normalized.replace(/i/g, "");
-            } else if (!normalized.includes("i")) {
-                normalized += "i";
-            }
-            return `${normalized}g`;
-        };
         let expression = null;
         if (
             source.length >= 2 &&
@@ -1522,27 +1667,28 @@
             const body = source.slice(1, lastSlash);
             const flags = source.slice(lastSlash + 1);
             try {
-                expression = new RegExp(body, withFlags(flags));
+                expression = new RegExp(
+                    body,
+                    flags.includes("g") ? flags : flags + "g"
+                );
             } catch {
                 expression = null;
             }
-            if (!expression) {
-                RULE_REGEX_CACHE.set(rule, null);
-                return null;
-            }
-        } else if (regexMode) {
+        }
+        const regexMode =
+            rule.inputType === "regex" ||
+            rule.regex === true ||
+            rule.isRegex === true ||
+            rule.regexp === true;
+        if (!expression && regexMode) {
             try {
-                expression = new RegExp(source, withFlags());
-            } catch {
-                RULE_REGEX_CACHE.set(rule, null);
-                return null;
-            }
-        } else {
-            try {
-                expression = new RegExp(escapeRegExp(source), withFlags());
+                expression = new RegExp(source, "g");
             } catch {
                 expression = null;
             }
+        }
+        if (!expression) {
+            expression = new RegExp(escapeRegExp(source), "g");
         }
         RULE_REGEX_CACHE.set(rule, expression);
         return expression;
@@ -1554,11 +1700,14 @@
         }
         regex.lastIndex = 0;
         let count = 0;
-        let match;
-        while ((match = regex.exec(pageText)) !== null) {
+        while (regex.exec(pageText)) {
             count++;
-            if (match[0].length === 0) {
-                regex.lastIndex++;
+            /*
+             * Prevent an empty regular expression from looping
+             * forever.
+             */
+            if (regex.lastIndex === 0) {
+                break;
             }
         }
         regex.lastIndex = 0;
@@ -1648,16 +1797,13 @@
         const adapted = normalizeAdaptedDatabase(database);
         const matches = [];
         adapted.groups.forEach((group, groupIndex) => {
-            if (
-                !normalizeBoolean(group?.enabled, true) ||
-                !groupMatchesCurrentSite(group)
-            ) {
+            if (group?.enabled === false || !groupMatchesCurrentSite(group)) {
                 return;
             }
             const rules = getGroupRules(group);
             const groupName = getGroupName(group, groupIndex);
             rules.forEach((rule, ruleIndex) => {
-                if (!normalizeBoolean(rule?.enabled, true)) {
+                if (rule?.enabled === false) {
                     return;
                 }
                 const count = countRuleMatches(rule, pageText);
@@ -1761,6 +1907,22 @@
         if (!firstText || !secondText) {
             return false;
         }
+        /*
+         * Normalize the actual rule expressions independently.
+         *
+         * Conflict detection must never be based merely on one
+         * rule's text appearing inside another rule's text.
+         *
+         * Example:
+         *
+         *   hyeong
+         *   min-hyeong
+         *
+         * These do NOT conflict merely because "hyeong" occurs
+         * inside "min-hyeong".
+         *
+         * Exact equivalent targets DO conflict.
+         */
         const firstNormalized = normalizeConflictText(firstText);
         const secondNormalized = normalizeConflictText(secondText);
         if (
@@ -1770,6 +1932,14 @@
         ) {
             return true;
         }
+        /*
+         * Detect the important broad/narrow form where two rules
+         * represent the same target but use different separators
+         * or boundary syntax.
+         *
+         * Strip common regex boundary assertions and normalize
+         * separator variants before comparing.
+         */
         const normalizeConflictTarget = (value) => {
             let text = String(value ?? "").trim();
             if (!text) {
@@ -1780,10 +1950,23 @@
                 .replace(/^\(\?<![^)]+\)/g, "")
                 .replace(/\(\?=[^)]+\)$/g, "")
                 .replace(/\(\?![^)]+\)$/g, "");
+            /*
+             * Remove common non-capturing/group syntax when it is
+             * only being used to express separator alternatives.
+             */
             text = text
                 .replace(/\\b/g, "")
                 .replace(/\\B/g, "")
                 .replace(/[\^$]/g, "");
+            /*
+             * Treat the common name separators as equivalent.
+             *
+             * ji-hun
+             * ji hun
+             * ji[- ]?hun
+             *
+             * become the same logical target.
+             */
             text = text
                 .replace(/\[-\s?\]\?/g, " ")
                 .replace(/\[-\s\]\?/g, " ")
@@ -1798,6 +1981,12 @@
         if (firstTarget && secondTarget && firstTarget === secondTarget) {
             return true;
         }
+        /*
+         * Do NOT use findTokenSubsequence() here.
+         *
+         * Substring/token containment is not sufficient evidence
+         * of a conflict.
+         */
         return false;
     }
     function buildConflictClusters(pageRuleMatches) {
@@ -1842,14 +2031,66 @@
         state.conflicts = [];
         state.analysisError = null;
     }
+    /* ================= ANALYSIS PIPELINE ================= */
     function buildAnalysisResult(pageText, database) {
+        /*
+         * ========================================================
+         * 1. CANDIDATES / STARTS
+         *
+         * buildCandidateResults() performs:
+         *
+         *   page scan
+         *   candidate establishment
+         *   Start collection
+         *   Pass 1 identical Start matching
+         *   Pass 2 remaining Start matching
+         *   Prefix/Suffix aggregation
+         *   Candidate frequency finalization
+         * ========================================================
+         */
         const candidateResult = buildCandidateResults(pageText);
+        /*
+         * ========================================================
+         * 2. PAGE-MATCHED FOXREPLACE RULES
+         *
+         * This is the ONLY page-rule matching stage.
+         *
+         * Only rules that actually match this page are allowed
+         * to:
+         *
+         *   - absorb Candidates
+         *   - appear in Groups
+         *   - participate in Conflicts
+         * ========================================================
+         */
         const pageRuleMatches = matchPageRules(pageText, database);
+        /*
+         * ========================================================
+         * 3. RULE ABSORPTION
+         *
+         * Candidates that have an exact-equivalent
+         * page-matched FoxReplace rule are removed from
+         * Candidate output.
+         *
+         * The FoxReplace rule itself remains in Groups.
+         * ========================================================
+         */
         const filtered = filterCandidatesAgainstRules(
             candidateResult.candidates,
             pageRuleMatches
         );
         const retainedCandidates = filtered.retained;
+        /*
+         * ========================================================
+         * 4. REBUILD CLUSTERS AFTER ABSORPTION
+         *
+         * Candidate clusters must describe the Candidates that
+         * actually remain visible.
+         *
+         * A Candidate absorbed by FoxReplace must not remain in
+         * the cluster structure.
+         * ========================================================
+         */
         const initialClusters = buildCandidateClusters(retainedCandidates);
         const retainedAfterSingletonFilter = removeWeakSingletons(
             retainedCandidates,
@@ -1865,14 +2106,44 @@
             }))
             .filter((cluster) => cluster.members.length > 0);
         regenerateCandidateInputs(retainedAfterSingletonFilter);
+        /*
+         * ========================================================
+         * 5. GROUPS
+         *
+         * Groups are built exclusively from page-matched rules.
+         *
+         * Candidate information is used only to determine whether
+         * a candidate was absorbed; it is not used to discover
+         * additional FoxReplace rules.
+         * ========================================================
+         */
         const groupMatches = buildGroupMatches(pageRuleMatches);
+        /*
+         * ========================================================
+         * 6. CONFLICTS
+         *
+         * Conflicts operate directly on page-matched FoxReplace
+         * rules.
+         *
+         * Candidates and Starts are deliberately excluded.
+         * ========================================================
+         */
         const conflictClusters = buildConflictClusters(pageRuleMatches);
         return {
             pageText,
             scanned: candidateResult.scanned,
             starts: candidateResult.starts,
+            /*
+             * Candidates before FoxReplace absorption.
+             */
             allCandidates: candidateResult.candidates,
+            /*
+             * Candidates absorbed by page-matched rules.
+             */
             matchedCandidates: filtered.matched,
+            /*
+             * Candidates remaining for Candidate output.
+             */
             candidates: retainedAfterSingletonFilter.sort(compareCandidates),
             candidateClusters,
             pageRuleMatches,
@@ -2013,6 +2284,15 @@
         const regexCell = createElement("td", "wnc-regex-cell");
         regexCell.appendChild(renderCandidateRegex(candidate));
         row.appendChild(regexCell);
+        /*
+         * Deliberately do NOT render:
+         *
+         * candidate.starts
+         *
+         * Identical Starts are consumed completely in Pass 1.
+         * Non-identical Starts are represented only through
+         * Prefix/Suffix.
+         */
         return row;
     }
     function renderClusterRows(tableBody, clusters) {
@@ -2021,7 +2301,7 @@
         state.candidates.forEach((candidate, index) =>
             candidateIndex.set(candidate, index)
         );
-        clusters.forEach((cluster) => {
+        clusters.forEach((cluster, clusterIndex) => {
             const members = Array.isArray(cluster.members)
                 ? cluster.members
                 : [];
@@ -2103,14 +2383,6 @@
         });
         templateLabel.appendChild(select);
         toolbar.appendChild(templateLabel);
-        const importButton = createElement(
-            "button",
-            "wnc-toolbar-button",
-            "Import JSON"
-        );
-        importButton.type = "button";
-        importButton.addEventListener("click", openImportPicker);
-        toolbar.appendChild(importButton);
         const regexPreview = createElement("span", "wnc-regex-preview");
         if (state.candidates.length) {
             regexPreview.textContent = getCandidateRegex(state.candidates[0]);
@@ -2130,7 +2402,7 @@
             ["frequency", "Frequency"],
             ["input", "Input"],
             ["regex", "Regex"]
-        ].forEach(([key]) => {
+        ].forEach(([key, label]) => {
             const col = document.createElement("col");
             col.dataset.column = key;
             col.className = `wnc-col-${key}`;
@@ -2214,7 +2486,7 @@
             container.appendChild(section);
             return;
         }
-        groups.forEach((group) => {
+        groups.forEach((group, groupIndex) => {
             const wrapper = createElement("div", "wnc-group");
             const header = createElement("button", "wnc-group-header");
             header.type = "button";
@@ -2301,410 +2573,6 @@
             section.appendChild(wrapper);
         });
         container.appendChild(section);
-    }
-    function injectStyles() {
-        if (document.getElementById("wnc-styles")) {
-            return;
-        }
-        const style = document.createElement("style");
-        style.id = "wnc-styles";
-        style.textContent = `
-            .wnc-panel {
-                position: fixed;
-                top: 24px;
-                right: 24px;
-                width: 1100px;
-                max-width: calc(100vw - 48px);
-                height: auto;
-                max-height: calc(100vh - 48px);
-                z-index: 2147483647;
-                display: flex;
-                flex-direction: column;
-                overflow: hidden;
-                box-sizing: border-box;
-                background: #181a1f;
-                color: #e8eaed;
-                border: 1px solid #454952;
-                border-radius: 10px;
-                box-shadow: 0 12px 40px rgba(0,0,0,.45);
-                font: 13px/1.4 Arial, sans-serif;
-            }
-            .wnc-panel *,
-            .wnc-panel *::before,
-            .wnc-panel *::after {
-                box-sizing: border-box;
-            }
-            .wnc-header {
-                flex: 0 0 auto;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                padding: 10px 12px;
-                background: #20232a;
-                border-bottom: 1px solid #3b3f48;
-                cursor: move;
-                user-select: none;
-            }
-            .wnc-title {
-                flex: 1;
-                font-size: 15px;
-                font-weight: 700;
-            }
-            .wnc-version {
-                opacity: .55;
-                font-size: 11px;
-            }
-            .wnc-header button,
-            .wnc-toolbar button,
-            .wnc-mini-button {
-                border: 1px solid #50545e;
-                border-radius: 5px;
-                background: #292d35;
-                color: #e8eaed;
-                padding: 5px 9px;
-                cursor: pointer;
-            }
-            .wnc-header button:hover,
-            .wnc-toolbar button:hover,
-            .wnc-mini-button:hover {
-                background: #353a44;
-            }
-            .wnc-tabs {
-                display: flex;
-                flex: 0 0 auto;
-                gap: 2px;
-                padding: 7px 8px 0;
-                background: #20232a;
-                border-bottom: 1px solid #3b3f48;
-            }
-            .wnc-tab {
-                border: 1px solid transparent;
-                border-bottom: 0;
-                border-radius: 6px 6px 0 0;
-                padding: 7px 14px;
-                background: transparent;
-                color: #aeb4bf;
-                cursor: pointer;
-            }
-            .wnc-tab:hover {
-                color: #fff;
-                background: #292d35;
-            }
-            .wnc-tab-active {
-                color: #fff;
-                background: #181a1f;
-                border-color: #454952;
-            }
-            .wnc-body {
-                flex: 0 1 auto;
-                min-height: 0;
-                overflow: auto;
-                padding: 10px;
-            }
-            .wnc-section {
-                width: 100%;
-            }
-            .wnc-toolbar {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                flex-wrap: wrap;
-                margin-bottom: 10px;
-            }
-            .wnc-section-title {
-                font-size: 15px;
-                font-weight: 700;
-                margin-right: auto;
-            }
-            .wnc-template-label {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                color: #b9bec8;
-            }
-            .wnc-template-select {
-                min-width: 120px;
-                padding: 5px 7px;
-                border: 1px solid #4a4f59;
-                border-radius: 5px;
-                background: #24272e;
-                color: #e8eaed;
-            }
-            .wnc-regex-preview {
-                max-width: 420px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-                padding: 5px 8px;
-                border: 1px solid #393d46;
-                border-radius: 5px;
-                background: #111318;
-                color: #aeb7c5;
-                font-family: monospace;
-            }
-            .wnc-table-wrap {
-                width: 100%;
-                overflow: auto;
-                border: 1px solid #393d46;
-                border-radius: 7px;
-            }
-            .wnc-table {
-                width: 100%;
-                min-width: 850px;
-                border-collapse: separate;
-                border-spacing: 0;
-                table-layout: fixed;
-            }
-            .wnc-table col.wnc-col-candidate {
-                width: 190px;
-            }
-            .wnc-table col.wnc-col-prefix {
-                width: 150px;
-            }
-            .wnc-table col.wnc-col-suffix {
-                width: 150px;
-            }
-            .wnc-table col.wnc-col-frequency {
-                width: 80px;
-            }
-            .wnc-table col.wnc-col-input {
-                width: 210px;
-            }
-            .wnc-table col.wnc-col-regex {
-                width: 300px;
-            }
-            .wnc-table th,
-            .wnc-table td {
-                position: relative;
-                padding: 7px 9px;
-                border-right: 1px solid #30343c;
-                border-bottom: 1px solid #30343c;
-                vertical-align: middle;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-            .wnc-table th:last-child,
-            .wnc-table td:last-child {
-                border-right: 0;
-            }
-            .wnc-table tr:last-child td {
-                border-bottom: 0;
-            }
-            .wnc-table th {
-                background: #252932;
-                color: #d8dce3;
-                text-align: left;
-                font-weight: 700;
-                position: sticky;
-                top: 0;
-                z-index: 2;
-            }
-            .wnc-table td {
-                background: #1c1f25;
-            }
-            .wnc-candidate-row:hover td {
-                background: #22262e;
-            }
-            .wnc-candidate-name-text {
-                font-weight: 600;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            .wnc-frequency-cell {
-                text-align: center;
-                font-weight: 700;
-            }
-            .wnc-prefix-cell,
-            .wnc-suffix-cell {
-                color: #b7bfcb;
-            }
-            .wnc-input-wrapper,
-            .wnc-regex-wrapper {
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                min-width: 0;
-            }
-            .wnc-candidate-input,
-            .wnc-regex-input {
-                min-width: 0;
-                width: 100%;
-                height: 28px;
-                padding: 4px 7px;
-                border: 1px solid #414650;
-                border-radius: 4px;
-                background: #111318;
-                color: #e8eaed;
-                font-family: monospace;
-            }
-            .wnc-regex-input {
-                font-size: 11px;
-            }
-            .wnc-mini-button {
-                flex: 0 0 auto;
-                padding: 4px 7px;
-                font-size: 11px;
-            }
-            .wnc-cluster-row td {
-                background: #242830;
-                color: #9da6b4;
-                font-weight: 700;
-            }
-            .wnc-cluster-label {
-                color: #e0e4ea;
-            }
-            .wnc-cluster-members {
-                opacity: .7;
-                font-weight: 400;
-            }
-            .wnc-cluster-member td:first-child {
-                padding-left: 24px;
-            }
-            .wnc-empty {
-                padding: 24px;
-                text-align: center;
-                color: #8e96a3;
-            }
-            .wnc-group {
-                margin-bottom: 8px;
-                border: 1px solid #393d46;
-                border-radius: 6px;
-                overflow: hidden;
-            }
-            .wnc-group-header {
-                width: 100%;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                padding: 8px 10px;
-                border: 0;
-                background: #252932;
-                color: #e8eaed;
-                text-align: left;
-                cursor: pointer;
-            }
-            .wnc-group-header:hover {
-                background: #2d313a;
-            }
-            .wnc-group-marker {
-                width: 14px;
-                opacity: .75;
-            }
-            .wnc-group-name {
-                flex: 1;
-                font-weight: 700;
-            }
-            .wnc-group-count,
-            .wnc-rule-count,
-            .wnc-conflict-count {
-                opacity: .65;
-                font-size: 11px;
-            }
-            .wnc-group-rules {
-                padding: 4px 0;
-            }
-            .wnc-rule-row {
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) minmax(120px, 30%);
-                gap: 10px;
-                padding: 7px 10px;
-                border-top: 1px solid #30343c;
-            }
-            .wnc-rule-main {
-                min-width: 0;
-                display: flex;
-                gap: 8px;
-                align-items: center;
-            }
-            .wnc-rule-text {
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-            .wnc-rule-replacement {
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-                color: #9da6b4;
-            }
-            .wnc-conflict-cluster {
-                margin-bottom: 10px;
-                border: 1px solid #593f3f;
-                border-radius: 6px;
-                overflow: hidden;
-            }
-            .wnc-conflict-header {
-                padding: 8px 10px;
-                background: #322326;
-                font-weight: 700;
-            }
-            .wnc-conflict-rule {
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) minmax(100px, 25%) 50px;
-                gap: 10px;
-                padding: 7px 10px;
-                border-top: 1px solid #3d3033;
-            }
-            .wnc-conflict-text,
-            .wnc-conflict-group {
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-            .wnc-conflict-group {
-                color: #9da6b4;
-            }
-            .wnc-conflict-count {
-                text-align: right;
-            }
-            .wnc-toast {
-                position: fixed;
-                left: 50%;
-                bottom: 24px;
-                transform: translate(-50%, 15px);
-                opacity: 0;
-                pointer-events: none;
-                z-index: 2147483647;
-                padding: 8px 14px;
-                border: 1px solid #555b66;
-                border-radius: 6px;
-                background: #252932;
-                color: #fff;
-                transition: opacity .15s, transform .15s;
-            }
-            .wnc-toast-visible {
-                opacity: 1;
-                transform: translate(-50%, 0);
-            }
-            .wnc-column-resizer {
-                position: absolute;
-                right: -3px;
-                top: 0;
-                width: 7px;
-                height: 100%;
-                cursor: col-resize;
-                z-index: 5;
-            }
-            .wnc-column-resizer:hover {
-                background: rgba(255,255,255,.08);
-            }
-            .wnc-dragging-column,
-            .wnc-dragging-column * {
-                cursor: col-resize !important;
-                user-select: none !important;
-            }
-            @media (max-width: 900px) {
-                .wnc-panel {
-                    top: 10px;
-                    right: 10px;
-                    width: calc(100vw - 20px);
-                    max-width: none;
-                    max-height: calc(100vh - 20px);
-                }
-            }
-        `;
-        document.head.appendChild(style);
     }
     function getColumnWidths(table) {
         const widths = {};
@@ -2845,6 +2713,7 @@
             document.addEventListener("mouseup", up);
         });
     }
+    /* ================= UI LIFECYCLE ================= */
     function renderCurrentScreen() {
         const overlay = document.getElementById(WNC_UI_ID);
         if (!overlay) {
@@ -2858,6 +2727,11 @@
         if (!body) {
             return;
         }
+        /*
+         * Do not replace the panel itself.
+         *
+         * Only the content area is rebuilt.
+         */
         body.textContent = "";
         if (state.screen === "groups") {
             renderGroupsTab(body);
@@ -2872,6 +2746,12 @@
                 tab.dataset.screen === state.screen
             );
         });
+        /*
+         * Re-apply persisted dimensions after content changes.
+         *
+         * This is especially important when the previous content
+         * was shorter than the new screen.
+         */
         applyWncPanelSize(panel);
     }
     function createPanel() {
@@ -2884,8 +2764,7 @@
             }
             return overlay;
         }
-        injectStyles();
-        ensureWncResizeStyles();
+        ensureWncStyles();
         overlay = document.createElement("div");
         overlay.id = WNC_UI_ID;
         overlay.className = "wnc-overlay";
@@ -2942,9 +2821,25 @@
         panel.appendChild(body);
         overlay.appendChild(panel);
         document.documentElement.appendChild(overlay);
+        /*
+         * Apply the persisted dimensions only after the actual
+         * .wnc-panel exists in the document.
+         */
         applyWncPanelSize(panel);
+        /*
+         * Native CSS resize handles width and height.
+         * ResizeObserver remembers the final dimensions.
+         */
         startWncPanelResizePersistence(panel);
+        /*
+         * Header dragging is independent of resizing.
+         */
         makePanelDraggable(panel, header);
+        /*
+         * Render the current screen immediately so the panel is
+         * usable even when createPanel() is called before the
+         * analysis renderer.
+         */
         renderCurrentScreen();
         return overlay;
     }
@@ -2976,6 +2871,7 @@
             console.error("[WNC] Unable to create error UI:", panelError);
         }
     }
+    /* ================= PAGE SCANNING / ENTRY POINTS ================= */
     function getPageText() {
         if (!document.body) {
             return "";
@@ -3005,7 +2901,7 @@
             "[role='contentinfo']",
             ".wnc-overlay",
             "#wnc-overlay",
-            ".wnc-panel"
+            "#wnc-panel"
         ].join(",");
         const excludedNamePattern =
             /(^|[\s_-])(?:ads?|advert(?:isement)?s?|sponsor(?:ed)?|sidebars?|recommendations?|related[-_ ]?(?:posts?|content|articles?)|comments?|comment[-_ ]?(?:list|section|thread)|social[-_ ]?share|share[-_ ]?buttons?)(?=$|[\s_-])/i;
@@ -3189,6 +3085,12 @@
             groupMatches: state.groupMatches.slice(),
             conflicts: state.conflicts.slice()
         });
+        /*
+         * Do not automatically analyze on every
+         * page mutation. Analysis is explicitly
+         * triggered by the menu/API and by the
+         * normal startup path below.
+         */
     }
     startWnc();
 })();
