@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.3.3
+// @version      6.3.4
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -3053,20 +3053,19 @@
     }
     function registerMenu() {
         if (typeof GM_registerMenuCommand !== "function") {
+            console.error("[WNC] GM_registerMenuCommand is unavailable.");
             return;
         }
+
         GM_registerMenuCommand("Webnovel Cleaner — Analyze page", () => {
+            console.log("[WNC] Analyze command clicked.");
             runAnalysisSafely();
         });
-        GM_registerMenuCommand("Webnovel Cleaner — Reload database", () => {
-            initializeDatabase();
-            state.analysisError = null;
-            clearAnalysisResults();
-            runAnalysisSafely();
-        });
+
         GM_registerMenuCommand(
             "Webnovel Cleaner — Import FoxReplace JSON",
             () => {
+                console.log("[WNC] Import command clicked.");
                 openImportPicker();
             }
         );
