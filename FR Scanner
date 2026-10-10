@@ -1,0 +1,976 @@
+// ==UserScript==
+// @name         FR Scanner
+// @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
+// @version      1.0.0
+// @description  Scans page text for FoxReplace candidates and chapter starts.
+// @match        *://*/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// ==/UserScript==
+(function () {
+    "use strict";
+    const FR_SCANNER_VERSION = "1.0.0";
+    const FR_SCANNER_UI_ID = "fr-scanner-panel";
+    const FR_SCANNER_KEYS = {
+        settings: "FR_SCANNER_SETTINGS_V1",
+        candidates: "FR_SCANNER_CANDIDATES_V1",
+        regexTemplates: "FR_SCANNER_REGEX_TEMPLATES_V1"
+    };
+    const DEFAULT_SETTINGS = {
+        width: 900,
+        height: 600,
+        left: 30,
+        top: 30,
+        columnWidths: {},
+        minimized: false
+    };
+    const state = {
+        pageText: "",
+        candidates: [],
+        starts: [],
+        regexTemplates: [],
+        settings: { ...DEFAULT_SETTINGS }
+    };
+    function storageGet(key, fallback) {
+        try {
+            const value = GM_getValue(key, fallback);
+            return value == null ? fallback : value;
+        } catch (_) {
+            return fallback;
+        }
+    }
+    function storageSet(key, value) {
+        try {
+            GM_setValue(key, value);
+        } catch (error) {
+            console.error("[FR Scanner] Storage error:", error);
+        }
+    }
+    function loadSettings() {
+        const saved = storageGet(FR_SCANNER_KEYS.settings, {});
+        state.settings = {
+            ...DEFAULT_SETTINGS,
+            ...(saved && typeof saved === "object" ? saved : {}),
+            columnWidths: {
+                ...DEFAULT_SETTINGS.columnWidths,
+                ...(saved?.columnWidths || {})
+            }
+        };
+    }
+    function saveSettings() {
+        storageSet(FR_SCANNER_KEYS.settings, state.settings);
+    }
+    function getPageText() {
+        if (!document.body) return "";
+        const excludedSelector = [
+            "script",
+            "style",
+            "noscript",
+            "template",
+            "svg",
+            "canvas",
+            "nav",
+            "footer",
+            "aside",
+            "form",
+            "button",
+            "input",
+            "select",
+            "textarea",
+            "option",
+            "[hidden]",
+            "[aria-hidden='true']",
+            "[role='navigation']",
+            "[role='complementary']",
+            "[role='dialog']",
+            "[role='banner']",
+            "[role='contentinfo']",
+            ".wnc-overlay",
+            "#wnc-overlay",
+            "#wnc-panel",
+            "#fr-scanner-panel",
+            "#fr-debug-panel"
+        ].join(",");
+        const excludedNamePattern =
+            /(^|[\s_-])(?:ads?|advert(?:isement)?s?|sponsor(?:ed)?|sidebars?|recommendations?|related[-_ ]?(?:posts?|content|articles?)|comments?|comment[-_ ]?(?:list|section|thread)|social[-_ ]?share|share[-_ ]?buttons?)(?=$|[\s_-])/i;
+        const blockTags = new Set([
+            "ADDRESS",
+            "ARTICLE",
+            "BLOCKQUOTE",
+            "DD",
+            "DL",
+            "DT",
+            "DIV",
+            "H1",
+            "H2",
+            "H3",
+            "H4",
+            "H5",
+            "H6",
+            "HR",
+            "LI",
+            "MAIN",
+            "OL",
+            "P",
+            "PRE",
+            "SECTION",
+            "TABLE",
+            "TBODY",
+            "TD",
+            "TFOOT",
+            "TH",
+            "THEAD",
+            "TR",
+            "UL"
+        ]);
+        const parts = [];
+        function appendBoundary() {
+            if (
+                parts.length &&
+                !String(parts[parts.length - 1]).endsWith("\n")
+            ) {
+                parts.push("\n");
+            }
+        }
+        function shouldExclude(element) {
+            if (element.matches(excludedSelector)) return true;
+            const classAndId = `${element.getAttribute("class") || ""} ${element.id || ""}`;
+            if (excludedNamePattern.test(classAndId)) return true;
+            const style = window.getComputedStyle(element);
+            return (
+                style.display === "none" ||
+                style.visibility === "hidden" ||
+                style.visibility === "collapse" ||
+                Number(style.opacity) === 0
+            );
+        }
+        function visit(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                if (node.nodeValue) parts.push(node.nodeValue);
+                return;
+            }
+            if (node.nodeType !== Node.ELEMENT_NODE) return;
+            const element = node;
+            if (element !== document.body && shouldExclude(element)) return;
+            if (element.tagName === "BR" || element.tagName === "HR") {
+                appendBoundary();
+                return;
+            }
+            const isBlock = blockTags.has(element.tagName);
+            if (isBlock) appendBoundary();
+            for (const child of element.childNodes) {
+                visit(child);
+            }
+            if (isBlock) appendBoundary();
+        }
+        visit(document.body);
+        return parts
+            .join("")
+            .replace(/[ \t\f\v]+\n/g, "\n")
+            .replace(/\n[ \t\f\v]+/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+    }
+    function escapeRegExp(value) {
+        return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    function normalizeCandidateToken(value) {
+        return String(value || "")
+            .normalize("NFKC")
+            .replace(/[’‘`]/g, "'")
+            .replace(/[“”]/g, '"')
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+    function normalizeRule(value) {
+        return String(value || "")
+            .replace(/\r\n?/g, "\n")
+            .replace(/[ \t]+/g, " ")
+            .trim();
+    }
+    function countOccurrences(text, pattern) {
+        if (!pattern) return 0;
+        let count = 0;
+        let position = 0;
+        while ((position = text.indexOf(pattern, position)) !== -1) {
+            count++;
+            position += pattern.length;
+        }
+        return count;
+    }
+    function makeRegexPreview(pattern, flags = "gi") {
+        try {
+            const regex = new RegExp(pattern, flags);
+            const matches = [];
+            let match;
+            while ((match = regex.exec(state.pageText)) !== null) {
+                matches.push({
+                    text: match[0],
+                    index: match.index
+                });
+                if (!match[0].length) regex.lastIndex++;
+                if (matches.length >= 100) break;
+            }
+            return {
+                valid: true,
+                count: matches.length,
+                matches
+            };
+        } catch (error) {
+            return {
+                valid: false,
+                count: 0,
+                matches: [],
+                error: error.message
+            };
+        }
+    }
+    function getRegexTemplates(candidate) {
+        const escaped = escapeRegExp(candidate);
+        return [
+            {
+                name: "Exact",
+                pattern: escaped,
+                flags: "gi"
+            },
+            {
+                name: "Flexible whitespace",
+                pattern: escaped.replace(/\\ /g, "\\s+"),
+                flags: "gi"
+            },
+            {
+                name: "Word boundary",
+                pattern: `\\b${escaped}\\b`,
+                flags: "gi"
+            }
+        ];
+    }
+    function createElement(tag, attributes = {}, text = "") {
+        const element = document.createElement(tag);
+        for (const [key, value] of Object.entries(attributes)) {
+            if (key === "className") {
+                element.className = value;
+            } else if (key === "style" && typeof value === "object") {
+                Object.assign(element.style, value);
+            } else {
+                element.setAttribute(key, value);
+            }
+        }
+        if (text !== "") element.textContent = text;
+        return element;
+    }
+    function scanCandidates(text) {
+        const lines = String(text || "").split(/\n+/);
+        const found = new Map();
+        const patterns = [
+            /^\s*(?:chapter|chap\.?|ch\.?)\s*#?\s*(\d+(?:[.,]\d+)*[a-z]?)\s*[:\-–—.]?\s*(.*)$/i,
+            /^\s*(?:episode|ep\.?)\s*#?\s*(\d+(?:[.,]\d+)*[a-z]?)\s*[:\-–—.]?\s*(.*)$/i,
+            /^\s*(\d+(?:[.,]\d+)*[a-z]?)\s*[:\-–—.)]\s*(.{2,100})$/i
+        ];
+        for (let index = 0; index < lines.length; index++) {
+            const line = normalizeCandidateToken(lines[index]);
+            if (!line || line.length > 180) continue;
+            let matched = null;
+            for (const pattern of patterns) {
+                matched = line.match(pattern);
+                if (matched) break;
+            }
+            if (!matched) continue;
+            const token = normalizeCandidateToken(line);
+            if (!token) continue;
+            const key = token.toLowerCase();
+            if (!found.has(key)) {
+                found.set(key, {
+                    text: token,
+                    count: 0,
+                    lines: [],
+                    index
+                });
+            }
+            const candidate = found.get(key);
+            candidate.count++;
+            candidate.lines.push(index + 1);
+        }
+        return [...found.values()];
+    }
+    function detectStarts(text, candidates) {
+        const lines = String(text || "").split(/\n+/);
+        const starts = [];
+        for (let index = 0; index < lines.length; index++) {
+            const line = normalizeCandidateToken(lines[index]);
+            if (!line) continue;
+            for (const candidate of candidates) {
+                const title = candidate.text;
+                if (line.toLowerCase() !== title.toLowerCase()) continue;
+                starts.push({
+                    text: line,
+                    line: index + 1,
+                    index,
+                    candidate: title,
+                    pass: 1
+                });
+            }
+        }
+        const known = new Set(
+            starts.map((item) => `${item.index}:${item.text.toLowerCase()}`)
+        );
+        for (let index = 0; index < lines.length; index++) {
+            const line = normalizeCandidateToken(lines[index]);
+            if (!line) continue;
+            for (const candidate of candidates) {
+                const title = candidate.text;
+                const key = `${index}:${line.toLowerCase()}`;
+                if (known.has(key)) continue;
+                if (
+                    line.length >= title.length &&
+                    line.toLowerCase().startsWith(title.toLowerCase())
+                ) {
+                    starts.push({
+                        text: line,
+                        line: index + 1,
+                        index,
+                        candidate: title,
+                        pass: 2
+                    });
+                    known.add(key);
+                }
+            }
+        }
+        return starts.sort((a, b) => a.index - b.index);
+    }
+    function aggregatePrefixSuffix(starts) {
+        const aggregates = new Map();
+        for (const start of starts) {
+            const title = start.candidate;
+            const line = start.text;
+            const titleIndex = line.toLowerCase().indexOf(title.toLowerCase());
+            if (titleIndex < 0) continue;
+            const prefix = normalizeCandidateToken(line.slice(0, titleIndex));
+            const suffix = normalizeCandidateToken(
+                line.slice(titleIndex + title.length)
+            );
+            const key = `${title.toLowerCase()}|${prefix}|${suffix}`;
+            if (!aggregates.has(key)) {
+                aggregates.set(key, {
+                    candidate: title,
+                    prefix,
+                    suffix,
+                    frequency: 0,
+                    lines: []
+                });
+            }
+            const item = aggregates.get(key);
+            item.frequency++;
+            item.lines.push(start.line);
+        }
+        return [...aggregates.values()].sort(
+            (a, b) => b.frequency - a.frequency
+        );
+    }
+    function clusterCandidates(candidates) {
+        const clusters = new Map();
+        for (const candidate of candidates) {
+            const normalized = normalizeCandidateToken(candidate.text);
+            const words = normalized.split(/\s+/);
+            const clusterKey =
+                words.length > 1
+                    ? words[0].toLowerCase()
+                    : normalized.toLowerCase();
+            if (!clusters.has(clusterKey)) {
+                clusters.set(clusterKey, {
+                    key: clusterKey,
+                    candidates: []
+                });
+            }
+            clusters.get(clusterKey).candidates.push(candidate);
+        }
+        return [...clusters.values()];
+    }
+    function analyzePage() {
+        state.pageText = getPageText();
+        state.candidates = scanCandidates(state.pageText);
+        state.starts = detectStarts(state.pageText, state.candidates);
+        state.aggregates = aggregatePrefixSuffix(state.starts);
+        state.clusters = clusterCandidates(state.candidates);
+        state.regexTemplates = state.candidates.flatMap((candidate) =>
+            getRegexTemplates(candidate.text).map((template) => ({
+                ...template,
+                candidate: candidate.text,
+                preview: makeRegexPreview(template.pattern, template.flags)
+            }))
+        );
+        renderScanner();
+    }
+    function renderScanner() {
+        let panel = document.getElementById(FR_SCANNER_UI_ID);
+        if (!panel) {
+            panel = createElement("section", {
+                id: FR_SCANNER_UI_ID
+            });
+            document.body.appendChild(panel);
+        }
+        panel.replaceChildren();
+        const header = createElement(
+            "header",
+            {
+                className: "fr-scanner-header"
+            },
+            "FR Scanner"
+        );
+        const scanButton = createElement("button", {}, "Rescan");
+        scanButton.addEventListener("click", analyzePage);
+        header.appendChild(scanButton);
+        panel.appendChild(header);
+        const summary = createElement(
+            "div",
+            { className: "fr-scanner-summary" },
+            `Candidates: ${state.candidates.length} | Starts: ${state.starts.length}`
+        );
+        panel.appendChild(summary);
+        const list = createElement("div", {
+            className: "fr-scanner-candidates"
+        });
+        for (const cluster of state.clusters || []) {
+            const heading = createElement(
+                "div",
+                { className: "fr-scanner-cluster" },
+                cluster.key
+            );
+            list.appendChild(heading);
+            for (const candidate of cluster.candidates) {
+                const row = createElement(
+                    "div",
+                    { className: "fr-scanner-candidate" },
+                    `${candidate.text} — ${candidate.count}`
+                );
+                list.appendChild(row);
+            }
+        }
+        panel.appendChild(list);
+        const templates = createElement("details");
+        templates.appendChild(createElement("summary", {}, "Regex templates"));
+        for (const template of state.regexTemplates || []) {
+            const row = createElement(
+                "div",
+                { className: "fr-scanner-template" },
+                `${template.candidate} | ${template.name} | /${template.pattern}/${template.flags} | Matches: ${template.preview.count}`
+            );
+            templates.appendChild(row);
+        }
+        panel.appendChild(templates);
+    }
+    function installScannerStyles() {
+        if (document.getElementById("fr-scanner-styles")) return;
+        const style = createElement("style", {
+            id: "fr-scanner-styles"
+        });
+        style.textContent = `
+            #${FR_SCANNER_UI_ID} {
+                position: fixed;
+                z-index: 2147483646;
+                top: ${state.settings.top}px;
+                left: ${state.settings.left}px;
+                width: ${state.settings.width}px;
+                height: ${state.settings.height}px;
+                min-width: 360px;
+                min-height: 240px;
+                display: flex;
+                flex-direction: column;
+                overflow: auto;
+                resize: both;
+                box-sizing: border-box;
+                padding: 12px;
+                border: 1px solid #596579;
+                border-radius: 8px;
+                background: #171b24;
+                color: #e6eaf0;
+                font: 13px/1.45 Arial, sans-serif;
+                box-shadow: 0 6px 24px #0008;
+            }
+            #${FR_SCANNER_UI_ID} button {
+                padding: 5px 10px;
+                border: 1px solid #596579;
+                border-radius: 4px;
+                background: #293244;
+                color: inherit;
+                cursor: pointer;
+            }
+            #${FR_SCANNER_UI_ID} .fr-scanner-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 10px;
+                font-weight: bold;
+            }
+            #${FR_SCANNER_UI_ID} .fr-scanner-summary {
+                padding: 8px;
+                margin-bottom: 8px;
+                background: #222a38;
+                border-radius: 4px;
+            }
+            #${FR_SCANNER_UI_ID} .fr-scanner-cluster {
+                margin-top: 8px;
+                padding: 5px;
+                background: #293244;
+                font-weight: bold;
+            }
+            #${FR_SCANNER_UI_ID} .fr-scanner-candidate,
+            #${FR_SCANNER_UI_ID} .fr-scanner-template {
+                padding: 5px 8px;
+                border-bottom: 1px solid #343d4e;
+                overflow-wrap: anywhere;
+            }
+            #${FR_SCANNER_UI_ID} details {
+                margin-top: 10px;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    function enablePanelDragging() {
+        const panel = document.getElementById(FR_SCANNER_UI_ID);
+        const header = panel?.querySelector(".fr-scanner-header");
+        if (!panel || !header) return;
+        let dragging = false;
+        let offsetX = 0;
+        let offsetY = 0;
+        header.style.cursor = "move";
+        header.addEventListener("mousedown", (event) => {
+            if (event.target.closest("button")) return;
+            dragging = true;
+            const rect = panel.getBoundingClientRect();
+            offsetX = event.clientX - rect.left;
+            offsetY = event.clientY - rect.top;
+            event.preventDefault();
+        });
+        document.addEventListener("mousemove", (event) => {
+            if (!dragging) return;
+            panel.style.left = `${Math.max(0, event.clientX - offsetX)}px`;
+            panel.style.top = `${Math.max(0, event.clientY - offsetY)}px`;
+        });
+        document.addEventListener("mouseup", () => {
+            if (!dragging) return;
+            dragging = false;
+            state.settings.left = panel.offsetLeft;
+            state.settings.top = panel.offsetTop;
+            state.settings.width = panel.offsetWidth;
+            state.settings.height = panel.offsetHeight;
+            saveSettings();
+        });
+    }
+    function initializeScanner() {
+        loadSettings();
+        state.pageText = getPageText();
+        installScannerStyles();
+        analyzePage();
+        enablePanelDragging();
+        const panel = document.getElementById(FR_SCANNER_UI_ID);
+        if (panel && typeof ResizeObserver !== "undefined") {
+            new ResizeObserver(() => {
+                state.settings.width = panel.offsetWidth;
+                state.settings.height = panel.offsetHeight;
+                saveSettings();
+            }).observe(panel);
+        }
+    }
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initializeScanner, {
+            once: true
+        });
+    } else {
+        initializeScanner();
+    }
+    function createColumnResizer(table, columnKey) {
+        const handle = createElement("span", {
+            className: "fr-scanner-resize-handle"
+        });
+        Object.assign(handle.style, {
+            position: "absolute",
+            top: "0",
+            right: "0",
+            width: "6px",
+            height: "100%",
+            cursor: "col-resize",
+            userSelect: "none"
+        });
+        let startX = 0;
+        let startWidth = 0;
+        handle.addEventListener("mousedown", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            startX = event.clientX;
+            startWidth = state.settings.columnWidths[columnKey] || 180;
+            function move(moveEvent) {
+                const width = Math.max(
+                    60,
+                    startWidth + moveEvent.clientX - startX
+                );
+                state.settings.columnWidths[columnKey] = width;
+                const cells = table.querySelectorAll(
+                    `[data-column="${columnKey}"]`
+                );
+                cells.forEach((cell) => {
+                    cell.style.width = `${width}px`;
+                    cell.style.minWidth = `${width}px`;
+                    cell.style.maxWidth = `${width}px`;
+                });
+            }
+            function stop() {
+                document.removeEventListener("mousemove", move);
+                document.removeEventListener("mouseup", stop);
+                saveSettings();
+            }
+            document.addEventListener("mousemove", move);
+            document.addEventListener("mouseup", stop);
+        });
+        return handle;
+    }
+    function renderCandidateTable(container) {
+        const table = createElement("table", {
+            className: "fr-scanner-table"
+        });
+        const columns = [
+            { key: "candidate", label: "Candidate" },
+            { key: "frequency", label: "Frequency" },
+            { key: "prefix", label: "Prefix" },
+            { key: "suffix", label: "Suffix" }
+        ];
+        const head = createElement("thead");
+        const headerRow = createElement("tr");
+        for (const column of columns) {
+            const cell = createElement("th", {
+                "data-column": column.key
+            });
+            cell.style.position = "relative";
+            cell.textContent = column.label;
+            const width = state.settings.columnWidths[column.key];
+            if (width) {
+                cell.style.width = `${width}px`;
+                cell.style.minWidth = `${width}px`;
+                cell.style.maxWidth = `${width}px`;
+            }
+            cell.appendChild(createColumnResizer(table, column.key));
+            headerRow.appendChild(cell);
+        }
+        head.appendChild(headerRow);
+        table.appendChild(head);
+        const body = createElement("tbody");
+        for (const aggregate of state.aggregates || []) {
+            const row = createElement("tr");
+            const values = {
+                candidate: aggregate.candidate,
+                frequency: aggregate.frequency,
+                prefix: aggregate.prefix || "(empty)",
+                suffix: aggregate.suffix || "(empty)"
+            };
+            for (const column of columns) {
+                const cell = createElement(
+                    "td",
+                    {
+                        "data-column": column.key
+                    },
+                    String(values[column.key])
+                );
+                const width = state.settings.columnWidths[column.key];
+                if (width) {
+                    cell.style.width = `${width}px`;
+                    cell.style.minWidth = `${width}px`;
+                    cell.style.maxWidth = `${width}px`;
+                }
+                row.appendChild(cell);
+            }
+            body.appendChild(row);
+        }
+        table.appendChild(body);
+        container.appendChild(table);
+    }
+    function renderRegexPreview(container) {
+        const section = createElement("section", {
+            className: "fr-scanner-regex-preview"
+        });
+        section.appendChild(createElement("h3", {}, "Regex preview"));
+        const input = createElement("input", {
+            type: "text",
+            placeholder: "Enter a regular expression"
+        });
+        const flags = createElement("input", {
+            type: "text",
+            value: "gi",
+            placeholder: "Flags"
+        });
+        const runButton = createElement("button", {}, "Preview");
+        const output = createElement("pre");
+        runButton.addEventListener("click", () => {
+            const result = makeRegexPreview(input.value, flags.value);
+            output.textContent = result.valid
+                ? `Matches: ${result.count}\n` +
+                  result.matches
+                      .slice(0, 30)
+                      .map((match) => `${match.index}: ${match.text}`)
+                      .join("\n")
+                : `Invalid regex: ${result.error}`;
+        });
+        section.append(input, flags, runButton, output);
+        container.appendChild(section);
+    }
+    function enhanceScannerRender() {
+        const panel = document.getElementById(FR_SCANNER_UI_ID);
+        if (!panel) return;
+        const tableSection = createElement("section", {
+            className: "fr-scanner-frequency"
+        });
+        tableSection.appendChild(
+            createElement("h3", {}, "Prefix / Suffix frequency")
+        );
+        renderCandidateTable(tableSection);
+        panel.appendChild(tableSection);
+        renderRegexPreview(panel);
+    }
+    const originalRenderScanner = renderScanner;
+    renderScanner = function () {
+        originalRenderScanner();
+        enhanceScannerRender();
+        const panel = document.getElementById(FR_SCANNER_UI_ID);
+        if (!panel) return;
+        panel.style.width = `${state.settings.width}px`;
+        panel.style.height = `${state.settings.height}px`;
+        enablePanelDragging();
+    };
+    const scannerStyle = createElement("style");
+    scannerStyle.textContent = `
+        #${FR_SCANNER_UI_ID} .fr-scanner-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        #${FR_SCANNER_UI_ID} .fr-scanner-table th,
+        #${FR_SCANNER_UI_ID} .fr-scanner-table td {
+            position: relative;
+            padding: 6px;
+            border: 1px solid #343d4e;
+            text-align: left;
+            overflow-wrap: anywhere;
+        }
+        #${FR_SCANNER_UI_ID} .fr-scanner-table th {
+            background: #293244;
+        }
+        #${FR_SCANNER_UI_ID} .fr-scanner-regex-preview {
+            margin-top: 12px;
+        }
+        #${FR_SCANNER_UI_ID} .fr-scanner-regex-preview input {
+            margin: 4px;
+            padding: 6px;
+            background: #222a38;
+            color: #e6eaf0;
+            border: 1px solid #596579;
+        }
+        #${FR_SCANNER_UI_ID} .fr-scanner-regex-preview pre {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+    `;
+    function tokenizeCandidate(value) {
+        return String(value ?? "")
+            .replace(/[“”„‟]/g, '"')
+            .replace(/[‘’]/g, "'")
+            .replace(/[–—−]/g, "-")
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean);
+    }
+    function normalizeCandidateToken(token) {
+        let value = String(token ?? "")
+            .trim()
+            .toLowerCase();
+        if (!value) return "";
+        value = value.replace(/^[("'“”‘’]+/, "").replace(/[)"'“”‘’]+$/, "");
+        if (!value) return "";
+        value = value.replace(/['’]s$/i, "");
+        value = value.replace(/s['’]$/i, "s");
+        if (value.length > 4 && /ies$/.test(value)) {
+            value = value.slice(0, -3) + "y";
+        } else if (value.length > 4 && /(ches|shes|xes|zes)$/.test(value)) {
+            value = value.slice(0, -2);
+        } else if (
+            value.length > 4 &&
+            /ses$/.test(value) &&
+            !/sses$/.test(value)
+        ) {
+            value = value.slice(0, -2);
+        }
+        return value;
+    }
+    function getCandidateTokens(value) {
+        const source = typeof value === "string" ? value : (value?.name ?? "");
+        return tokenizeCandidate(source)
+            .map(normalizeCandidateToken)
+            .filter(Boolean);
+    }
+    function normalizeCandidateIdentity(value) {
+        return getCandidateTokens(value).join(" ");
+    }
+    function normalizeCandidateDisplay(value) {
+        return tokenizeCandidate(value).join(" ");
+    }
+    function isSentenceStart(text, index) {
+        if (!text || index <= 0) return false;
+        for (let i = index - 1; i >= 0; i--) {
+            const character = text[i];
+            if (/\s/.test(character)) continue;
+            if (/["'“”‘’([{]/.test(character)) continue;
+            return /[.!?]/.test(character);
+        }
+        return false;
+    }
+    function mergeCandidateRecords(records) {
+        const candidatesByIdentity = new Map();
+        for (const record of records || []) {
+            const display = normalizeCandidateDisplay(record?.text);
+            const identity = normalizeCandidateIdentity(display);
+            if (!identity) continue;
+            let candidate = candidatesByIdentity.get(identity);
+            if (!candidate) {
+                candidate = {
+                    name: display,
+                    identity,
+                    frequency: 0,
+                    variants: new Map(),
+                    originalIndex: Number(record?.index ?? Infinity)
+                };
+                candidatesByIdentity.set(identity, candidate);
+            }
+            candidate.frequency++;
+            candidate.variants.set(
+                display,
+                (candidate.variants.get(display) || 0) + 1
+            );
+            candidate.originalIndex = Math.min(
+                candidate.originalIndex,
+                Number(record?.index ?? Infinity)
+            );
+        }
+        return [...candidatesByIdentity.values()];
+    }
+    function finalizeCandidates(rawCandidates) {
+        return (rawCandidates || []).map((candidate, index) => {
+            const finalized = {
+                ...candidate,
+                originalIndex: candidate.originalIndex ?? index,
+                name: String(candidate.name ?? "").trim(),
+                frequency: Number(candidate.frequency || 0),
+                variants: candidate.variants
+                    ? [...candidate.variants.entries()].map(
+                          ([name, frequency]) => ({ name, frequency })
+                      )
+                    : [],
+                starts: [],
+                prefixes: [],
+                suffixes: [],
+                prefixCounts: new Map(),
+                suffixCounts: new Map()
+            };
+            finalized.identity = normalizeCandidateIdentity(finalized.name);
+            return finalized;
+        });
+    }
+    function compareCandidates(a, b) {
+        return (
+            Number(b?.frequency || 0) - Number(a?.frequency || 0) ||
+            String(a?.name || "").localeCompare(String(b?.name || ""))
+        );
+    }
+    function candidateSharesToken(first, second) {
+        const firstTokens = new Set(getCandidateTokens(first));
+        return getCandidateTokens(second).some((token) =>
+            firstTokens.has(token)
+        );
+    }
+    function buildCandidateClusters(candidates) {
+        const sorted = [...(candidates || [])].sort(compareCandidates);
+        const visited = new Set();
+        const clusters = [];
+        for (const seed of sorted) {
+            if (visited.has(seed)) continue;
+            const members = [];
+            const queue = [seed];
+            visited.add(seed);
+            while (queue.length) {
+                const current = queue.shift();
+                members.push(current);
+                for (const candidate of sorted) {
+                    if (visited.has(candidate)) continue;
+                    if (candidateSharesToken(current.name, candidate.name)) {
+                        visited.add(candidate);
+                        queue.push(candidate);
+                    }
+                }
+            }
+            members.sort(compareCandidates);
+            clusters.push({
+                seed: members[0],
+                members,
+                frequency: members.reduce(
+                    (sum, candidate) => sum + Number(candidate.frequency || 0),
+                    0
+                )
+            });
+        }
+        return clusters.sort((a, b) => compareCandidates(a.seed, b.seed));
+    }
+    function generateRegex(value, template = "Other") {
+        const source = String(value ?? "").trim();
+        if (!source) return "";
+        const escaped = escapeRegExp(source);
+        switch (String(template || "Other")) {
+            case "Korean":
+                return (
+                    "(?<![가-힣A-Za-z0-9])" + escaped + "(?![가-힣A-Za-z0-9])"
+                );
+            case "Korean 2":
+                return "(?<![가-힣])" + escaped + "(?![가-힣])";
+            case "Japanese":
+                return (
+                    "(?<![一-龯々〆ヵぁ-んァ-ンA-Za-z0-9])" +
+                    escaped +
+                    "(?![一-龯々〆ヵぁ-んァ-ンA-Za-z0-9])"
+                );
+            case "Other":
+            default:
+                return "\\b" + escaped + "\\b";
+        }
+    }
+    function analyzePage() {
+        const pageText = getPageText();
+        const result = buildCandidateResults(pageText);
+        state.pageText = pageText;
+        state.candidates = result.candidates;
+        state.starts = result.starts;
+        state.candidateClusters = buildCandidateClusters(state.candidates);
+        state.regexTemplates = state.candidates.map((candidate) => ({
+            candidate,
+            regex: generateRegex(candidate.name, state.candidateTemplate)
+        }));
+        saveSettings();
+        return result;
+    }
+    document.head.appendChild(scannerStyle);
+    /*
+     * FR SCANNER NOTES
+     *
+     * Candidate detection:
+     * - Scan the current page text for candidate names and chapter starts.
+     * - Normalize candidate tokens before comparison.
+     * - Match Starts in two passes.
+     * - Aggregate Prefix/Suffix values and calculate frequency.
+     * - Cluster candidates for display without collapsing them.
+     *
+     * Regex:
+     * - Generate reusable regex templates.
+     * - Preview matches against the current page text.
+     *
+     * UI:
+     * - FR Scanner owns its UI, CSS, panel, resizing, dragging,
+     *   saved dimensions, column widths, and storage keys.
+     * - Do not depend on FR Debug or shared runtime code.
+     */
+})();

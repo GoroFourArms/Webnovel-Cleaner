@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      6.3.4
+// @version      6.3.5
 // @description  FoxReplace companion/workbench for finding chapter candidates, groups, and conflicts.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -13,6 +13,7 @@
 (function () {
     "use strict";
     const WNC_VERSION = "6.3.5";
+    const WNC_UI_ID = "webnovel-cleaner-panel";
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const OCCURRENCE_REGEX =
         /(?<![A-Z0-9'’-])((?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*)(?:\s+(?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*))*)(?![A-Za-z0-9'’-])/g;
@@ -2150,62 +2151,22 @@
     }
     function renderClusterRows(tableBody, clusters) {
         if (!tableBody || !Array.isArray(clusters)) return;
+
         const candidateIndex = new Map();
-        state.candidates.forEach((candidate, index) =>
-            candidateIndex.set(candidate, index)
-        );
-        clusters.forEach((cluster, clusterIndex) => {
+        state.candidates.forEach((candidate, index) => {
+            candidateIndex.set(candidate, index);
+        });
+
+        clusters.forEach((cluster) => {
             const members = Array.isArray(cluster.members)
                 ? cluster.members
                 : [];
-            if (!members.length) return;
-            const root = members.includes(cluster.seed)
-                ? cluster.seed
-                : members[0];
-            const ordered = [
-                root,
-                ...members
-                    .filter((candidate) => candidate !== root)
-                    .sort(compareCandidates)
-            ];
-            const collapsed = state.collapsedCandidateClusters.has(root);
-            ordered.forEach((candidate, memberIndex) => {
-                if (memberIndex > 0 && collapsed) return;
+
+            members.forEach((candidate) => {
                 const index = candidateIndex.get(candidate);
                 if (index === undefined) return;
-                const row = renderCandidateRow(candidate, index);
-                if (memberIndex === 0 && ordered.length > 1) {
-                    const nameCell = row.querySelector(".wnc-candidate-name");
-                    const name = nameCell?.querySelector(
-                        ".wnc-candidate-name-text"
-                    );
-                    if (nameCell && name) {
-                        const toggle = createElement(
-                            "button",
-                            "wnc-cluster-toggle",
-                            collapsed ? "+" : "−"
-                        );
-                        toggle.type = "button";
-                        toggle.title = collapsed
-                            ? "Expand candidate cluster"
-                            : "Collapse candidate cluster";
-                        toggle.setAttribute(
-                            "aria-expanded",
-                            String(!collapsed)
-                        );
-                        toggle.addEventListener("click", () => {
-                            if (state.collapsedCandidateClusters.has(root))
-                                state.collapsedCandidateClusters.delete(root);
-                            else state.collapsedCandidateClusters.add(root);
-                            renderCurrentScreen();
-                        });
-                        nameCell.insertBefore(toggle, name);
-                        row.classList.add("wnc-cluster-root");
-                    }
-                } else if (memberIndex > 0) {
-                    row.classList.add("wnc-cluster-member");
-                }
-                tableBody.appendChild(row);
+
+                tableBody.appendChild(renderCandidateRow(candidate, index));
             });
         });
     }
