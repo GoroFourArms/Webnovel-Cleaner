@@ -8,6 +8,8 @@
 // @grant        GM_setValue
 // @grant        GM_setClipboard
 // @grant        GM_registerMenuCommand
+// @updateURL    https://github.com/GoroFourArms/Webnovel-Cleaner/raw/refs/heads/main/FR%20Scanner
+// @downloadURL  https://github.com/GoroFourArms/Webnovel-Cleaner/raw/refs/heads/main/FR%20Scanner
 // @run-at       document-idle
 // ==/UserScript==
 (() => {
