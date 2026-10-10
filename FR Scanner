@@ -974,3 +974,248 @@
      * - Do not depend on FR Debug or shared runtime code.
      */
 })();
+/*
+ * ============================================================
+ * FR SCANNER — PIPELINE SPECIFICATION
+ * ============================================================
+ *
+ * PURPOSE
+ * FR Scanner analyzes the current page, identifies and counts
+ * capitalized words/phrases (Candidates), identifies sentence
+ * starts (Starts), matches Starts to Candidates, extracts
+ * Prefix/Suffix metadata, generates FoxReplace-compatible
+ * regex inputs, and displays the results in a resizable UI.
+ *
+ * This specification is the source of truth for intended
+ * FR Scanner behavior. Preserve these rules when modifying
+ * or refactoring the code.
+ *
+ * ------------------------------------------------------------
+ * A. INITIALIZATION
+ * ------------------------------------------------------------
+ *
+ * - Load FR Scanner's independent settings and saved dimensions.
+ * - Initialize page text, Candidates, Starts, candidate clusters,
+ *   regex template, and UI state.
+ * - Install FR Scanner's styles and panel.
+ * - Register FR Scanner-specific menu commands.
+ * - Never read or modify FR Debug storage.
+ *
+ * ------------------------------------------------------------
+ * B. PAGE TEXT EXTRACTION — getPageText()
+ * ------------------------------------------------------------
+ *
+ * - Start at document.body and recursively collect visible text.
+ * - Preserve contiguous text across nested inline elements.
+ * - Insert text boundaries at block elements, <br>, and <hr>.
+ * - Exclude scripts, styles, hidden elements, navigation, form
+ *   controls, ads, recommendations, comments, and FR Scanner /
+ *   FR Debug UI.
+ * - Normalize whitespace and return the extracted page text.
+ * - Scan the page body directly using conservative exclusions.
+ * - Do not select, rank, or fall back between chapter containers.
+ *
+ * ------------------------------------------------------------
+ * C. OCCURRENCE COLLECTION
+ * Functions: scanPageText(), collectOccurrences()
+ * ------------------------------------------------------------
+ *
+ * - Apply the established capitalized-word/phrase regex.
+ * - Classify matches as Candidate occurrences or sentence Starts.
+ * - Maintain separate occurrence lists for Candidates and Starts.
+ * - Preserve occurrence counts and source positions.
+ * - Repeated Candidate occurrences may contribute to frequency.
+ * - A Start must NEVER independently create a Candidate.
+ *
+ * INVARIANT:
+ * Candidate identity and frequency originate from Candidate
+ * occurrences, not from sentence-start occurrences.
+ *
+ * ------------------------------------------------------------
+ * D. CANDIDATE NORMALIZATION AND FINALIZATION
+ * Functions:
+ * tokenizeCandidate()
+ * normalizeCandidateToken()
+ * normalizeCandidateIdentity()
+ * normalizeCandidateDisplay()
+ * mergeCandidateRecords()
+ * finalizeCandidates()
+ * ------------------------------------------------------------
+ *
+ * - Normalize tokens consistently, including curly apostrophes
+ *   and protected possessive/plural handling.
+ * - Generate normalized identity keys for deduplication.
+ * - Preserve useful display forms and candidate variants.
+ * - Merge occurrences belonging to the same Candidate.
+ * - Calculate frequency using Candidate occurrences only.
+ * - Sort by descending frequency, then name.
+ * - Never use FoxReplace rule text to define Candidate identity.
+ *
+ * ------------------------------------------------------------
+ * E. START RECORDS
+ * Functions: collectStartRecords(), createStartRecord()
+ * ------------------------------------------------------------
+ *
+ * - Create independent Start records from Start occurrences.
+ * - Normalize Start identities and aggregate duplicates.
+ * - Keep Start frequency separate from Candidate frequency
+ *   until matching.
+ * - Never create a Candidate solely because a phrase appears
+ *   at the beginning of a sentence.
+ *
+ * ------------------------------------------------------------
+ * F. TWO-PASS START MATCHING
+ * Functions:
+ * applyTwoPassStartMatching()
+ * startMatchesCandidateExactly()
+ * findBestCandidateForStart()
+ * extractStartAffixes()
+ * findTokenSubsequence()
+ * ------------------------------------------------------------
+ *
+ * PASS 1 — EXACT NORMALIZED IDENTITY
+ * - Match Starts whose normalized identity equals a Candidate.
+ * - Consume exact-match Starts completely.
+ * - Do not generate Prefix/Suffix metadata for exact matches.
+ * - Never process an already-consumed Start again in Pass 2.
+ *
+ * PASS 2 — BEST CONTIGUOUS CANDIDATE MATCH
+ * - Process only Starts remaining after Pass 1.
+ * - Find contiguous Candidate token sequences within each Start.
+ * - Choose the best match in this priority order:
+ *     1. Longest Candidate token sequence.
+ *     2. Earliest position within the Start.
+ *     3. Earliest original Candidate occurrence.
+ * - Associate the Start with the selected Candidate.
+ * - Extract preceding tokens as Prefix metadata.
+ * - Extract following tokens as Suffix metadata.
+ * - Do not increase Candidate frequency for non-exact matches.
+ *
+ * INVARIANT:
+ * Starts enrich Prefix/Suffix metadata. They must never inflate
+ * Candidate frequency or create additional Candidate rows.
+ *
+ * ------------------------------------------------------------
+ * G. PREFIX/SUFFIX AGGREGATION
+ * Functions:
+ * addPrefix()
+ * addSuffix()
+ * finalizePrefixSuffix()
+ * getPrefixDisplay()
+ * getSuffixDisplay()
+ * ------------------------------------------------------------
+ *
+ * - Collect observations only from eligible non-identical
+ *   Start matches.
+ * - Normalize metadata keys before aggregation.
+ * - Count repeated Prefix/Suffix values.
+ * - Sort deterministically by descending frequency, then text.
+ * - Generate display strings for the Candidate table.
+ *
+ * ------------------------------------------------------------
+ * H. FOXREPLACE INPUT AND REGEX GENERATION
+ * Functions:
+ * getCandidateRuleInput()
+ * generateRegex()
+ * regenerateCandidateInputs()
+ * ------------------------------------------------------------
+ *
+ * - Derive rule input from the Candidate's designated display/
+ *   input value.
+ * - Escape literal Candidate text correctly.
+ * - Support these templates:
+ *     Other, Korean, Korean 2, Japanese.
+ * - Store the generated regex on each Candidate.
+ * - Regenerate inputs whenever the template changes.
+ * - Refresh the preview using the first visible Candidate.
+ * - Generated regexes must NEVER redefine Candidate identity.
+ *
+ * ------------------------------------------------------------
+ * I. CANDIDATE DISPLAY CLUSTERS
+ * Functions:
+ * candidateSharesToken()
+ * candidatesAreRelated()
+ * buildCandidateClusters()
+ * ------------------------------------------------------------
+ *
+ * - Sort Candidates by descending frequency, then name.
+ * - Select the highest-priority unclustered Candidate as seed.
+ * - Add only directly related, unclustered Candidates sharing
+ *   Candidate tokens.
+ * - Do not perform second-degree expansion or bridge merging.
+ * - Keep the seed first; sort related members by frequency/name.
+ * - Keep unrelated Candidates as independent cluster roots.
+ * - Apply the 5% frequency cutoff to singleton clusters only.
+ * - Retain all multi-member clusters.
+ * - Clusters describe visible Candidates only.
+ * - Do not remove Candidates through imported FoxReplace rules:
+ *   FR Scanner does not perform rule-based absorption.
+ *
+ * ------------------------------------------------------------
+ * J. USER INTERFACE
+ * Functions:
+ * renderCandidatesTab()
+ * renderCandidateRow()
+ * renderCandidateInput()
+ * renderCandidateRegex()
+ * renderClusterRows()
+ * ------------------------------------------------------------
+ *
+ * - Display Candidate, Prefix, Suffix, Frequency, Input, Regex.
+ * - Render cluster roots as real Candidate rows.
+ * - Indent related Candidates beneath their root.
+ * - Allow cluster collapse/expand without changing analysis.
+ * - Provide functional copy controls for input and regex.
+ * - Provide a regex template selector and live preview.
+ * - Support column resizing and restore saved column widths.
+ * - Support panel dragging and resizing.
+ * - Persist scanner-specific dimensions, column widths, template,
+ *   and other FR Scanner settings.
+ *
+ * ------------------------------------------------------------
+ * K. ANALYSIS PIPELINE — analyzePage()
+ * ------------------------------------------------------------
+ *
+ * Execute the analysis in this order:
+ *
+ * 1. Extract page text.
+ * 2. Scan text and collect Candidate/Start occurrences.
+ * 3. Normalize, merge, and finalize Candidates.
+ * 4. Build independent Start records.
+ * 5. Match Starts using the two-pass algorithm.
+ * 6. Aggregate Prefix/Suffix metadata.
+ * 7. Generate Candidate inputs and regexes.
+ * 8. Build display clusters.
+ * 9. Store the completed Scanner state.
+ * 10. Render the panel.
+ *
+ * - Catch analysis errors.
+ * - Display useful error messages in the UI.
+ * - Keep intermediate data separate where required to prevent
+ *   accidental mixing of Candidates, Starts, and metadata.
+ *
+ * EXPECTED OUTPUT
+ * - Extracted page text.
+ * - Candidate records and Candidate occurrence frequencies.
+ * - Independent Start records and Start frequencies.
+ * - Prefix/Suffix metadata and aggregated frequencies.
+ * - Candidate display clusters.
+ * - Generated FoxReplace inputs and regexes.
+ * - Regex template selection and live preview.
+ *
+ * EXPLICITLY OUT OF SCOPE
+ * - FoxReplace JSON import.
+ * - Page-rule matching.
+ * - Rule-based Candidate absorption.
+ * - Groups.
+ * - Conflicts.
+ *
+ * FINAL DEVELOPMENT RULE
+ * Do not change the behavior defined above unless the
+ * specification is intentionally updated. In particular,
+ * never allow Starts, regex generation, display clustering,
+ * or FoxReplace rules to silently alter Candidate identity
+ * or Candidate frequency.
+ *
+ * ============================================================
+ */

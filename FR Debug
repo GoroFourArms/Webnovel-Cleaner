@@ -831,3 +831,255 @@
      * - Do not depend on FR Scanner or shared runtime code.
      */
 })();
+/**
+ * FR DEBUG — PIPELINE SPECIFICATION
+ *
+ * PURPOSE
+ * Import FoxReplace JSON, match its enabled rules against the current
+ * page text, organize matching rules by their original FoxReplace groups,
+ * and identify conflicts between matched rules.
+ *
+ * FR Debug is an independent analysis tool. It is NOT FR Scanner.
+ *
+ * ================================================================
+ * 1. INITIALIZATION AND STORAGE
+ * ================================================================
+ *
+ * - Initialize FR Debug's own settings, database, page text, matching
+ *   results, Groups, Conflicts, and UI state.
+ * - Install FR Debug's own styles, panel, and menu commands.
+ * - Support Import FoxReplace JSON and Analyze Page commands.
+ * - Save and restore FR Debug's panel dimensions and column widths.
+ * - Use FR Debug's independent storage keys.
+ * - NEVER read, overwrite, clear, or modify FR Scanner's storage.
+ *
+ * ================================================================
+ * 2. FOXREPLACE JSON IMPORT
+ * ================================================================
+ *
+ * Functions:
+ * openImportPicker()
+ * importFoxReplaceJSON()
+ * extractRulesFromJSON()
+ * normalizeImportedRule()
+ *
+ * - Let the user select a FoxReplace JSON file.
+ * - Parse and validate the JSON and its actual FoxReplace schema.
+ * - Extract groups and substitution rules without changing their
+ *   original group association or source ordering.
+ * - Normalize the fields required for analysis:
+ *   search text, replacement text, input type, case sensitivity,
+ *   enabled state, source group index, and source rule index.
+ * - Preserve original rule text separately from comparison values.
+ * - Preserve disabled rules in the imported database, but never
+ *   include disabled rules in page matching.
+ * - Report malformed JSON, unsupported structures, invalid rules,
+ *   and import success or failure.
+ * - Never silently convert invalid rules into valid-looking rules.
+ * - Preserve source indexes so every result can be traced to its
+ *   original FoxReplace group and rule.
+ * - Store imported data using FR Debug's independent storage key.
+ *
+ * ================================================================
+ * 3. PAGE TEXT EXTRACTION
+ * ================================================================
+ *
+ * Function:
+ * getPageText()
+ *
+ * - Extract visible text recursively from document.body.
+ * - Preserve inline text continuity and meaningful block/line breaks.
+ * - Exclude hidden content, scripts, navigation, ads, comments,
+ *   and UI belonging to FR Debug or FR Scanner.
+ * - Normalize whitespace consistently with FR Scanner.
+ * - Extract page text once per analysis.
+ * - Use the text ONLY for FoxReplace rule matching.
+ *
+ * IMPORTANT:
+ * Do not run FR Scanner's Candidate/Start occurrence scanner.
+ *
+ * ================================================================
+ * 4. DATABASE NORMALIZATION
+ * ================================================================
+ *
+ * Functions:
+ * normalizeAdaptedDatabase()
+ * getGroupName()
+ * getGroupRules()
+ *
+ * - Validate imported database and group/rule arrays.
+ * - Normalize group and rule access without losing source order.
+ * - Safely ignore malformed or unusable records.
+ * - Preserve original search and replacement text.
+ * - Keep disabled rules as imported data, but exclude them from
+ *   all matching and downstream analysis.
+ *
+ * ================================================================
+ * 5. MATCH FOXREPLACE RULES AGAINST THE CURRENT PAGE
+ * ================================================================
+ *
+ * Functions:
+ * analyzeDebugPage()
+ * matchPageRules()
+ * groupMatchesCurrentSite()
+ * ruleText()
+ * ruleReplacement()
+ * compileRuleRegex()
+ * countRuleMatches()
+ *
+ * - Extract the current page text once per analysis.
+ * - Process FoxReplace groups in original source order.
+ * - Apply the correct current-site eligibility test to each group.
+ * - Skip disabled rules and rules without usable search text.
+ * - Match each eligible rule according to its actual input type:
+ *
+ *   REGEX:
+ *     Compile and apply the configured regular expression.
+ *
+ *   TEXT:
+ *     Match literal text, not an unintended regular expression.
+ *
+ *   WHOLE WORD:
+ *     Apply the established whole-word boundary semantics.
+ *
+ * - Apply case sensitivity correctly.
+ * - Catch invalid regexes per rule so one bad rule cannot abort
+ *   the rest of the analysis.
+ * - Count occurrences in the ORIGINAL page text.
+ * - Never apply replacements to the live page or to the text
+ *   being analyzed.
+ * - Advance safely after zero-length regex matches to prevent
+ *   infinite loops.
+ * - Keep only rules with at least one match on the current page.
+ * - Record each matched rule's source group index, rule index,
+ *   group name, search text, replacement text, identity, and count.
+ *
+ * CRITICAL INVARIANT:
+ * Only enabled, eligible FoxReplace rules that actually match the
+ * current page may enter the Groups or Conflicts pipelines.
+ *
+ * ================================================================
+ * 6. BUILD GROUPS
+ * ================================================================
+ *
+ * Function:
+ * buildGroupMatches()
+ *
+ * - Input: page-matched FoxReplace rule records ONLY.
+ * - Group results by their original FoxReplace group identity/index.
+ * - Preserve original group ordering and rule ordering.
+ * - Include each matched rule's search text, replacement, and count.
+ * - Omit groups with no matching rules.
+ * - Render each group with its heading, matched-rule count,
+ *   and independent collapse/expand control.
+ *
+ * Groups MUST come from the imported FoxReplace structure.
+ * NEVER derive groups from Candidate names, Starts, similar-looking
+ * text, or FR Scanner results.
+ *
+ * ================================================================
+ * 7. DETECT CONFLICTS
+ * ================================================================
+ *
+ * Functions:
+ * normalizeConflictText()
+ * rulesConflict()
+ * buildConflictClusters()
+ *
+ * - Input: the SAME page-matched rule records used by Groups.
+ * - Compare rule pairs using the established conflict-target
+ *   normalization.
+ * - Recognize equivalent normalized targets, including supported
+ *   separator variations.
+ * - Do not classify substring or token containment alone as a
+ *   conflict.
+ * - Preserve each rule's replacement text for conflict display.
+ * - Build connected clusters from pairwise conflict relationships.
+ * - Exclude rules without a conflict partner.
+ * - Sort cluster members by original group index and rule index.
+ * - Display each cluster's participating rules, group names,
+ *   search text, replacement text, and page match counts.
+ *
+ * CRITICAL INVARIANT:
+ * Conflicts are calculated directly from page-matched FoxReplace
+ * rules. Candidate and Start records are NEVER conflict inputs.
+ *
+ * ================================================================
+ * 8. USER INTERFACE
+ * ================================================================
+ *
+ * Functions:
+ * renderDebug()
+ * renderGroupsTab()
+ * renderConflictsTab()
+ * renderGroupRule()
+ *
+ * - Display matched rules beneath their original FoxReplace groups.
+ * - Show search text, replacement text, and match count.
+ * - Provide independent group collapse/expand state.
+ * - Display conflict clusters separately from Groups.
+ * - Show each conflicting rule's group, replacement, and count.
+ * - Provide useful empty states when no rules match or no conflicts
+ *   are found.
+ * - Keep import, analyze/refresh, copy, and close controls working.
+ * - Support independent panel dragging and resizing.
+ * - Save and restore panel dimensions and column widths.
+ * - Keep FR Debug UI and styles independent of FR Scanner.
+ *
+ * ================================================================
+ * 9. ANALYSIS ENTRY POINT AND ERROR HANDLING
+ * ================================================================
+ *
+ * Function:
+ * analyzeDebugPage()
+ *
+ * Pipeline order:
+ *
+ *   1. Read current page text.
+ *   2. Match enabled FoxReplace rules eligible for the current site.
+ *   3. Keep only rules with one or more page matches.
+ *   4. Build Groups from those matched rules.
+ *   5. Build Conflicts from those same matched rules.
+ *   6. Save analysis results using FR Debug's own state/storage.
+ *   7. Render the updated Debug UI.
+ *
+ * - Handle errors without destroying the imported database.
+ * - Isolate invalid rules so individual failures do not stop
+ *   unrelated rules from being analyzed.
+ * - Report useful errors instead of silently hiding failures.
+ * - Never modify the page or execute FoxReplace substitutions.
+ *
+ * ================================================================
+ * 10. EXPLICITLY OUT OF SCOPE
+ * ================================================================
+ *
+ * FR Debug MUST NOT implement or depend on:
+ *
+ * - Candidate detection
+ * - Start detection
+ * - Prefix/Suffix analysis
+ * - Candidate clustering
+ * - Candidate regex templates
+ * - Candidate filtering
+ * - FR Scanner occurrence-scanning pipelines
+ *
+ * ================================================================
+ * FINAL OUTPUT
+ * ================================================================
+ *
+ * FR Debug produces:
+ *
+ * - The imported FoxReplace database.
+ * - Enabled, eligible rules matching the current page.
+ * - Grouped rule matches in original FoxReplace group order.
+ * - Conflict clusters derived from those matched rules.
+ * - Original search text and replacement text.
+ * - Source group/rule indexes and page match counts.
+ *
+ * CORE DESIGN RULE:
+ * Import FoxReplace JSON -> Extract page text -> Match rules ->
+ * Build Groups -> Build Conflicts -> Render UI.
+ *
+ * Keep the data flow explicit. Groups and Conflicts must consume
+ * page-matched FoxReplace rules, never unrelated scanner results.
+ */
