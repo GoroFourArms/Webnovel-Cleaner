@@ -12,7 +12,7 @@
 // ==/UserScript==
 (function () {
     "use strict";
-    const WNC_VERSION = "6.3.5";
+    const WNC_VERSION = "6.3.3";
     const DB_KEY = "WNC_FOXREPLACE_DATABASE_V2";
     const OCCURRENCE_REGEX =
         /(?<![A-Z0-9'’-])((?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*)(?:\s+(?:[A-Z](?:\.[A-Z])+\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’-]*))*)(?![A-Za-z0-9'’-])/g;
@@ -42,6 +42,7 @@
     }
     const state = {
         collapsedGroups: new Set(),
+        collapsedCandidateClusters: new Set(),
         screen: "candidates",
         candidates: [],
         candidateClusters: [],
@@ -165,7 +166,7 @@
     background: #292d35;
 }
 .wnc-tab-active {
-    color: #622424;
+    color: #fff;
     background: #181a1f;
     border-color: #454952;
 }
@@ -235,12 +236,24 @@
     border-spacing: 0;
     table-layout: fixed;
 }
-.wnc-table col.wnc-col-candidate { width: 190px; }
-.wnc-table col.wnc-col-prefix { width: 150px; }
-.wnc-table col.wnc-col-suffix { width: 150px; }
-.wnc-table col.wnc-col-frequency { width: 80px; }
-.wnc-table col.wnc-col-input { width: 210px; }
-.wnc-table col.wnc-col-regex { width: 300px; }
+.wnc-table col.wnc-col-candidate {
+    width: 190px;
+}
+.wnc-table col.wnc-col-prefix {
+    width: 150px;
+}
+.wnc-table col.wnc-col-suffix {
+    width: 150px;
+}
+.wnc-table col.wnc-col-frequency {
+    width: 80px;
+}
+.wnc-table col.wnc-col-input {
+    width: 210px;
+}
+.wnc-table col.wnc-col-regex {
+    width: 300px;
+}
 .wnc-table th,
 .wnc-table td {
     position: relative;
@@ -253,8 +266,12 @@
     white-space: nowrap;
 }
 .wnc-table th:last-child,
-.wnc-table td:last-child { border-right: 0; }
-.wnc-table tr:last-child td { border-bottom: 0; }
+.wnc-table td:last-child {
+    border-right: 0;
+}
+.wnc-table tr:last-child td {
+    border-bottom: 0;
+}
 .wnc-table th {
     position: sticky;
     top: 0;
@@ -264,8 +281,12 @@
     text-align: left;
     font-weight: 700;
 }
-.wnc-table td { background: #1c1f25; }
-.wnc-candidate-row:hover td { background: #22262e; }
+.wnc-table td {
+    background: #1c1f25;
+}
+.wnc-candidate-row:hover td {
+    background: #22262e;
+}
 .wnc-candidate-name-text {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -277,7 +298,9 @@
     font-weight: 700;
 }
 .wnc-prefix-cell,
-.wnc-suffix-cell { color: #b7bfcb; }
+.wnc-suffix-cell {
+    color: #b7bfcb;
+}
 .wnc-input-wrapper,
 .wnc-regex-wrapper {
     display: flex;
@@ -297,7 +320,9 @@
     color: #e8eaed;
     font-family: monospace;
 }
-.wnc-regex-input { font-size: 11px; }
+.wnc-regex-input {
+    font-size: 11px;
+}
 .wnc-mini-button {
     flex: 0 0 auto;
     padding: 4px 7px;
@@ -308,7 +333,16 @@
     color: #9da6b4;
     font-weight: 700;
 }
-.wnc-cluster-label { color: #e0e4ea; }
+.wnc-cluster-label {
+    color: #e0e4ea;
+}
+.wnc-cluster-members {
+    opacity: .7;
+    font-weight: 400;
+}
+.wnc-cluster-member td:first-child {
+    padding-left: 24px;
+}
 .wnc-empty {
     padding: 24px;
     text-align: center;
@@ -332,8 +366,13 @@
     text-align: left;
     cursor: pointer;
 }
-.wnc-group-header:hover { background: #2d313a; }
-.wnc-group-marker { width: 14px; opacity: .75; }
+.wnc-group-header:hover {
+    background: #2d313a;
+}
+.wnc-group-marker {
+    width: 14px;
+    opacity: .75;
+}
 .wnc-group-name {
     flex: 1;
     min-width: 0;
@@ -348,10 +387,14 @@
     opacity: .65;
     font-size: 11px;
 }
-.wnc-group-rules { padding: 4px 0; }
+.wnc-group-rules {
+    padding: 4px 0;
+}
 .wnc-rule-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(120px, 30%);
+    grid-template-columns:
+        minmax(0, 1fr)
+        minmax(120px, 30%);
     gap: 10px;
     padding: 7px 10px;
     border-top: 1px solid #30343c;
@@ -369,7 +412,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.wnc-rule-replacement { color: #9da6b4; }
+.wnc-rule-replacement {
+    color: #9da6b4;
+}
 .wnc-conflict-cluster {
     margin-bottom: 10px;
     border: 1px solid #593f3f;
@@ -383,7 +428,10 @@
 }
 .wnc-conflict-rule {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(100px, 25%) 50px;
+    grid-template-columns:
+        minmax(0, 1fr)
+        minmax(100px, 25%)
+        50px;
     gap: 10px;
     padding: 7px 10px;
     border-top: 1px solid #3d3033;
@@ -395,8 +443,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.wnc-conflict-group { color: #9da6b4; }
-.wnc-conflict-count { text-align: right; }
+.wnc-conflict-group {
+    color: #9da6b4;
+}
+.wnc-conflict-count {
+    text-align: right;
+}
 .wnc-toast {
     position: fixed;
     left: 50%;
@@ -410,7 +462,9 @@
     border-radius: 6px;
     background: #252932;
     color: #fff;
-    transition: opacity .15s, transform .15s;
+    transition:
+        opacity .15s,
+        transform .15s;
 }
 .wnc-toast-visible {
     opacity: 1;
@@ -425,7 +479,9 @@
     cursor: col-resize;
     z-index: 5;
 }
-.wnc-column-resizer:hover { background: rgba(255,255,255,.08); }
+.wnc-column-resizer:hover {
+    background: rgba(255,255,255,.08);
+}
 .wnc-dragging-column,
 .wnc-dragging-column * {
     cursor: col-resize !important;
@@ -1306,45 +1362,121 @@
         return null;
     }
     function applyTwoPassStartMatching(candidates, starts) {
-        const unmatchedStarts = [];
-        for (const start of starts || []) {
-            const startKey = normalizeCandidateToken(start.name);
-            const exactCandidate = (candidates || []).find(
-                (candidate) =>
-                    normalizeCandidateToken(candidate.name) === startKey
-            );
-            if (exactCandidate) {
-                start.matchedCandidate = exactCandidate.name;
-                start.matchType = "exact";
+        const finalizedCandidates = Array.isArray(candidates) ? candidates : [];
+        const startRecords = Array.isArray(starts) ? starts : [];
+        /*
+         * ========================================================
+         * PASS 1
+         *
+         * IDENTICAL STARTS
+         *
+         * A Start whose normalized token sequence is exactly the
+         * same as a Candidate belongs to that Candidate.
+         *
+         * The Start is consumed without changing candidate frequency.
+         *
+         * It contributes no Prefix/Suffix data.
+         *
+         * It does NOT:
+         *   - become a child row
+         *   - create prefix information
+         *   - create suffix information
+         *   - remain available to Pass 2
+         * ========================================================
+         */
+        const remainingStarts = [];
+        for (const start of startRecords) {
+            if (!start || !start.identity) {
                 continue;
             }
-            const match = findBestCandidateForStart(start, candidates || []);
+            let exactCandidate = null;
+            for (const candidate of finalizedCandidates) {
+                if (startMatchesCandidateExactly(start, candidate)) {
+                    exactCandidate = candidate;
+                    break;
+                }
+            }
+            if (!exactCandidate) {
+                remainingStarts.push(start);
+                continue;
+            }
+            /*
+             * Starts are metadata, not candidate occurrences. Do not
+             * add their frequency to the candidate.
+             *
+             * Intentionally do NOT add this Start to:
+             *
+             * candidate.starts
+             * candidate.prefixCounts
+             * candidate.suffixCounts
+             *
+             * It has been completely consumed.
+             */
+        }
+        /*
+         * ========================================================
+         * PASS 2
+         *
+         * REMAINING STARTS
+         *
+         * Each remaining Start gets at most one Candidate.
+         *
+         * The strongest match is:
+         *
+         *   1. longest Candidate
+         *   2. earliest position in Start
+         *   3. earliest original Candidate
+         *
+         * Only non-identical matches produce Prefix/Suffix data.
+         * ========================================================
+         */
+        const orderedCandidates = finalizedCandidates
+            .slice()
+            .sort(
+                (a, b) =>
+                    getCandidateTokens(b).length -
+                        getCandidateTokens(a).length ||
+                    Number(b.frequency || 0) - Number(a.frequency || 0) ||
+                    Number(a.originalIndex ?? Infinity) -
+                        Number(b.originalIndex ?? Infinity)
+            );
+        for (const start of remainingStarts) {
+            const match = findBestCandidateForStart(start, orderedCandidates);
+            /*
+             * IMPORTANT:
+             *
+             * An unmatched Start is discarded.
+             *
+             * It NEVER becomes a Candidate.
+             */
             if (!match) {
-                unmatchedStarts.push(start);
                 continue;
             }
             const candidate = match.candidate;
-            const candidateTokens = getCandidateTokens(candidate.name);
-            const startTokens = getCandidateTokens(start.name);
-            const startIndex = match.position;
-            const prefix = startTokens.slice(0, startIndex).join(" ");
-            const suffix = startTokens
-                .slice(startIndex + candidateTokens.length)
-                .join(" ");
-            start.matchedCandidate = candidate.name;
-            start.matchType = "partial";
-            if (prefix) {
-                candidate.prefixes ||= [];
-                candidate.prefixes.push(prefix);
-            }
-            if (suffix) {
-                candidate.suffixes ||= [];
-                candidate.suffixes.push(suffix);
-            }
-            candidate.starts ||= [];
-            candidate.starts.push(start);
+            const frequency = Number(start.frequency) || 0;
+            /*
+             * Start frequency is used only to weight Prefix/Suffix
+             * metadata. It never changes candidate frequency.
+             */
+            const affixes = extractStartAffixes(start, candidate);
+            addPrefix(candidate, affixes.prefix, frequency);
+            addSuffix(candidate, affixes.suffix, frequency);
+            /*
+             * Keep this as internal metadata only.
+             *
+             * The UI must NOT render this as a child Start row.
+             */
+            candidate.starts.push({
+                name: start.name,
+                frequency,
+                prefix: affixes.prefix.join(" "),
+                suffix: affixes.suffix.join(" ")
+            });
         }
-        return unmatchedStarts;
+        for (const candidate of finalizedCandidates) {
+            finalizePrefixSuffix(candidate);
+        }
+        return finalizedCandidates;
     }
     function getPrefixDisplay(candidate) {
         const prefixes = Array.isArray(candidate?.prefixes)
@@ -1399,67 +1531,65 @@
         return candidateSharesToken(first, second);
     }
     function buildCandidateClusters(candidates) {
-        const sorted = [...(candidates || [])].sort(compareCandidates);
-        const visited = new Set();
+        const source = Array.isArray(candidates)
+            ? candidates.slice().sort(compareCandidates)
+            : [];
+        const unclustered = new Set(source);
         const clusters = [];
-        function sharesToken(a, b) {
-            const tokensA = new Set(getCandidateTokens(a.name));
-            return getCandidateTokens(b.name).some((token) =>
-                tokensA.has(token)
-            );
-        }
-        for (const seed of sorted) {
-            if (visited.has(seed)) continue;
-            const members = [];
-            const queue = [seed];
-            visited.add(seed);
-            while (queue.length) {
-                const current = queue.shift();
-                members.push(current);
-                for (const candidate of sorted) {
-                    if (visited.has(candidate)) continue;
-                    if (sharesToken(current, candidate)) {
-                        visited.add(candidate);
-                        queue.push(candidate);
-                    }
-                }
+        while (unclustered.size) {
+            const seed = source.find((candidate) => unclustered.has(candidate));
+            if (!seed) break;
+            const members = [seed];
+            for (const candidate of source) {
+                if (candidate === seed || !unclustered.has(candidate)) continue;
+                if (candidatesAreRelated(seed, candidate))
+                    members.push(candidate);
             }
-            members.sort(compareCandidates);
-            clusters.push({
-                seed: members[0],
-                members,
-                frequency: members.reduce(
-                    (sum, candidate) =>
-                        sum + (Number(candidate.frequency) || 0),
-                    0
-                )
-            });
+            members.sort((a, b) =>
+                a === seed ? -1 : b === seed ? 1 : compareCandidates(a, b)
+            );
+            for (const member of members) unclustered.delete(member);
+            clusters.push({ seed, members });
         }
-        clusters.sort((a, b) => compareCandidates(a.seed, b.seed));
         return clusters;
     }
     function removeWeakSingletons(candidates, clusters) {
-        if (!Array.isArray(candidates) || !candidates.length) {
+        const source = Array.isArray(candidates) ? candidates : [];
+        if (!source.length) {
             return [];
         }
-        const maxFrequency = Math.max(
-            ...candidates.map((candidate) => Number(candidate.frequency) || 0)
+        const maximumFrequency = Math.max(
+            ...source.map(getCandidateFrequency),
+            0
         );
-        const clusteredCandidates = new Set();
+        if (maximumFrequency <= 0) {
+            return source;
+        }
+        const minimumFrequency = maximumFrequency * 0.05;
+        const retained = new Set();
         for (const cluster of clusters || []) {
-            const members = cluster.members || [];
+            const members = Array.isArray(cluster.members)
+                ? cluster.members
+                : [];
+            /*
+             * All multi-member clusters survive.
+             */
             if (members.length > 1) {
-                for (const candidate of members) {
-                    clusteredCandidates.add(candidate);
+                for (const member of members) {
+                    retained.add(member);
                 }
+                continue;
+            }
+            /*
+             * A singleton survives only if it reaches
+             * the 5% threshold.
+             */
+            const member = members[0];
+            if (member && getCandidateFrequency(member) >= minimumFrequency) {
+                retained.add(member);
             }
         }
-        const threshold = maxFrequency * 0.05;
-        return candidates.filter(
-            (candidate) =>
-                clusteredCandidates.has(candidate) ||
-                (Number(candidate.frequency) || 0) >= threshold
-        );
+        return source.filter((candidate) => retained.has(candidate));
     }
     function getCandidateRuleInput(candidate) {
         return String(candidate?.name || "").trim();
@@ -1564,38 +1694,23 @@
         return expression;
     }
     function countRuleMatches(rule, pageText) {
-        if (!rule || typeof pageText !== "string" || !pageText) {
-            return 0;
-        }
-        let regex;
-        try {
-            regex = compileRuleRegex(rule);
-        } catch {
-            return 0;
-        }
-        if (!(regex instanceof RegExp)) {
-            return 0;
-        }
-        // Use a fresh regex so global and sticky lastIndex state cannot leak.
-        try {
-            regex = new RegExp(regex.source, regex.flags);
-        } catch {
+        const regex = compileRuleRegex(rule);
+        if (!regex || !pageText) {
             return 0;
         }
         regex.lastIndex = 0;
         let count = 0;
-        let match;
-        while ((match = regex.exec(pageText)) !== null) {
+        while (regex.exec(pageText)) {
             count++;
-            if (match[0].length === 0) {
-                // Advance by one Unicode code point to prevent infinite loops.
-                if (regex.lastIndex >= pageText.length) {
-                    break;
-                }
-                const codePoint = pageText.codePointAt(regex.lastIndex);
-                regex.lastIndex += codePoint > 0xffff ? 2 : 1;
+            /*
+             * Prevent an empty regular expression from looping
+             * forever.
+             */
+            if (regex.lastIndex === 0) {
+                break;
             }
         }
+        regex.lastIndex = 0;
         return count;
     }
     function ruleText(rule) {
@@ -1714,35 +1829,24 @@
         if (!candidate || !matchedRule) {
             return false;
         }
-        const candidateName =
-            typeof candidate === "string"
-                ? candidate
-                : String(candidate.name || "");
-        const pattern = ruleText(matchedRule);
-        if (!candidateName.trim() || !pattern) {
+        const candidateTokens = getCandidateTokens(candidate);
+        const ruleTextValue = ruleText(matchedRule);
+        if (!candidateTokens.length || !ruleTextValue) {
             return false;
         }
-        const rule = matchedRule.rule || matchedRule;
-        const isRegex =
-            rule.isRegex === true ||
-            rule.regex === true ||
-            rule.useRegex === true ||
-            rule.type === "regex" ||
-            rule.mode === "regex";
-        if (isRegex) {
-            try {
-                const flags = String(rule.flags || "")
-                    .replace(/[^dgimsuvy]/g, "")
-                    .replace(/[gy]/g, "");
-                return new RegExp(pattern, flags).test(candidateName);
-            } catch {
+        const ruleTokens = tokenizeCandidate(ruleTextValue);
+        if (candidateTokens.length !== ruleTokens.length) {
+            return false;
+        }
+        for (let index = 0; index < candidateTokens.length; index++) {
+            if (
+                candidateTokens[index] !==
+                normalizeCandidateToken(ruleTokens[index])
+            ) {
                 return false;
             }
         }
-        return (
-            normalizeCandidateIdentity(candidateName) ===
-            normalizeCandidateIdentity(pattern)
-        );
+        return true;
     }
     function filterCandidatesAgainstRules(candidates, pageRuleMatches) {
         const source = Array.isArray(candidates) ? candidates : [];
@@ -1792,9 +1896,7 @@
         return groups;
     }
     function normalizeConflictText(value) {
-        return String(value ?? "")
-            .trim()
-            .replace(/\s+/g, " ");
+        return normalizeCandidateIdentity(String(value ?? ""));
     }
     function rulesConflict(first, second) {
         if (!first || !second) {
@@ -1805,42 +1907,87 @@
         if (!firstText || !secondText) {
             return false;
         }
-        const firstRule = first.rule || first;
-        const secondRule = second.rule || second;
-        const getRegexMode = (rule) =>
-            rule.isRegex === true ||
-            rule.regex === true ||
-            rule.useRegex === true ||
-            rule.type === "regex" ||
-            rule.mode === "regex";
-        const firstIsRegex = getRegexMode(firstRule);
-        const secondIsRegex = getRegexMode(secondRule);
-        if (firstIsRegex !== secondIsRegex) {
-            return false;
+        /*
+         * Normalize the actual rule expressions independently.
+         *
+         * Conflict detection must never be based merely on one
+         * rule's text appearing inside another rule's text.
+         *
+         * Example:
+         *
+         *   hyeong
+         *   min-hyeong
+         *
+         * These do NOT conflict merely because "hyeong" occurs
+         * inside "min-hyeong".
+         *
+         * Exact equivalent targets DO conflict.
+         */
+        const firstNormalized = normalizeConflictText(firstText);
+        const secondNormalized = normalizeConflictText(secondText);
+        if (
+            firstNormalized &&
+            secondNormalized &&
+            firstNormalized === secondNormalized
+        ) {
+            return true;
         }
-        if (firstIsRegex) {
-            const getFlags = (rule) =>
-                String(rule.flags || "")
-                    .replace(/[^dgimsuvy]/g, "")
-                    .replace(/[gy]/g, "")
-                    .split("")
-                    .sort()
-                    .join("");
-            try {
-                new RegExp(firstText, getFlags(firstRule));
-                new RegExp(secondText, getFlags(secondRule));
-            } catch {
-                return false;
+        /*
+         * Detect the important broad/narrow form where two rules
+         * represent the same target but use different separators
+         * or boundary syntax.
+         *
+         * Strip common regex boundary assertions and normalize
+         * separator variants before comparing.
+         */
+        const normalizeConflictTarget = (value) => {
+            let text = String(value ?? "").trim();
+            if (!text) {
+                return "";
             }
-            return (
-                firstText === secondText &&
-                getFlags(firstRule) === getFlags(secondRule)
-            );
+            text = text
+                .replace(/^\(\?<=[^)]+\)/g, "")
+                .replace(/^\(\?<![^)]+\)/g, "")
+                .replace(/\(\?=[^)]+\)$/g, "")
+                .replace(/\(\?![^)]+\)$/g, "");
+            /*
+             * Remove common non-capturing/group syntax when it is
+             * only being used to express separator alternatives.
+             */
+            text = text
+                .replace(/\\b/g, "")
+                .replace(/\\B/g, "")
+                .replace(/[\^$]/g, "");
+            /*
+             * Treat the common name separators as equivalent.
+             *
+             * ji-hun
+             * ji hun
+             * ji[- ]?hun
+             *
+             * become the same logical target.
+             */
+            text = text
+                .replace(/\[-\s?\]\?/g, " ")
+                .replace(/\[-\s\]\?/g, " ")
+                .replace(/\\?[-–—]/g, " ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLowerCase();
+            return text;
+        };
+        const firstTarget = normalizeConflictTarget(firstText);
+        const secondTarget = normalizeConflictTarget(secondText);
+        if (firstTarget && secondTarget && firstTarget === secondTarget) {
+            return true;
         }
-        return (
-            normalizeCandidateIdentity(firstText) ===
-            normalizeCandidateIdentity(secondText)
-        );
+        /*
+         * Do NOT use findTokenSubsequence() here.
+         *
+         * Substring/token containment is not sufficient evidence
+         * of a conflict.
+         */
+        return false;
     }
     function buildConflictClusters(pageRuleMatches) {
         const rules = Array.isArray(pageRuleMatches) ? pageRuleMatches : [];
@@ -2909,10 +3056,12 @@
             console.error("[WNC] GM_registerMenuCommand is unavailable.");
             return;
         }
+
         GM_registerMenuCommand("Webnovel Cleaner — Analyze page", () => {
             console.log("[WNC] Analyze command clicked.");
             runAnalysisSafely();
         });
+
         GM_registerMenuCommand(
             "Webnovel Cleaner — Import FoxReplace JSON",
             () => {
