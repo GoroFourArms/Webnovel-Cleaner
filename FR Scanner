@@ -1,1221 +1,881 @@
 // ==UserScript==
 // @name         FR Scanner
-// @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      1.0.0
-// @description  Scans page text for FoxReplace candidates and chapter starts.
+// @namespace    fr-scanner
+// @version      2.0.0
+// @description  Scan visible page text for capitalized Candidates and prepare template-specific regexes.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_setClipboard
+// @grant        GM_registerMenuCommand
+// @run-at       document-idle
 // ==/UserScript==
-(function () {
+(() => {
     "use strict";
-    const FR_SCANNER_VERSION = "1.0.0";
-    const FR_SCANNER_UI_ID = "fr-scanner-panel";
-    const FR_SCANNER_KEYS = {
-        settings: "FR_SCANNER_SETTINGS_V1",
-        candidates: "FR_SCANNER_CANDIDATES_V1",
-        regexTemplates: "FR_SCANNER_REGEX_TEMPLATES_V1"
+    const STORE_KEY = "frScanner.settings.v2";
+    const PANEL_ID = "fr-scanner-panel";
+    const STYLE_ID = "fr-scanner-style";
+    const EXCLUDED_TAGS = new Set([
+        "SCRIPT",
+        "STYLE",
+        "NOSCRIPT",
+        "TEMPLATE",
+        "SVG",
+        "CANVAS",
+        "IFRAME",
+        "NAV",
+        "FOOTER",
+        "HEADER",
+        "ASIDE",
+        "BUTTON",
+        "INPUT",
+        "TEXTAREA",
+        "SELECT",
+        "OPTION"
+    ]);
+    const BLOCK_TAGS = new Set([
+        "ADDRESS",
+        "ARTICLE",
+        "BLOCKQUOTE",
+        "BR",
+        "DD",
+        "DIV",
+        "DL",
+        "DT",
+        "FIGCAPTION",
+        "FIGURE",
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H6",
+        "LI",
+        "MAIN",
+        "P",
+        "PRE",
+        "SECTION",
+        "TD",
+        "TH",
+        "TR"
+    ]);
+    const TEMPLATES = ["Other", "Korean", "Korean 2", "Japanese"];
+    const DEFAULTS = {
+        x: 24,
+        y: 24,
+        width: 980,
+        height: 620,
+        minimized: false,
+        template: "Other",
+        singletonCutoff: 0.05,
+        showHiddenSingletons: false,
+        edits: {},
+        columnWidths: {}
     };
-    const DEFAULT_SETTINGS = {
-        width: 900,
-        height: 600,
-        left: 30,
-        top: 30,
-        columnWidths: {},
-        minimized: false
-    };
-    const state = {
-        pageText: "",
-        candidates: [],
-        starts: [],
-        regexTemplates: [],
-        settings: { ...DEFAULT_SETTINGS }
-    };
-    function storageGet(key, fallback) {
-        try {
-            const value = GM_getValue(key, fallback);
-            return value == null ? fallback : value;
-        } catch (_) {
-            return fallback;
-        }
-    }
-    function storageSet(key, value) {
-        try {
-            GM_setValue(key, value);
-        } catch (error) {
-            console.error("[FR Scanner] Storage error:", error);
-        }
-    }
+    let settings = loadSettings();
+    let currentText = "";
+    let candidates = [];
+    let starts = [];
+    let highlightStyle = null;
+    let highlightedCandidateId = null;
+    let drag = null;
+    let resize = null;
+    let renderQueued = false;
     function loadSettings() {
-        const saved = storageGet(FR_SCANNER_KEYS.settings, {});
-        state.settings = {
-            ...DEFAULT_SETTINGS,
-            ...(saved && typeof saved === "object" ? saved : {}),
-            columnWidths: {
-                ...DEFAULT_SETTINGS.columnWidths,
-                ...(saved?.columnWidths || {})
-            }
-        };
+        try {
+            const stored =
+                typeof GM_getValue === "function"
+                    ? GM_getValue(STORE_KEY, {})
+                    : {};
+            return {
+                ...DEFAULTS,
+                ...(stored && typeof stored === "object" ? stored : {}),
+                edits: { ...(stored?.edits || {}) },
+                columnWidths: { ...(stored?.columnWidths || {}) }
+            };
+        } catch (_) {
+            return { ...DEFAULTS, edits: {}, columnWidths: {} };
+        }
     }
     function saveSettings() {
-        storageSet(FR_SCANNER_KEYS.settings, state.settings);
-    }
-    function getPageText() {
-        if (!document.body) return "";
-        const excludedSelector = [
-            "script",
-            "style",
-            "noscript",
-            "template",
-            "svg",
-            "canvas",
-            "nav",
-            "footer",
-            "aside",
-            "form",
-            "button",
-            "input",
-            "select",
-            "textarea",
-            "option",
-            "[hidden]",
-            "[aria-hidden='true']",
-            "[role='navigation']",
-            "[role='complementary']",
-            "[role='dialog']",
-            "[role='banner']",
-            "[role='contentinfo']",
-            ".wnc-overlay",
-            "#wnc-overlay",
-            "#wnc-panel",
-            "#fr-scanner-panel",
-            "#fr-debug-panel"
-        ].join(",");
-        const excludedNamePattern =
-            /(^|[\s_-])(?:ads?|advert(?:isement)?s?|sponsor(?:ed)?|sidebars?|recommendations?|related[-_ ]?(?:posts?|content|articles?)|comments?|comment[-_ ]?(?:list|section|thread)|social[-_ ]?share|share[-_ ]?buttons?)(?=$|[\s_-])/i;
-        const blockTags = new Set([
-            "ADDRESS",
-            "ARTICLE",
-            "BLOCKQUOTE",
-            "DD",
-            "DL",
-            "DT",
-            "DIV",
-            "H1",
-            "H2",
-            "H3",
-            "H4",
-            "H5",
-            "H6",
-            "HR",
-            "LI",
-            "MAIN",
-            "OL",
-            "P",
-            "PRE",
-            "SECTION",
-            "TABLE",
-            "TBODY",
-            "TD",
-            "TFOOT",
-            "TH",
-            "THEAD",
-            "TR",
-            "UL"
-        ]);
-        const parts = [];
-        function appendBoundary() {
-            if (
-                parts.length &&
-                !String(parts[parts.length - 1]).endsWith("\n")
-            ) {
-                parts.push("\n");
-            }
-        }
-        function shouldExclude(element) {
-            if (element.matches(excludedSelector)) return true;
-            const classAndId = `${element.getAttribute("class") || ""} ${element.id || ""}`;
-            if (excludedNamePattern.test(classAndId)) return true;
-            const style = window.getComputedStyle(element);
-            return (
-                style.display === "none" ||
-                style.visibility === "hidden" ||
-                style.visibility === "collapse" ||
-                Number(style.opacity) === 0
+        try {
+            if (typeof GM_setValue === "function")
+                GM_setValue(STORE_KEY, settings);
+        } catch (_) {
+            showStatus(
+                "Could not save settings; current session will continue.",
+                true
             );
         }
-        function visit(node) {
-            if (node.nodeType === Node.TEXT_NODE) {
-                if (node.nodeValue) parts.push(node.nodeValue);
-                return;
-            }
-            if (node.nodeType !== Node.ELEMENT_NODE) return;
-            const element = node;
-            if (element !== document.body && shouldExclude(element)) return;
-            if (element.tagName === "BR" || element.tagName === "HR") {
-                appendBoundary();
-                return;
-            }
-            const isBlock = blockTags.has(element.tagName);
-            if (isBlock) appendBoundary();
-            for (const child of element.childNodes) {
-                visit(child);
-            }
-            if (isBlock) appendBoundary();
-        }
-        visit(document.body);
-        return parts
-            .join("")
-            .replace(/[ \t\f\v]+\n/g, "\n")
-            .replace(/\n[ \t\f\v]+/g, "\n")
-            .replace(/\n{3,}/g, "\n\n")
-            .trim();
     }
-    function escapeRegExp(value) {
-        return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-    function normalizeCandidateToken(value) {
-        return String(value || "")
+    function normalizeSpace(s) {
+        return String(s ?? "")
             .normalize("NFKC")
-            .replace(/[’‘`]/g, "'")
-            .replace(/[“”]/g, '"')
+            .replace(/[\u2018\u2019]/g, "'")
+            .replace(/[\u201C\u201D]/g, '"')
+            .replace(/[\u2013\u2014\u2212]/g, "-")
             .replace(/\s+/g, " ")
             .trim();
     }
-    function normalizeRule(value) {
-        return String(value || "")
-            .replace(/\r\n?/g, "\n")
+    function normalizeToken(s) {
+        let v = normalizeSpace(s)
+            .toLowerCase()
+            .replace(/^[\s"'“”‘’([{]+|[\s"'“”‘’)}\]]+$/g, "");
+        v = v.replace(/['’]s$/i, "").replace(/s['’]$/, "s");
+        if (v.length > 4 && /ies$/.test(v)) v = v.slice(0, -3) + "y";
+        else if (v.length > 4 && /(ches|shes|xes|zes)$/.test(v))
+            v = v.slice(0, -2);
+        else if (v.length > 4 && /ses$/.test(v) && !/sses$/.test(v))
+            v = v.slice(0, -2);
+        return v;
+    }
+    function tokens(s) {
+        return normalizeSpace(s).split(/\s+/).filter(Boolean);
+    }
+    function identity(s) {
+        return tokens(s).map(normalizeToken).filter(Boolean).join(" ");
+    }
+    function isExcluded(el) {
+        if (!el || el.nodeType !== 1) return false;
+        if (EXCLUDED_TAGS.has(el.tagName)) return true;
+        if (el.hidden || el.getAttribute("aria-hidden") === "true") return true;
+        const style = getComputedStyle(el);
+        if (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            style.visibility === "collapse" ||
+            style.opacity === "0"
+        )
+            return true;
+        const role = (el.getAttribute("role") || "").toLowerCase();
+        const cls =
+            `${el.id || ""} ${typeof el.className === "string" ? el.className : ""}`.toLowerCase();
+        if (
+            [
+                "navigation",
+                "complementary",
+                "banner",
+                "contentinfo",
+                "dialog",
+                "alertdialog"
+            ].includes(role)
+        )
+            return true;
+        if (
+            /(^|\b)(advert|advertisement|ad-container|popup|modal|comment|comments|recommend|related-post|chapter-list|pagination|pager|table-of-contents|toc)(\b|[-_])/i.test(
+                cls
+            )
+        )
+            return true;
+        return false;
+    }
+    function extractVisibleText() {
+        const pieces = [];
+        const walker = document.createTreeWalker(
+            document.body || document.documentElement,
+            NodeFilter.SHOW_TEXT,
+            {
+                acceptNode(node) {
+                    if (!node.nodeValue || !node.nodeValue.trim())
+                        return NodeFilter.FILTER_REJECT;
+                    let el = node.parentElement;
+                    while (el && el !== document.body) {
+                        if (isExcluded(el)) return NodeFilter.FILTER_REJECT;
+                        el = el.parentElement;
+                    }
+                    if (el && isExcluded(el)) return NodeFilter.FILTER_REJECT;
+                    return NodeFilter.FILTER_ACCEPT;
+                }
+            }
+        );
+        let n;
+        while ((n = walker.nextNode())) {
+            const text = n.nodeValue.replace(/\s+/g, " ").trim();
+            if (!text) continue;
+            pieces.push(text);
+            let p = n.parentElement;
+            while (p && p !== document.body) {
+                if (BLOCK_TAGS.has(p.tagName)) {
+                    pieces.push("\n");
+                    break;
+                }
+                p = p.parentElement;
+            }
+        }
+        return pieces
+            .join(" ")
+            .replace(/\s*\n\s*/g, "\n")
             .replace(/[ \t]+/g, " ")
             .trim();
     }
-    function countOccurrences(text, pattern) {
-        if (!pattern) return 0;
-        let count = 0;
-        let position = 0;
-        while ((position = text.indexOf(pattern, position)) !== -1) {
-            count++;
-            position += pattern.length;
-        }
-        return count;
-    }
-    function makeRegexPreview(pattern, flags = "gi") {
-        try {
-            const regex = new RegExp(pattern, flags);
-            const matches = [];
-            let match;
-            while ((match = regex.exec(state.pageText)) !== null) {
-                matches.push({
-                    text: match[0],
-                    index: match.index
-                });
-                if (!match[0].length) regex.lastIndex++;
-                if (matches.length >= 100) break;
-            }
-            return {
-                valid: true,
-                count: matches.length,
-                matches
-            };
-        } catch (error) {
-            return {
-                valid: false,
-                count: 0,
-                matches: [],
-                error: error.message
-            };
-        }
-    }
-    function getRegexTemplates(candidate) {
-        const escaped = escapeRegExp(candidate);
-        return [
-            {
-                name: "Exact",
-                pattern: escaped,
-                flags: "gi"
-            },
-            {
-                name: "Flexible whitespace",
-                pattern: escaped.replace(/\\ /g, "\\s+"),
-                flags: "gi"
-            },
-            {
-                name: "Word boundary",
-                pattern: `\\b${escaped}\\b`,
-                flags: "gi"
-            }
-        ];
-    }
-    function createElement(tag, attributes = {}, text = "") {
-        const element = document.createElement(tag);
-        for (const [key, value] of Object.entries(attributes)) {
-            if (key === "className") {
-                element.className = value;
-            } else if (key === "style" && typeof value === "object") {
-                Object.assign(element.style, value);
-            } else {
-                element.setAttribute(key, value);
-            }
-        }
-        if (text !== "") element.textContent = text;
-        return element;
-    }
-    function scanCandidates(text) {
-        const lines = String(text || "").split(/\n+/);
-        const found = new Map();
-        const patterns = [
-            /^\s*(?:chapter|chap\.?|ch\.?)\s*#?\s*(\d+(?:[.,]\d+)*[a-z]?)\s*[:\-–—.]?\s*(.*)$/i,
-            /^\s*(?:episode|ep\.?)\s*#?\s*(\d+(?:[.,]\d+)*[a-z]?)\s*[:\-–—.]?\s*(.*)$/i,
-            /^\s*(\d+(?:[.,]\d+)*[a-z]?)\s*[:\-–—.)]\s*(.{2,100})$/i
-        ];
-        for (let index = 0; index < lines.length; index++) {
-            const line = normalizeCandidateToken(lines[index]);
-            if (!line || line.length > 180) continue;
-            let matched = null;
-            for (const pattern of patterns) {
-                matched = line.match(pattern);
-                if (matched) break;
-            }
-            if (!matched) continue;
-            const token = normalizeCandidateToken(line);
-            if (!token) continue;
-            const key = token.toLowerCase();
-            if (!found.has(key)) {
-                found.set(key, {
-                    text: token,
-                    count: 0,
-                    lines: [],
-                    index
-                });
-            }
-            const candidate = found.get(key);
-            candidate.count++;
-            candidate.lines.push(index + 1);
-        }
-        return [...found.values()];
-    }
-    function detectStarts(text, candidates) {
-        const lines = String(text || "").split(/\n+/);
-        const starts = [];
-        for (let index = 0; index < lines.length; index++) {
-            const line = normalizeCandidateToken(lines[index]);
-            if (!line) continue;
-            for (const candidate of candidates) {
-                const title = candidate.text;
-                if (line.toLowerCase() !== title.toLowerCase()) continue;
-                starts.push({
-                    text: line,
-                    line: index + 1,
-                    index,
-                    candidate: title,
-                    pass: 1
-                });
-            }
-        }
-        const known = new Set(
-            starts.map((item) => `${item.index}:${item.text.toLowerCase()}`)
-        );
-        for (let index = 0; index < lines.length; index++) {
-            const line = normalizeCandidateToken(lines[index]);
-            if (!line) continue;
-            for (const candidate of candidates) {
-                const title = candidate.text;
-                const key = `${index}:${line.toLowerCase()}`;
-                if (known.has(key)) continue;
-                if (
-                    line.length >= title.length &&
-                    line.toLowerCase().startsWith(title.toLowerCase())
-                ) {
-                    starts.push({
-                        text: line,
-                        line: index + 1,
-                        index,
-                        candidate: title,
-                        pass: 2
-                    });
-                    known.add(key);
-                }
-            }
-        }
-        return starts.sort((a, b) => a.index - b.index);
-    }
-    function aggregatePrefixSuffix(starts) {
-        const aggregates = new Map();
-        for (const start of starts) {
-            const title = start.candidate;
-            const line = start.text;
-            const titleIndex = line.toLowerCase().indexOf(title.toLowerCase());
-            if (titleIndex < 0) continue;
-            const prefix = normalizeCandidateToken(line.slice(0, titleIndex));
-            const suffix = normalizeCandidateToken(
-                line.slice(titleIndex + title.length)
-            );
-            const key = `${title.toLowerCase()}|${prefix}|${suffix}`;
-            if (!aggregates.has(key)) {
-                aggregates.set(key, {
-                    candidate: title,
-                    prefix,
-                    suffix,
-                    frequency: 0,
-                    lines: []
-                });
-            }
-            const item = aggregates.get(key);
-            item.frequency++;
-            item.lines.push(start.line);
-        }
-        return [...aggregates.values()].sort(
-            (a, b) => b.frequency - a.frequency
-        );
-    }
-    function clusterCandidates(candidates) {
-        const clusters = new Map();
-        for (const candidate of candidates) {
-            const normalized = normalizeCandidateToken(candidate.text);
-            const words = normalized.split(/\s+/);
-            const clusterKey =
-                words.length > 1
-                    ? words[0].toLowerCase()
-                    : normalized.toLowerCase();
-            if (!clusters.has(clusterKey)) {
-                clusters.set(clusterKey, {
-                    key: clusterKey,
-                    candidates: []
-                });
-            }
-            clusters.get(clusterKey).candidates.push(candidate);
-        }
-        return [...clusters.values()];
-    }
-    function analyzePage() {
-        state.pageText = getPageText();
-        state.candidates = scanCandidates(state.pageText);
-        state.starts = detectStarts(state.pageText, state.candidates);
-        state.aggregates = aggregatePrefixSuffix(state.starts);
-        state.clusters = clusterCandidates(state.candidates);
-        state.regexTemplates = state.candidates.flatMap((candidate) =>
-            getRegexTemplates(candidate.text).map((template) => ({
-                ...template,
-                candidate: candidate.text,
-                preview: makeRegexPreview(template.pattern, template.flags)
-            }))
-        );
-        renderScanner();
-    }
-    function renderScanner() {
-        let panel = document.getElementById(FR_SCANNER_UI_ID);
-        if (!panel) {
-            panel = createElement("section", {
-                id: FR_SCANNER_UI_ID
-            });
-            document.body.appendChild(panel);
-        }
-        panel.replaceChildren();
-        const header = createElement(
-            "header",
-            {
-                className: "fr-scanner-header"
-            },
-            "FR Scanner"
-        );
-        const scanButton = createElement("button", {}, "Rescan");
-        scanButton.addEventListener("click", analyzePage);
-        header.appendChild(scanButton);
-        panel.appendChild(header);
-        const summary = createElement(
-            "div",
-            { className: "fr-scanner-summary" },
-            `Candidates: ${state.candidates.length} | Starts: ${state.starts.length}`
-        );
-        panel.appendChild(summary);
-        const list = createElement("div", {
-            className: "fr-scanner-candidates"
-        });
-        for (const cluster of state.clusters || []) {
-            const heading = createElement(
-                "div",
-                { className: "fr-scanner-cluster" },
-                cluster.key
-            );
-            list.appendChild(heading);
-            for (const candidate of cluster.candidates) {
-                const row = createElement(
-                    "div",
-                    { className: "fr-scanner-candidate" },
-                    `${candidate.text} — ${candidate.count}`
-                );
-                list.appendChild(row);
-            }
-        }
-        panel.appendChild(list);
-        const templates = createElement("details");
-        templates.appendChild(createElement("summary", {}, "Regex templates"));
-        for (const template of state.regexTemplates || []) {
-            const row = createElement(
-                "div",
-                { className: "fr-scanner-template" },
-                `${template.candidate} | ${template.name} | /${template.pattern}/${template.flags} | Matches: ${template.preview.count}`
-            );
-            templates.appendChild(row);
-        }
-        panel.appendChild(templates);
-    }
-    function installScannerStyles() {
-        if (document.getElementById("fr-scanner-styles")) return;
-        const style = createElement("style", {
-            id: "fr-scanner-styles"
-        });
-        style.textContent = `
-            #${FR_SCANNER_UI_ID} {
-                position: fixed;
-                z-index: 2147483646;
-                top: ${state.settings.top}px;
-                left: ${state.settings.left}px;
-                width: ${state.settings.width}px;
-                height: ${state.settings.height}px;
-                min-width: 360px;
-                min-height: 240px;
-                display: flex;
-                flex-direction: column;
-                overflow: auto;
-                resize: both;
-                box-sizing: border-box;
-                padding: 12px;
-                border: 1px solid #596579;
-                border-radius: 8px;
-                background: #171b24;
-                color: #e6eaf0;
-                font: 13px/1.45 Arial, sans-serif;
-                box-shadow: 0 6px 24px #0008;
-            }
-            #${FR_SCANNER_UI_ID} button {
-                padding: 5px 10px;
-                border: 1px solid #596579;
-                border-radius: 4px;
-                background: #293244;
-                color: inherit;
-                cursor: pointer;
-            }
-            #${FR_SCANNER_UI_ID} .fr-scanner-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 12px;
-                margin-bottom: 10px;
-                font-weight: bold;
-            }
-            #${FR_SCANNER_UI_ID} .fr-scanner-summary {
-                padding: 8px;
-                margin-bottom: 8px;
-                background: #222a38;
-                border-radius: 4px;
-            }
-            #${FR_SCANNER_UI_ID} .fr-scanner-cluster {
-                margin-top: 8px;
-                padding: 5px;
-                background: #293244;
-                font-weight: bold;
-            }
-            #${FR_SCANNER_UI_ID} .fr-scanner-candidate,
-            #${FR_SCANNER_UI_ID} .fr-scanner-template {
-                padding: 5px 8px;
-                border-bottom: 1px solid #343d4e;
-                overflow-wrap: anywhere;
-            }
-            #${FR_SCANNER_UI_ID} details {
-                margin-top: 10px;
-            }
-        `;
-        document.head.appendChild(style);
-    }
-    function enablePanelDragging() {
-        const panel = document.getElementById(FR_SCANNER_UI_ID);
-        const header = panel?.querySelector(".fr-scanner-header");
-        if (!panel || !header) return;
-        let dragging = false;
-        let offsetX = 0;
-        let offsetY = 0;
-        header.style.cursor = "move";
-        header.addEventListener("mousedown", (event) => {
-            if (event.target.closest("button")) return;
-            dragging = true;
-            const rect = panel.getBoundingClientRect();
-            offsetX = event.clientX - rect.left;
-            offsetY = event.clientY - rect.top;
-            event.preventDefault();
-        });
-        document.addEventListener("mousemove", (event) => {
-            if (!dragging) return;
-            panel.style.left = `${Math.max(0, event.clientX - offsetX)}px`;
-            panel.style.top = `${Math.max(0, event.clientY - offsetY)}px`;
-        });
-        document.addEventListener("mouseup", () => {
-            if (!dragging) return;
-            dragging = false;
-            state.settings.left = panel.offsetLeft;
-            state.settings.top = panel.offsetTop;
-            state.settings.width = panel.offsetWidth;
-            state.settings.height = panel.offsetHeight;
-            saveSettings();
-        });
-    }
-    function initializeScanner() {
-        loadSettings();
-        state.pageText = getPageText();
-        installScannerStyles();
-        analyzePage();
-        enablePanelDragging();
-        const panel = document.getElementById(FR_SCANNER_UI_ID);
-        if (panel && typeof ResizeObserver !== "undefined") {
-            new ResizeObserver(() => {
-                state.settings.width = panel.offsetWidth;
-                state.settings.height = panel.offsetHeight;
-                saveSettings();
-            }).observe(panel);
-        }
-    }
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", initializeScanner, {
-            once: true
-        });
-    } else {
-        initializeScanner();
-    }
-    function createColumnResizer(table, columnKey) {
-        const handle = createElement("span", {
-            className: "fr-scanner-resize-handle"
-        });
-        Object.assign(handle.style, {
-            position: "absolute",
-            top: "0",
-            right: "0",
-            width: "6px",
-            height: "100%",
-            cursor: "col-resize",
-            userSelect: "none"
-        });
-        let startX = 0;
-        let startWidth = 0;
-        handle.addEventListener("mousedown", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            startX = event.clientX;
-            startWidth = state.settings.columnWidths[columnKey] || 180;
-            function move(moveEvent) {
-                const width = Math.max(
-                    60,
-                    startWidth + moveEvent.clientX - startX
-                );
-                state.settings.columnWidths[columnKey] = width;
-                const cells = table.querySelectorAll(
-                    `[data-column="${columnKey}"]`
-                );
-                cells.forEach((cell) => {
-                    cell.style.width = `${width}px`;
-                    cell.style.minWidth = `${width}px`;
-                    cell.style.maxWidth = `${width}px`;
-                });
-            }
-            function stop() {
-                document.removeEventListener("mousemove", move);
-                document.removeEventListener("mouseup", stop);
-                saveSettings();
-            }
-            document.addEventListener("mousemove", move);
-            document.addEventListener("mouseup", stop);
-        });
-        return handle;
-    }
-    function renderCandidateTable(container) {
-        const table = createElement("table", {
-            className: "fr-scanner-table"
-        });
-        const columns = [
-            { key: "candidate", label: "Candidate" },
-            { key: "frequency", label: "Frequency" },
-            { key: "prefix", label: "Prefix" },
-            { key: "suffix", label: "Suffix" }
-        ];
-        const head = createElement("thead");
-        const headerRow = createElement("tr");
-        for (const column of columns) {
-            const cell = createElement("th", {
-                "data-column": column.key
-            });
-            cell.style.position = "relative";
-            cell.textContent = column.label;
-            const width = state.settings.columnWidths[column.key];
-            if (width) {
-                cell.style.width = `${width}px`;
-                cell.style.minWidth = `${width}px`;
-                cell.style.maxWidth = `${width}px`;
-            }
-            cell.appendChild(createColumnResizer(table, column.key));
-            headerRow.appendChild(cell);
-        }
-        head.appendChild(headerRow);
-        table.appendChild(head);
-        const body = createElement("tbody");
-        for (const aggregate of state.aggregates || []) {
-            const row = createElement("tr");
-            const values = {
-                candidate: aggregate.candidate,
-                frequency: aggregate.frequency,
-                prefix: aggregate.prefix || "(empty)",
-                suffix: aggregate.suffix || "(empty)"
-            };
-            for (const column of columns) {
-                const cell = createElement(
-                    "td",
-                    {
-                        "data-column": column.key
-                    },
-                    String(values[column.key])
-                );
-                const width = state.settings.columnWidths[column.key];
-                if (width) {
-                    cell.style.width = `${width}px`;
-                    cell.style.minWidth = `${width}px`;
-                    cell.style.maxWidth = `${width}px`;
-                }
-                row.appendChild(cell);
-            }
-            body.appendChild(row);
-        }
-        table.appendChild(body);
-        container.appendChild(table);
-    }
-    function renderRegexPreview(container) {
-        const section = createElement("section", {
-            className: "fr-scanner-regex-preview"
-        });
-        section.appendChild(createElement("h3", {}, "Regex preview"));
-        const input = createElement("input", {
-            type: "text",
-            placeholder: "Enter a regular expression"
-        });
-        const flags = createElement("input", {
-            type: "text",
-            value: "gi",
-            placeholder: "Flags"
-        });
-        const runButton = createElement("button", {}, "Preview");
-        const output = createElement("pre");
-        runButton.addEventListener("click", () => {
-            const result = makeRegexPreview(input.value, flags.value);
-            output.textContent = result.valid
-                ? `Matches: ${result.count}\n` +
-                  result.matches
-                      .slice(0, 30)
-                      .map((match) => `${match.index}: ${match.text}`)
-                      .join("\n")
-                : `Invalid regex: ${result.error}`;
-        });
-        section.append(input, flags, runButton, output);
-        container.appendChild(section);
-    }
-    function enhanceScannerRender() {
-        const panel = document.getElementById(FR_SCANNER_UI_ID);
-        if (!panel) return;
-        const tableSection = createElement("section", {
-            className: "fr-scanner-frequency"
-        });
-        tableSection.appendChild(
-            createElement("h3", {}, "Prefix / Suffix frequency")
-        );
-        renderCandidateTable(tableSection);
-        panel.appendChild(tableSection);
-        renderRegexPreview(panel);
-    }
-    const originalRenderScanner = renderScanner;
-    renderScanner = function () {
-        originalRenderScanner();
-        enhanceScannerRender();
-        const panel = document.getElementById(FR_SCANNER_UI_ID);
-        if (!panel) return;
-        panel.style.width = `${state.settings.width}px`;
-        panel.style.height = `${state.settings.height}px`;
-        enablePanelDragging();
-    };
-    const scannerStyle = createElement("style");
-    scannerStyle.textContent = `
-        #${FR_SCANNER_UI_ID} .fr-scanner-table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-        }
-        #${FR_SCANNER_UI_ID} .fr-scanner-table th,
-        #${FR_SCANNER_UI_ID} .fr-scanner-table td {
-            position: relative;
-            padding: 6px;
-            border: 1px solid #343d4e;
-            text-align: left;
-            overflow-wrap: anywhere;
-        }
-        #${FR_SCANNER_UI_ID} .fr-scanner-table th {
-            background: #293244;
-        }
-        #${FR_SCANNER_UI_ID} .fr-scanner-regex-preview {
-            margin-top: 12px;
-        }
-        #${FR_SCANNER_UI_ID} .fr-scanner-regex-preview input {
-            margin: 4px;
-            padding: 6px;
-            background: #222a38;
-            color: #e6eaf0;
-            border: 1px solid #596579;
-        }
-        #${FR_SCANNER_UI_ID} .fr-scanner-regex-preview pre {
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
-        }
-    `;
-    function tokenizeCandidate(value) {
-        return String(value ?? "")
-            .replace(/[“”„‟]/g, '"')
-            .replace(/[‘’]/g, "'")
-            .replace(/[–—−]/g, "-")
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean);
-    }
-    function normalizeCandidateToken(token) {
-        let value = String(token ?? "")
-            .trim()
-            .toLowerCase();
-        if (!value) return "";
-        value = value.replace(/^[("'“”‘’]+/, "").replace(/[)"'“”‘’]+$/, "");
-        if (!value) return "";
-        value = value.replace(/['’]s$/i, "");
-        value = value.replace(/s['’]$/i, "s");
-        if (value.length > 4 && /ies$/.test(value)) {
-            value = value.slice(0, -3) + "y";
-        } else if (value.length > 4 && /(ches|shes|xes|zes)$/.test(value)) {
-            value = value.slice(0, -2);
-        } else if (
-            value.length > 4 &&
-            /ses$/.test(value) &&
-            !/sses$/.test(value)
-        ) {
-            value = value.slice(0, -2);
-        }
-        return value;
-    }
-    function getCandidateTokens(value) {
-        const source = typeof value === "string" ? value : (value?.name ?? "");
-        return tokenizeCandidate(source)
-            .map(normalizeCandidateToken)
-            .filter(Boolean);
-    }
-    function normalizeCandidateIdentity(value) {
-        return getCandidateTokens(value).join(" ");
-    }
-    function normalizeCandidateDisplay(value) {
-        return tokenizeCandidate(value).join(" ");
-    }
+    // One occurrence is one regex match. Sentence position determines Start vs Candidate.
+    const OCCURRENCE_RE =
+        /\b([A-ZÀ-ÖØ-Þ][\p{L}\p{M}0-9'’.-]*(?:[ \t]+[A-ZÀ-ÖØ-Þ][\p{L}\p{M}0-9'’.-]*){0,4})/gu;
     function isSentenceStart(text, index) {
-        if (!text || index <= 0) return false;
         for (let i = index - 1; i >= 0; i--) {
-            const character = text[i];
-            if (/\s/.test(character)) continue;
-            if (/["'“”‘’([{]/.test(character)) continue;
-            return /[.!?]/.test(character);
+            const c = text[i];
+            if (/\s/.test(c) || /["'“”‘’([{]/.test(c)) continue;
+            return /[.!?]/.test(c);
         }
-        return false;
+        return index === 0;
     }
-    function mergeCandidateRecords(records) {
-        const candidatesByIdentity = new Map();
-        for (const record of records || []) {
-            const display = normalizeCandidateDisplay(record?.text);
-            const identity = normalizeCandidateIdentity(display);
-            if (!identity) continue;
-            let candidate = candidatesByIdentity.get(identity);
-            if (!candidate) {
-                candidate = {
-                    name: display,
-                    identity,
-                    frequency: 0,
-                    variants: new Map(),
-                    originalIndex: Number(record?.index ?? Infinity)
-                };
-                candidatesByIdentity.set(identity, candidate);
-            }
-            candidate.frequency++;
-            candidate.variants.set(
-                display,
-                (candidate.variants.get(display) || 0) + 1
-            );
-            candidate.originalIndex = Math.min(
-                candidate.originalIndex,
-                Number(record?.index ?? Infinity)
-            );
-        }
-        return [...candidatesByIdentity.values()];
-    }
-    function finalizeCandidates(rawCandidates) {
-        return (rawCandidates || []).map((candidate, index) => {
-            const finalized = {
-                ...candidate,
-                originalIndex: candidate.originalIndex ?? index,
-                name: String(candidate.name ?? "").trim(),
-                frequency: Number(candidate.frequency || 0),
-                variants: candidate.variants
-                    ? [...candidate.variants.entries()].map(
-                          ([name, frequency]) => ({ name, frequency })
-                      )
-                    : [],
-                starts: [],
-                prefixes: [],
-                suffixes: [],
-                prefixCounts: new Map(),
-                suffixCounts: new Map()
+    function scanOccurrences(text) {
+        const foundCandidates = [],
+            foundStarts = [];
+        OCCURRENCE_RE.lastIndex = 0;
+        let m;
+        while ((m = OCCURRENCE_RE.exec(text))) {
+            const value = normalizeSpace(m[1]);
+            if (!value) continue;
+            const occ = {
+                text: value,
+                index: m.index + m[0].indexOf(m[1]),
+                end: m.index + m[0].indexOf(m[1]) + m[1].length
             };
-            finalized.identity = normalizeCandidateIdentity(finalized.name);
-            return finalized;
-        });
+            // Avoid treating a single-token prefix of a longer capitalized phrase as an extra match.
+            const previous = foundCandidates
+                .concat(foundStarts)
+                .sort((a, b) => a.index - b.index)
+                .at(-1);
+            if (
+                previous &&
+                occ.index >= previous.index &&
+                occ.index < previous.end
+            )
+                continue;
+            if (isSentenceStart(text, occ.index)) foundStarts.push(occ);
+            else foundCandidates.push(occ);
+            if (m[0].length === 0) OCCURRENCE_RE.lastIndex++;
+        }
+        return { foundCandidates, foundStarts };
     }
-    function compareCandidates(a, b) {
-        return (
-            Number(b?.frequency || 0) - Number(a?.frequency || 0) ||
-            String(a?.name || "").localeCompare(String(b?.name || ""))
+    function collect(records, kind) {
+        const map = new Map();
+        for (const occ of records) {
+            const display = normalizeSpace(occ.text),
+                key = identity(display);
+            if (!key) continue;
+            let item = map.get(key);
+            if (!item) {
+                item = {
+                    id: `${kind}-${map.size}-${key}`,
+                    name: display,
+                    normalized: key,
+                    occurrenceCount: 0,
+                    frequency: 0,
+                    originalIndex: occ.index,
+                    occurrences: [],
+                    prefixes: new Map(),
+                    suffixes: new Map(),
+                    edit: settings.edits[key] ?? display,
+                    assignedStarts: [],
+                    clusterSeed: null
+                };
+                map.set(key, item);
+            }
+            item.occurrenceCount++;
+            item.frequency++;
+            item.occurrences.push(occ);
+            if (display.length < item.name.length) item.name = display;
+        }
+        return [...map.values()];
+    }
+    function findExactCandidate(start, list) {
+        const key = identity(start.text);
+        return list.find((c) => c.normalized === key) || null;
+    }
+    function tokenMatch(a, b) {
+        const aa = tokens(a).map(normalizeToken).filter(Boolean),
+            bb = tokens(b).map(normalizeToken).filter(Boolean);
+        let matches = 0;
+        const used = new Set();
+        for (const t of aa) {
+            const j = bb.findIndex((v, i) => v === t && !used.has(i));
+            if (j >= 0) {
+                used.add(j);
+                matches++;
+            }
+        }
+        return {
+            matches,
+            total: aa.length + bb.length,
+            congruity: aa.length > 0 && bb.length > 0 && aa[0] === bb[0] ? 1 : 0
+        };
+    }
+    function passTwoCandidate(start, list) {
+        const st = tokens(start.text).map(normalizeToken).filter(Boolean);
+        let choices = [];
+        for (const c of list) {
+            const ct = tokens(c.name).map(normalizeToken).filter(Boolean);
+            if (!ct.length || !st.length) continue;
+            const shared = ct.filter((t) => st.includes(t)).length;
+            if (!shared) continue;
+            // Rank by requested order: most matching tokens, least total tokens, congruity, right-to-left.
+            const total = ct.length + st.length;
+            const congruity = ct[ct.length - 1] === st[st.length - 1] ? 1 : 0;
+            const rightmost = Math.max(
+                ...ct.map((t) => st.lastIndexOf(t)).filter((i) => i >= 0)
+            );
+            choices.push({ c, shared, total, congruity, rightmost });
+        }
+        choices.sort(
+            (a, b) =>
+                b.shared - a.shared ||
+                a.total - b.total ||
+                b.congruity - a.congruity ||
+                b.rightmost - a.rightmost ||
+                a.c.originalIndex - b.c.originalIndex
         );
+        return choices[0]?.c || null;
     }
-    function candidateSharesToken(first, second) {
-        const firstTokens = new Set(getCandidateTokens(first));
-        return getCandidateTokens(second).some((token) =>
-            firstTokens.has(token)
+    function selectedSpan(start, candidate) {
+        const source = start.text;
+        const sourceRegex = /[\p{L}\p{M}\p{N}]+(?:['’.-][\p{L}\p{M}\p{N}]+)*/gu;
+        const sourceTokens = [];
+        let match;
+        while ((match = sourceRegex.exec(source)) !== null) {
+            sourceTokens.push({
+                value: normalizeToken(match[0]),
+                start: match.index,
+                end: match.index + match[0].length
+            });
+        }
+        const candidateTokens = tokens(candidate.name)
+            .map(normalizeToken)
+            .filter(Boolean);
+        let best = null;
+        for (let i = 0; i < sourceTokens.length; i++) {
+            for (let j = 0; j < candidateTokens.length; j++) {
+                if (sourceTokens[i].value !== candidateTokens[j]) continue;
+                let length = 0;
+                while (
+                    i + length < sourceTokens.length &&
+                    j + length < candidateTokens.length &&
+                    sourceTokens[i + length].value ===
+                        candidateTokens[j + length]
+                ) {
+                    length++;
+                }
+                const result = {
+                    start: sourceTokens[i].start,
+                    end: sourceTokens[i + length - 1].end,
+                    length
+                };
+                if (!best || result.length > best.length) {
+                    best = result;
+                }
+            }
+        }
+        return best;
+    }
+    function affixesFor(occurrence, candidate) {
+        const span = selectedSpan(occurrence, candidate);
+        if (!span) {
+            return { prefix: "", suffix: "" };
+        }
+        const clean = (value) => value.replace(/[\p{P}\p{S}\s]+/gu, " ").trim();
+        return {
+            prefix: clean(occurrence.text.slice(0, span.start)),
+            suffix: clean(occurrence.text.slice(span.end))
+        };
+    }
+    function addAffix(map, value) {
+        if (!value) return;
+        map.set(value, (map.get(value) || 0) + 1);
+    }
+    function analyze(text) {
+        const scanned = scanOccurrences(text);
+        const list = collect(scanned.foundCandidates, "c");
+        const startList = collect(scanned.foundStarts, "s");
+        // Pass One: exact full normalized identity.
+        for (const s of startList) {
+            const c = findExactCandidate(s, list);
+            if (!c) continue;
+            c.frequency += s.occurrenceCount;
+            c.assignedStarts.push({ start: s, pass: 1 });
+            s.matchedCandidate = c;
+            s.matchPass = 1;
+        }
+        // Pass Two: remaining Starts. Every Start can be assigned at most once.
+        for (const s of startList) {
+            if (s.matchedCandidate) continue;
+            const c = passTwoCandidate(s, list);
+            if (!c) continue;
+            c.frequency += s.occurrenceCount;
+            c.assignedStarts.push({ start: s, pass: 2 });
+            s.matchedCandidate = c;
+            s.matchPass = 2;
+            for (const occ of s.occurrences) {
+                const affix = affixesFor(occ, c);
+                addAffix(c.prefixes, affix.prefix);
+                addAffix(c.suffixes, affix.suffix);
+            }
+        }
+        list.sort(
+            (a, b) =>
+                b.frequency - a.frequency || a.originalIndex - b.originalIndex
         );
+        buildClusters(list);
+        return {
+            candidates: list,
+            starts: startList,
+            scanned: scanned.foundCandidates.length + scanned.foundStarts.length
+        };
     }
-    function buildCandidateClusters(candidates) {
-        const sorted = [...(candidates || [])].sort(compareCandidates);
-        const visited = new Set();
-        const clusters = [];
-        for (const seed of sorted) {
-            if (visited.has(seed)) continue;
-            const members = [];
-            const queue = [seed];
-            visited.add(seed);
-            while (queue.length) {
-                const current = queue.shift();
-                members.push(current);
-                for (const candidate of sorted) {
-                    if (visited.has(candidate)) continue;
-                    if (candidateSharesToken(current.name, candidate.name)) {
-                        visited.add(candidate);
-                        queue.push(candidate);
+    function sharedToken(a, b) {
+        const aa = new Set(tokens(a).map(normalizeToken));
+        return tokens(b)
+            .map(normalizeToken)
+            .some((t) => aa.has(t));
+    }
+    function buildClusters(list) {
+        // One bridge level only: seed -> direct members -> one bridge-linked member; no further expansion.
+        const claimed = new Set();
+        for (const seed of list) {
+            if (claimed.has(seed)) continue;
+            const direct = list.filter(
+                (c) =>
+                    c !== seed &&
+                    !claimed.has(c) &&
+                    sharedToken(seed.name, c.name)
+            );
+            if (!direct.length) {
+                seed.clusterSeed = null;
+                continue;
+            }
+            seed.clusterSeed = seed;
+            claimed.add(seed);
+            for (const member of direct) {
+                member.clusterSeed = seed;
+                claimed.add(member);
+            }
+            for (const bridge of direct) {
+                for (const member of list) {
+                    if (member === seed || claimed.has(member)) continue;
+                    if (sharedToken(bridge.name, member.name)) {
+                        member.clusterSeed = seed;
+                        claimed.add(member);
                     }
                 }
             }
-            members.sort(compareCandidates);
-            clusters.push({
-                seed: members[0],
-                members,
-                frequency: members.reduce(
-                    (sum, candidate) => sum + Number(candidate.frequency || 0),
-                    0
-                )
+        }
+    }
+    function escapeRegex(s) {
+        return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    function generateRegex(candidate, template) {
+        const value = normalizeSpace(candidate);
+        if (!value) return "";
+        let source = escapeRegex(value);
+        if (template === "Korean") {
+            // Treat hyphens as an optional separator: hyphen, space, or nothing.
+            source = source.replace(/-/g, "[ -]?").replace(/\s+/g, "[ -]?");
+        } else if (template === "Korean 2") {
+            source = source.replace(/-/g, "[- ]?").replace(/\s+/g, "[- ]+");
+        } else if (template === "Japanese") {
+            source = source.replace(/\s+/g, "\\s*");
+        }
+        return source;
+    }
+    function displayAffixes(map) {
+        if (!map.size) return "—";
+        return [...map.entries()]
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .map(([v, n]) => `${v} (${n})`)
+            .join(", ");
+    }
+    function esc(s) {
+        return String(s ?? "").replace(
+            /[&<>"']/g,
+            (c) =>
+                ({
+                    "&": "&amp;",
+                    "<": "&lt;",
+                    ">": "&gt;",
+                    '"': "&quot;",
+                    "'": "&#39;"
+                })[c]
+        );
+    }
+    function ensureStyle() {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = document.createElement("style");
+        style.id = STYLE_ID;
+        style.textContent = `#${PANEL_ID}{position:fixed;z-index:2147483646;background:#17191d;color:#f2f3f5;border:1px solid #555;border-radius:8px;box-shadow:0 8px 32px #0008;font:13px/1.4 system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden}#${PANEL_ID} *{box-sizing:border-box}#${PANEL_ID} .fr-head{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#24272d;cursor:move;user-select:none}#${PANEL_ID} .fr-head strong{font-size:14px}#${PANEL_ID} button,#${PANEL_ID} select{background:#343840;color:#f2f3f5;border:1px solid #555;border-radius:4px;padding:4px 7px;cursor:pointer}#${PANEL_ID} button:hover{background:#454a54}#${PANEL_ID} .fr-toolbar{display:flex;flex-wrap:wrap;gap:6px;padding:8px;border-bottom:1px solid #45484e}#${PANEL_ID} .fr-status{padding:5px 9px;color:#c7ccd4}#${PANEL_ID} .fr-status.error{color:#ff9999}#${PANEL_ID} .fr-tablewrap{overflow:auto;flex:1;min-height:0}#${PANEL_ID} table{border-collapse:collapse;width:100%;table-layout:fixed}#${PANEL_ID} th,#${PANEL_ID} td{border-bottom:1px solid #363940;padding:6px;text-align:left;vertical-align:top;overflow-wrap:anywhere}#${PANEL_ID} th{position:sticky;top:0;background:#25282e;z-index:1}#${PANEL_ID} td input{width:100%;min-width:80px;background:#101216;color:#fff;border:1px solid #555;border-radius:3px;padding:5px}#${PANEL_ID} .fr-regex{font:12px/1.35 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all}#${PANEL_ID} .fr-small{font-size:11px;color:#bdc2ca}#${PANEL_ID} .fr-resize{height:7px;cursor:ns-resize;background:#292c32}#${PANEL_ID} .fr-colresize{display:inline-block;float:right;width:5px;height:20px;cursor:col-resize}#${PANEL_ID} .fr-foot{padding:6px 9px;color:#aeb4be;border-top:1px solid #444;font-size:11px}#${PANEL_ID} .fr-hidden{display:none!important}`;
+        document.head.appendChild(style);
+    }
+    function createPanel() {
+        if (document.getElementById(PANEL_ID)) return;
+        ensureStyle();
+        const panel = document.createElement("section");
+        panel.id = PANEL_ID;
+        panel.style.left = `${Math.max(0, settings.x)}px`;
+        panel.style.top = `${Math.max(0, settings.y)}px`;
+        panel.style.width = `${Math.max(520, settings.width)}px`;
+        panel.style.height = `${Math.max(260, settings.height)}px`;
+        panel.innerHTML = `<div class="fr-head"><strong>FR Scanner</strong><span id="fr-count" class="fr-small"></span><span style="flex:1"></span><button id="fr-rescan">Rescan</button><button id="fr-min">${settings.minimized ? "Restore" : "Minimize"}</button><button id="fr-close" title="Close panel">×</button></div><div class="fr-toolbar" id="fr-toolbar"><label>Template <select id="fr-template">${TEMPLATES.map((t) => `<option>${esc(t)}</option>`).join("")}</select></label><button id="fr-copy-all">Copy all regexes</button><label><input type="checkbox" id="fr-show-singletons" style="vertical-align:middle"> Show hidden singletons</label></div><div id="fr-status" class="fr-status">Scanning visible page text…</div><div class="fr-tablewrap" id="fr-tablewrap"><table><thead><tr><th data-col="candidate">Candidate</th><th data-col="prefix">Prefix</th><th data-col="suffix">Suffix</th><th data-col="frequency">Frequency</th><th data-col="regex">Generated regex</th><th>Actions</th></tr></thead><tbody id="fr-rows"></tbody></table></div><div class="fr-foot">Candidate edits affect regex generation only; analysis results remain unchanged.</div><div class="fr-resize" title="Resize panel"></div>`;
+        document.body.appendChild(panel);
+        panel.querySelector("#fr-template").value = settings.template;
+        panel.querySelector("#fr-show-singletons").checked =
+            !!settings.showHiddenSingletons;
+        panel.querySelector("#fr-rescan").addEventListener("click", runScan);
+        panel.querySelector("#fr-min").addEventListener("click", () => {
+            settings.minimized = !settings.minimized;
+            saveSettings();
+            applyMinimized();
+        });
+        panel.querySelector("#fr-close").addEventListener("click", () => {
+            clearHighlights();
+            panel.remove();
+        });
+        panel.querySelector("#fr-template").addEventListener("change", (e) => {
+            settings.template = e.target.value;
+            saveSettings();
+            renderRows();
+        });
+        panel
+            .querySelector("#fr-show-singletons")
+            .addEventListener("change", (e) => {
+                settings.showHiddenSingletons = e.target.checked;
+                saveSettings();
+                renderRows();
             });
+        panel.querySelector("#fr-copy-all").addEventListener("click", () =>
+            copyText(
+                visibleCandidates()
+                    .map((c) => generateRegex(c.edit, settings.template))
+                    .filter(Boolean)
+                    .join("\n")
+            )
+        );
+        panel
+            .querySelector(".fr-head")
+            .addEventListener("pointerdown", startDrag);
+        panel
+            .querySelector(".fr-resize")
+            .addEventListener("pointerdown", startResize);
+        applyMinimized();
+        renderRows();
+    }
+    function applyMinimized() {
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        panel
+            .querySelector("#fr-toolbar")
+            .classList.toggle("fr-hidden", settings.minimized);
+        panel
+            .querySelector("#fr-status")
+            .classList.toggle("fr-hidden", settings.minimized);
+        panel
+            .querySelector("#fr-tablewrap")
+            .classList.toggle("fr-hidden", settings.minimized);
+        panel
+            .querySelector(".fr-foot")
+            .classList.toggle("fr-hidden", settings.minimized);
+        panel
+            .querySelector(".fr-resize")
+            .classList.toggle("fr-hidden", settings.minimized);
+        panel.style.height = settings.minimized
+            ? "38px"
+            : `${Math.max(260, settings.height)}px`;
+        panel.querySelector("#fr-min").textContent = settings.minimized
+            ? "Restore"
+            : "Minimize";
+    }
+    function startDrag(e) {
+        if (e.target.closest("button,select,input")) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        drag = {
+            x: e.clientX,
+            y: e.clientY,
+            left: panel.offsetLeft,
+            top: panel.offsetTop
+        };
+        document.addEventListener("pointermove", moveDrag);
+        document.addEventListener("pointerup", endDrag, { once: true });
+    }
+    function moveDrag(e) {
+        if (!drag) return;
+        const p = document.getElementById(PANEL_ID);
+        if (!p) return;
+        p.style.left = `${Math.max(0, drag.left + e.clientX - drag.x)}px`;
+        p.style.top = `${Math.max(0, drag.top + e.clientY - drag.y)}px`;
+    }
+    function endDrag() {
+        if (!drag) return;
+        const p = document.getElementById(PANEL_ID);
+        if (p) {
+            settings.x = p.offsetLeft;
+            settings.y = p.offsetTop;
+            saveSettings();
         }
-        return clusters.sort((a, b) => compareCandidates(a.seed, b.seed));
+        drag = null;
+        document.removeEventListener("pointermove", moveDrag);
     }
-    function generateRegex(value, template = "Other") {
-        const source = String(value ?? "").trim();
-        if (!source) return "";
-        const escaped = escapeRegExp(source);
-        switch (String(template || "Other")) {
-            case "Korean":
-                return (
-                    "(?<![가-힣A-Za-z0-9])" + escaped + "(?![가-힣A-Za-z0-9])"
-                );
-            case "Korean 2":
-                return "(?<![가-힣])" + escaped + "(?![가-힣])";
-            case "Japanese":
-                return (
-                    "(?<![一-龯々〆ヵぁ-んァ-ンA-Za-z0-9])" +
-                    escaped +
-                    "(?![一-龯々〆ヵぁ-んァ-ンA-Za-z0-9])"
-                );
-            case "Other":
-            default:
-                return "\\b" + escaped + "\\b";
+    function startResize(e) {
+        e.preventDefault();
+        const p = document.getElementById(PANEL_ID);
+        if (!p) return;
+        resize = {
+            x: e.clientX,
+            y: e.clientY,
+            w: p.offsetWidth,
+            h: p.offsetHeight
+        };
+        document.addEventListener("pointermove", moveResize);
+        document.addEventListener("pointerup", endResize, { once: true });
+    }
+    function moveResize(e) {
+        if (!resize) return;
+        const p = document.getElementById(PANEL_ID);
+        if (!p) return;
+        p.style.width = `${Math.max(520, resize.w + e.clientX - resize.x)}px`;
+        p.style.height = `${Math.max(260, resize.h + e.clientY - resize.y)}px`;
+    }
+    function endResize() {
+        const p = document.getElementById(PANEL_ID);
+        if (p) {
+            settings.width = p.offsetWidth;
+            settings.height = p.offsetHeight;
+            saveSettings();
+        }
+        resize = null;
+        document.removeEventListener("pointermove", moveResize);
+    }
+    function showStatus(message, error = false) {
+        const el = document.querySelector(`#${PANEL_ID} #fr-status`);
+        if (el) {
+            el.textContent = message;
+            el.classList.toggle("error", error);
         }
     }
-    function analyzePage() {
-        const pageText = getPageText();
-        const result = buildCandidateResults(pageText);
-        state.pageText = pageText;
-        state.candidates = result.candidates;
-        state.starts = result.starts;
-        state.candidateClusters = buildCandidateClusters(state.candidates);
-        state.regexTemplates = state.candidates.map((candidate) => ({
-            candidate,
-            regex: generateRegex(candidate.name, state.candidateTemplate)
-        }));
-        saveSettings();
-        return result;
+    function visibleCandidates() {
+        if (settings.showHiddenSingletons) return candidates;
+        const max = Math.max(0, ...candidates.map((c) => c.frequency));
+        return candidates.filter(
+            (c) =>
+                c.clusterSeed || c.frequency >= max * settings.singletonCutoff
+        );
     }
-    document.head.appendChild(scannerStyle);
-    /*
-     * FR SCANNER NOTES
-     *
-     * Candidate detection:
-     * - Scan the current page text for candidate names and chapter starts.
-     * - Normalize candidate tokens before comparison.
-     * - Match Starts in two passes.
-     * - Aggregate Prefix/Suffix values and calculate frequency.
-     * - Cluster candidates for display without collapsing them.
-     *
-     * Regex:
-     * - Generate reusable regex templates.
-     * - Preview matches against the current page text.
-     *
-     * UI:
-     * - FR Scanner owns its UI, CSS, panel, resizing, dragging,
-     *   saved dimensions, column widths, and storage keys.
-     * - Do not depend on FR Debug or shared runtime code.
-     */
+    function renderRows() {
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        const tbody = panel.querySelector("#fr-rows");
+        const shown = visibleCandidates();
+        panel.querySelector("#fr-count").textContent =
+            `${candidates.length} Candidates · ${starts.length} Starts`;
+        if (!candidates.length) {
+            tbody.innerHTML =
+                '<tr><td colspan="6">No Candidates found.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = shown
+            .map((c) => {
+                const edit = c.edit ?? c.name;
+                const regex = generateRegex(edit, settings.template);
+                return `<tr data-id="${esc(c.id)}"><td><input class="fr-edit" aria-label="Edit Candidate" value="${esc(edit)}"><div class="fr-small">Detected: ${esc(c.name)}</div></td><td>${esc(displayAffixes(c.prefixes))}</td><td>${esc(displayAffixes(c.suffixes))}</td><td>${c.frequency}<div class="fr-small">${c.occurrenceCount} Candidate occurrences</div></td><td><div class="fr-regex">${esc(regex)}</div></td><td><button class="fr-highlight">Highlight</button> <button class="fr-copy">Copy regex</button></td></tr>`;
+            })
+            .join("");
+        tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
+            const c = shown.find((x) => x.id === tr.dataset.id);
+            if (!c) return;
+            tr.querySelector(".fr-edit").addEventListener("input", (e) => {
+                c.edit = e.target.value;
+                settings.edits[c.normalized] = c.edit;
+                saveSettings();
+                tr.querySelector(".fr-regex").textContent = generateRegex(
+                    c.edit,
+                    settings.template
+                );
+            });
+            tr.querySelector(".fr-copy").addEventListener("click", () =>
+                copyText(generateRegex(c.edit, settings.template))
+            );
+            tr.querySelector(".fr-highlight").addEventListener("click", () =>
+                toggleHighlight(c, tr.querySelector(".fr-highlight"))
+            );
+        });
+        showStatus(
+            currentText
+                ? `Scanned ${currentText.length.toLocaleString()} characters. Pass One and Pass Two matching complete.`
+                : "No usable visible page text was found.",
+            !currentText
+        );
+    }
+    async function copyText(text) {
+        if (!text) {
+            showStatus("Nothing to copy.", true);
+            return;
+        }
+        try {
+            if (typeof GM_setClipboard === "function")
+                GM_setClipboard(text, "text");
+            else if (navigator.clipboard?.writeText)
+                await navigator.clipboard.writeText(text);
+            else {
+                const ta = document.createElement("textarea");
+                ta.value = text;
+                ta.style.position = "fixed";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.select();
+                const ok = document.execCommand("copy");
+                ta.remove();
+                if (!ok) throw new Error("Copy command failed");
+            }
+            showStatus("Copied regex text.");
+        } catch (_) {
+            showStatus(
+                "Could not copy. Check browser clipboard permissions.",
+                true
+            );
+        }
+    }
+    function clearHighlights() {
+        try {
+            if ("highlights" in CSS)
+                CSS.highlights.delete("fr-scanner-highlight");
+        } catch (_) {}
+        highlightStyle?.remove();
+        highlightStyle = null;
+        highlightedCandidateId = null;
+    }
+    function toggleHighlight(candidate, button) {
+        if (highlightedCandidateId === candidate.id) {
+            clearHighlights();
+            document
+                .querySelectorAll("#fr-scanner-panel .fr-highlight")
+                .forEach((b) => (b.textContent = "Highlight"));
+            return;
+        }
+        clearHighlights();
+        try {
+            if (!("highlights" in CSS) || typeof Highlight === "undefined") {
+                showStatus(
+                    "This browser does not support safe page highlighting.",
+                    true
+                );
+                return;
+            }
+            const ranges = [];
+            const target = identity(candidate.name);
+            const walker = document.createTreeWalker(
+                document.body,
+                NodeFilter.SHOW_TEXT,
+                {
+                    acceptNode(n) {
+                        let p = n.parentElement;
+                        while (p && p !== document.body) {
+                            if (isExcluded(p) || p.closest("#" + PANEL_ID))
+                                return NodeFilter.FILTER_REJECT;
+                            p = p.parentElement;
+                        }
+                        return n.nodeValue.trim()
+                            ? NodeFilter.FILTER_ACCEPT
+                            : NodeFilter.FILTER_REJECT;
+                    }
+                }
+            );
+            let n;
+            while ((n = walker.nextNode())) {
+                const txt = n.nodeValue;
+                const re = new RegExp(
+                    `(^|[^\\p{L}\\p{N}])(${escapeRegex(candidate.name)})(?=$|[^\\p{L}\\p{N}])`,
+                    "giu"
+                );
+                let m;
+                while ((m = re.exec(txt))) {
+                    const start = m.index + m[1].length;
+                    const r = new Range();
+                    r.setStart(n, start);
+                    r.setEnd(n, start + m[2].length);
+                    ranges.push(r);
+                }
+            }
+            if (!ranges.length) {
+                showStatus(
+                    "No exact visible occurrences could be highlighted.",
+                    true
+                );
+                return;
+            }
+            CSS.highlights.set(
+                "fr-scanner-highlight",
+                new Highlight(...ranges)
+            );
+            highlightStyle = document.createElement("style");
+            highlightStyle.textContent =
+                "::highlight(fr-scanner-highlight){background:#ffeb3b;color:#111;text-decoration:underline;text-decoration-color:#f80}";
+            document.head.appendChild(highlightStyle);
+            highlightedCandidateId = candidate.id;
+            document
+                .querySelectorAll("#fr-scanner-panel .fr-highlight")
+                .forEach((b) => (b.textContent = "Highlight"));
+            button.textContent = "Unhighlight";
+            ranges[0].startContainer.parentElement?.scrollIntoView({
+                behavior: "smooth",
+                block: "center"
+            });
+            showStatus(
+                `Highlighted ${ranges.length} visible occurrence(s) of ${candidate.name}.`
+            );
+        } catch (_) {
+            clearHighlights();
+            showStatus(
+                "Highlighting failed; the page was left unchanged.",
+                true
+            );
+        }
+    }
+    function runScan() {
+        clearHighlights();
+        try {
+            currentText = extractVisibleText();
+            if (!currentText) {
+                candidates = [];
+                starts = [];
+                renderRows();
+                showStatus(
+                    "No usable visible page text found. Try a page containing the story text.",
+                    true
+                );
+                return;
+            }
+            const result = analyze(currentText);
+            candidates = result.candidates;
+            starts = result.starts;
+            for (const c of candidates)
+                c.edit = settings.edits[c.normalized] ?? c.name;
+            renderRows();
+        } catch (err) {
+            candidates = [];
+            starts = [];
+            renderRows();
+            showStatus(
+                `Scan failed safely: ${err?.message || "unknown error"}`,
+                true
+            );
+        }
+    }
+    function initialize() {
+        if (!document.body) return;
+        createPanel();
+        runScan();
+        // A lightweight menu toggle without installing extra listeners on every render.
+        if (typeof GM_registerMenuCommand === "function")
+            GM_registerMenuCommand("Toggle FR Scanner", () => {
+                const p = document.getElementById(PANEL_ID);
+                if (p) p.remove();
+                else {
+                    createPanel();
+                    renderRows();
+                }
+            });
+    }
+    if (document.readyState === "loading")
+        document.addEventListener("DOMContentLoaded", initialize, {
+            once: true
+        });
+    else initialize();
 })();
-/*
- * ============================================================
- * FR SCANNER — PIPELINE SPECIFICATION
- * ============================================================
- *
- * PURPOSE
- * FR Scanner analyzes the current page, identifies and counts
- * capitalized words/phrases (Candidates), identifies sentence
- * starts (Starts), matches Starts to Candidates, extracts
- * Prefix/Suffix metadata, generates FoxReplace-compatible
- * regex inputs, and displays the results in a resizable UI.
- *
- * This specification is the source of truth for intended
- * FR Scanner behavior. Preserve these rules when modifying
- * or refactoring the code.
- *
- * ------------------------------------------------------------
- * A. INITIALIZATION
- * ------------------------------------------------------------
- *
- * - Load FR Scanner's independent settings and saved dimensions.
- * - Initialize page text, Candidates, Starts, candidate clusters,
- *   regex template, and UI state.
- * - Install FR Scanner's styles and panel.
- * - Register FR Scanner-specific menu commands.
- * - Never read or modify FR Debug storage.
- *
- * ------------------------------------------------------------
- * B. PAGE TEXT EXTRACTION — getPageText()
- * ------------------------------------------------------------
- *
- * - Start at document.body and recursively collect visible text.
- * - Preserve contiguous text across nested inline elements.
- * - Insert text boundaries at block elements, <br>, and <hr>.
- * - Exclude scripts, styles, hidden elements, navigation, form
- *   controls, ads, recommendations, comments, and FR Scanner /
- *   FR Debug UI.
- * - Normalize whitespace and return the extracted page text.
- * - Scan the page body directly using conservative exclusions.
- * - Do not select, rank, or fall back between chapter containers.
- *
- * ------------------------------------------------------------
- * C. OCCURRENCE COLLECTION
- * Functions: scanPageText(), collectOccurrences()
- * ------------------------------------------------------------
- *
- * - Apply the established capitalized-word/phrase regex.
- * - Classify matches as Candidate occurrences or sentence Starts.
- * - Maintain separate occurrence lists for Candidates and Starts.
- * - Preserve occurrence counts and source positions.
- * - Repeated Candidate occurrences may contribute to frequency.
- * - A Start must NEVER independently create a Candidate.
- *
- * INVARIANT:
- * Candidate identity and frequency originate from Candidate
- * occurrences, not from sentence-start occurrences.
- *
- * ------------------------------------------------------------
- * D. CANDIDATE NORMALIZATION AND FINALIZATION
- * Functions:
- * tokenizeCandidate()
- * normalizeCandidateToken()
- * normalizeCandidateIdentity()
- * normalizeCandidateDisplay()
- * mergeCandidateRecords()
- * finalizeCandidates()
- * ------------------------------------------------------------
- *
- * - Normalize tokens consistently, including curly apostrophes
- *   and protected possessive/plural handling.
- * - Generate normalized identity keys for deduplication.
- * - Preserve useful display forms and candidate variants.
- * - Merge occurrences belonging to the same Candidate.
- * - Calculate frequency using Candidate occurrences only.
- * - Sort by descending frequency, then name.
- * - Never use FoxReplace rule text to define Candidate identity.
- *
- * ------------------------------------------------------------
- * E. START RECORDS
- * Functions: collectStartRecords(), createStartRecord()
- * ------------------------------------------------------------
- *
- * - Create independent Start records from Start occurrences.
- * - Normalize Start identities and aggregate duplicates.
- * - Keep Start frequency separate from Candidate frequency
- *   until matching.
- * - Never create a Candidate solely because a phrase appears
- *   at the beginning of a sentence.
- *
- * ------------------------------------------------------------
- * F. TWO-PASS START MATCHING
- * Functions:
- * applyTwoPassStartMatching()
- * startMatchesCandidateExactly()
- * findBestCandidateForStart()
- * extractStartAffixes()
- * findTokenSubsequence()
- * ------------------------------------------------------------
- *
- * PASS 1 — EXACT NORMALIZED IDENTITY
- * - Match Starts whose normalized identity equals a Candidate.
- * - Consume exact-match Starts completely.
- * - Do not generate Prefix/Suffix metadata for exact matches.
- * - Never process an already-consumed Start again in Pass 2.
- *
- * PASS 2 — BEST CONTIGUOUS CANDIDATE MATCH
- * - Process only Starts remaining after Pass 1.
- * - Find contiguous Candidate token sequences within each Start.
- * - Choose the best match in this priority order:
- *     1. Longest Candidate token sequence.
- *     2. Earliest position within the Start.
- *     3. Earliest original Candidate occurrence.
- * - Associate the Start with the selected Candidate.
- * - Extract preceding tokens as Prefix metadata.
- * - Extract following tokens as Suffix metadata.
- * - Do not increase Candidate frequency for non-exact matches.
- *
- * INVARIANT:
- * Starts enrich Prefix/Suffix metadata. They must never inflate
- * Candidate frequency or create additional Candidate rows.
- *
- * ------------------------------------------------------------
- * G. PREFIX/SUFFIX AGGREGATION
- * Functions:
- * addPrefix()
- * addSuffix()
- * finalizePrefixSuffix()
- * getPrefixDisplay()
- * getSuffixDisplay()
- * ------------------------------------------------------------
- *
- * - Collect observations only from eligible non-identical
- *   Start matches.
- * - Normalize metadata keys before aggregation.
- * - Count repeated Prefix/Suffix values.
- * - Sort deterministically by descending frequency, then text.
- * - Generate display strings for the Candidate table.
- *
- * ------------------------------------------------------------
- * H. FOXREPLACE INPUT AND REGEX GENERATION
- * Functions:
- * getCandidateRuleInput()
- * generateRegex()
- * regenerateCandidateInputs()
- * ------------------------------------------------------------
- *
- * - Derive rule input from the Candidate's designated display/
- *   input value.
- * - Escape literal Candidate text correctly.
- * - Support these templates:
- *     Other, Korean, Korean 2, Japanese.
- * - Store the generated regex on each Candidate.
- * - Regenerate inputs whenever the template changes.
- * - Refresh the preview using the first visible Candidate.
- * - Generated regexes must NEVER redefine Candidate identity.
- *
- * ------------------------------------------------------------
- * I. CANDIDATE DISPLAY CLUSTERS
- * Functions:
- * candidateSharesToken()
- * candidatesAreRelated()
- * buildCandidateClusters()
- * ------------------------------------------------------------
- *
- * - Sort Candidates by descending frequency, then name.
- * - Select the highest-priority unclustered Candidate as seed.
- * - Add only directly related, unclustered Candidates sharing
- *   Candidate tokens.
- * - Do not perform second-degree expansion or bridge merging.
- * - Keep the seed first; sort related members by frequency/name.
- * - Keep unrelated Candidates as independent cluster roots.
- * - Apply the 5% frequency cutoff to singleton clusters only.
- * - Retain all multi-member clusters.
- * - Clusters describe visible Candidates only.
- * - Do not remove Candidates through imported FoxReplace rules:
- *   FR Scanner does not perform rule-based absorption.
- *
- * ------------------------------------------------------------
- * J. USER INTERFACE
- * Functions:
- * renderCandidatesTab()
- * renderCandidateRow()
- * renderCandidateInput()
- * renderCandidateRegex()
- * renderClusterRows()
- * ------------------------------------------------------------
- *
- * - Display Candidate, Prefix, Suffix, Frequency, Input, Regex.
- * - Render cluster roots as real Candidate rows.
- * - Indent related Candidates beneath their root.
- * - Allow cluster collapse/expand without changing analysis.
- * - Provide functional copy controls for input and regex.
- * - Provide a regex template selector and live preview.
- * - Support column resizing and restore saved column widths.
- * - Support panel dragging and resizing.
- * - Persist scanner-specific dimensions, column widths, template,
- *   and other FR Scanner settings.
- *
- * ------------------------------------------------------------
- * K. ANALYSIS PIPELINE — analyzePage()
- * ------------------------------------------------------------
- *
- * Execute the analysis in this order:
- *
- * 1. Extract page text.
- * 2. Scan text and collect Candidate/Start occurrences.
- * 3. Normalize, merge, and finalize Candidates.
- * 4. Build independent Start records.
- * 5. Match Starts using the two-pass algorithm.
- * 6. Aggregate Prefix/Suffix metadata.
- * 7. Generate Candidate inputs and regexes.
- * 8. Build display clusters.
- * 9. Store the completed Scanner state.
- * 10. Render the panel.
- *
- * - Catch analysis errors.
- * - Display useful error messages in the UI.
- * - Keep intermediate data separate where required to prevent
- *   accidental mixing of Candidates, Starts, and metadata.
- *
- * EXPECTED OUTPUT
- * - Extracted page text.
- * - Candidate records and Candidate occurrence frequencies.
- * - Independent Start records and Start frequencies.
- * - Prefix/Suffix metadata and aggregated frequencies.
- * - Candidate display clusters.
- * - Generated FoxReplace inputs and regexes.
- * - Regex template selection and live preview.
- *
- * EXPLICITLY OUT OF SCOPE
- * - FoxReplace JSON import.
- * - Page-rule matching.
- * - Rule-based Candidate absorption.
- * - Groups.
- * - Conflicts.
- *
- * FINAL DEVELOPMENT RULE
- * Do not change the behavior defined above unless the
- * specification is intentionally updated. In particular,
- * never allow Starts, regex generation, display clustering,
- * or FoxReplace rules to silently alter Candidate identity
- * or Candidate frequency.
- *
- * ============================================================
- */
