@@ -84,6 +84,7 @@
     let highlightedCandidateId = null;
     let drag = null;
     let resize = null;
+    let columnResize = null;
     function loadSettings() {
         try {
             const stored =
@@ -406,110 +407,87 @@
         };
     }
     function passTwoCandidate(start, list) {
-        const st = tokens(start.name ?? start.text)
+        const startTokens = tokens(start.name ?? start.text)
             .map(normalizeToken)
             .filter(Boolean);
-        if (!st.length) return null;
-        function compareAlignments(a, b) {
-            if (a.length !== b.length) {
-                return a.length - b.length;
+        const matches = [];
+        list.forEach((candidate, originalIndex) => {
+            const candidateTokens = tokens(candidate.name)
+                .map(normalizeToken)
+                .filter(Boolean);
+            if (
+                !candidateTokens.length ||
+                candidateTokens.length > startTokens.length
+            ) {
+                return;
             }
-            function longestRun(pairs) {
-                let best = 0;
-                let run = 0;
-                for (let i = 0; i < pairs.length; i++) {
-                    if (
-                        i > 0 &&
-                        pairs[i][0] === pairs[i - 1][0] + 1 &&
-                        pairs[i][1] === pairs[i - 1][1] + 1
-                    ) {
-                        run++;
-                    } else {
-                        run = 1;
-                    }
-                    best = Math.max(best, run);
-                }
-                return best;
-            }
-            const runA = longestRun(a);
-            const runB = longestRun(b);
-            if (runA !== runB) {
-                return runA - runB;
-            }
-            // Prefer the rightmost alignment, comparing from the end.
-            for (let i = a.length - 1; i >= 0; i--) {
-                if (a[i][1] !== b[i][1]) {
-                    return a[i][1] - b[i][1];
-                }
-                if (a[i][0] !== b[i][0]) {
-                    return a[i][0] - b[i][0];
+            // Find contiguous Candidate-token sequences within the Start.
+            const alignments = [];
+            for (
+                let i = 0;
+                i <= startTokens.length - candidateTokens.length;
+                i++
+            ) {
+                const matched = candidateTokens.every(
+                    (token, j) => token === startTokens[i + j]
+                );
+                if (matched) {
+                    alignments.push(candidateTokens.map((_, j) => [j, i + j]));
                 }
             }
-            return 0;
-        }
-        function bestAlignment(ct) {
-            const memo = new Map();
-            function solve(i, j) {
-                if (i >= ct.length || j >= st.length) return [];
-                const key = `${i}:${j}`;
-                if (memo.has(key)) return memo.get(key);
-                // Option 1: skip this Candidate token.
-                let best = solve(i + 1, j);
-                // Option 2: skip this Start token.
-                const skipStart = solve(i, j + 1);
-                if (compareAlignments(skipStart, best) > 0) {
-                    best = skipStart;
-                }
-                // Option 3: match equal tokens, preserving order.
-                if (ct[i] === st[j]) {
-                    const matched = [[i, j], ...solve(i + 1, j + 1)];
-                    if (compareAlignments(matched, best) > 0) {
-                        best = matched;
+            if (!alignments.length) return;
+            // Prefer the alignment furthest to the right.
+            alignments.sort((a, b) => {
+                for (let i = a.length - 1; i >= 0; i--) {
+                    if (a[i][1] !== b[i][1]) {
+                        return b[i][1] - a[i][1];
                     }
                 }
-                memo.set(key, best);
-                return best;
-            }
-            return solve(0, 0);
-        }
-        const choices = [];
-        for (const c of list) {
-            const ct = tokens(c.name).map(normalizeToken).filter(Boolean);
-            if (!ct.length) continue;
-            const alignment = bestAlignment(ct);
-            if (!alignment.length) continue;
-            let longestContiguous = 1;
-            let run = 1;
-            for (let i = 1; i < alignment.length; i++) {
-                if (
-                    alignment[i][0] === alignment[i - 1][0] + 1 &&
-                    alignment[i][1] === alignment[i - 1][1] + 1
-                ) {
-                    run++;
-                } else {
-                    run = 1;
-                }
-                longestContiguous = Math.max(longestContiguous, run);
-            }
-            choices.push({
-                candidate: c,
-                matched: alignment.length,
-                totalTokens: ct.length,
-                contiguous: longestContiguous,
-                alignment,
-                rightmost: alignment[alignment.length - 1][1],
-                originalIndex: c.originalIndex
+                return 0;
             });
-        }
-        choices.sort(
-            (a, b) =>
-                b.matched - a.matched ||
-                a.totalTokens - b.totalTokens ||
-                b.contiguous - a.contiguous ||
-                b.rightmost - a.rightmost ||
-                a.originalIndex - b.originalIndex
-        );
-        return choices[0] || null;
+            const alignment = alignments[0];
+            const exact =
+                candidateTokens.length === startTokens.length &&
+                candidateTokens.every((token, i) => token === startTokens[i]);
+            matches.push({
+                candidate,
+                alignment,
+                exact,
+                matched: candidateTokens.length,
+                totalTokens: candidateTokens.length,
+                originalIndex
+            });
+        });
+        // Pipeline priority:
+        // 1. Exact normalized match
+        // 2. Most matching tokens
+        // 3. Fewest total tokens in Candidate
+        // 4. Tokens furthest right, comparing right to left
+        // 5. First Candidate in original order
+        matches.sort((a, b) => {
+            if (a.exact !== b.exact) {
+                return Number(b.exact) - Number(a.exact);
+            }
+            if (a.matched !== b.matched) {
+                return b.matched - a.matched;
+            }
+            if (a.totalTokens !== b.totalTokens) {
+                return a.totalTokens - b.totalTokens;
+            }
+            for (
+                let i = Math.min(a.alignment.length, b.alignment.length) - 1;
+                i >= 0;
+                i--
+            ) {
+                const aStartIndex = a.alignment[i][1];
+                const bStartIndex = b.alignment[i][1];
+                if (aStartIndex !== bStartIndex) {
+                    return bStartIndex - aStartIndex;
+                }
+            }
+            return a.originalIndex - b.originalIndex;
+        });
+        return matches.length ? matches[0] : null;
     }
     function selectedSpan(start, alignment) {
         if (!alignment?.length) return null;
@@ -517,7 +495,6 @@
         const source = start.text;
         const re = /\S+/g;
         let match;
-
         while ((match = re.exec(source)) !== null) {
             const value = normalizeToken(match[0]);
             if (!value) continue;
@@ -527,10 +504,8 @@
                 end: match.index + match[0].length
             });
         }
-
         // Pass Two alignment pairs are [candidateTokenIndex, startTokenIndex].
         const sourceIndexes = alignment.map((pair) => pair[1]);
-
         if (
             sourceIndexes.some(
                 (index) =>
@@ -541,10 +516,8 @@
         ) {
             return null;
         }
-
         const first = Math.min(...sourceIndexes);
         const last = Math.max(...sourceIndexes);
-
         return {
             start: sourceTokens[first].start,
             end: sourceTokens[last].end
@@ -592,7 +565,7 @@
                     .map(normalizeToken)
                     .filter(Boolean)
                     .map((_, index) => [index, index]);
-                const affix = affixesFor(occ, c, alignment);
+                const affix = affixesFor(occ, alignment);
                 addAffix(c.prefixes, affix.prefix);
                 addAffix(c.suffixes, affix.suffix);
             }
@@ -608,7 +581,7 @@
             s.matchedCandidate = c;
             s.matchPass = 2;
             for (const occ of s.occurrences) {
-                const affix = affixesFor(occ, c, match.alignment);
+                const affix = affixesFor(occ, match.alignment);
                 addAffix(c.prefixes, affix.prefix);
                 addAffix(c.suffixes, affix.suffix);
             }
@@ -675,18 +648,38 @@
         return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     }
     function generateRegex(candidate, template) {
-        const value = normalizeSpace(candidate);
+        const value = String(candidate ?? "").trim();
         if (!value) return "";
-        let source = escapeRegex(value);
-        if (template === "Korean") {
-            // Treat hyphens as an optional separator: hyphen, space, or nothing.
-            source = source.replace(/-/g, "[ -]?").replace(/\s+/g, "[ -]?");
-        } else if (template === "Korean 2") {
-            source = source.replace(/-/g, "[- ]?").replace(/\s+/g, "[- ]+");
-        } else if (template === "Japanese") {
-            source = source.replace(/\s+/g, "\\s*");
+        const parts = value.split(/\s+/).filter(Boolean);
+        let source = "";
+        if (template === "Japanese") {
+            const rightTwo = parts.slice(-2).map(escapeRegex);
+            if (rightTwo.length === 2) {
+                source = `${rightTwo[0]}\\s*${rightTwo[1]}|${rightTwo[1]}\\s*${rightTwo[0]}`;
+            } else {
+                source = escapeRegex(value);
+            }
+        } else {
+            source = escapeRegex(value);
+            if (template === "Korean") {
+                source = source.replace(/-/g, "[ -]?").replace(/\s+/g, "[ -]?");
+            } else if (template === "Korean 2") {
+                source = source.replace(/-/g, "[- ]?").replace(/\s+/g, "[- ]+");
+                // Make the second token from the right optional.
+                if (parts.length >= 2) {
+                    const last = escapeRegex(parts.at(-1));
+                    const optional = escapeRegex(parts.at(-2));
+                    const prefix = parts
+                        .slice(0, -2)
+                        .map(escapeRegex)
+                        .join("[- ]+");
+                    source = prefix
+                        ? `${prefix}[- ]+(?:${optional}[- ]+)?${last}`
+                        : `(?:${optional}[- ]+)?${last}`;
+                }
+            }
         }
-        return source;
+        return `(?<![a-z])(?:${source})(?![a-z])`;
     }
     function displayAffixes(map) {
         if (!map.size) return "—";
@@ -712,7 +705,140 @@
         if (document.getElementById(STYLE_ID)) return;
         const style = document.createElement("style");
         style.id = STYLE_ID;
-        style.textContent = `#${PANEL_ID}{position:fixed;z-index:2147483646;background:#17191d;color:#f2f3f5;border:1px solid #555;border-radius:8px;box-shadow:0 8px 32px #0008;font:13px/1.4 system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden}#${PANEL_ID} *{box-sizing:border-box}#${PANEL_ID} .fr-head{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#24272d;cursor:move;user-select:none}#${PANEL_ID} .fr-head strong{font-size:14px}#${PANEL_ID} button,#${PANEL_ID} select{background:#343840;color:#f2f3f5;border:1px solid #555;border-radius:4px;padding:4px 7px;cursor:pointer}#${PANEL_ID} button:hover{background:#454a54}#${PANEL_ID} .fr-toolbar{display:flex;flex-wrap:wrap;gap:6px;padding:8px;border-bottom:1px solid #45484e}#${PANEL_ID} .fr-status{padding:5px 9px;color:#c7ccd4}#${PANEL_ID} .fr-status.error{color:#ff9999}#${PANEL_ID} .fr-tablewrap{overflow:auto;flex:1;min-height:0}#${PANEL_ID} table{border-collapse:collapse;width:max-content;min-width:100%;table-layout:auto}#${PANEL_ID} th,#${PANEL_ID} td{border-bottom:1px solid #363940;padding:6px;text-align:left;vertical-align:top;overflow-wrap:anywhere;max-width:400px}#${PANEL_ID} th{position:sticky;top:0;background:#25282e;z-index:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#${PANEL_ID} td input{width:100%;min-width:80px;background:#101216;color:#fff;border:1px solid #555;border-radius:3px;padding:5px}#${PANEL_ID} .fr-regex{font:12px/1.35 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all}#${PANEL_ID} .fr-small{font-size:11px;color:#bdc2ca}#${PANEL_ID} .fr-resize{height:7px;cursor:ns-resize;background:#292c32}#${PANEL_ID} .fr-colresize{display:inline-block;float:right;width:5px;height:20px;cursor:col-resize}#${PANEL_ID} .fr-foot{padding:6px 9px;color:#aeb4be;border-top:1px solid #444;font-size:11px}#${PANEL_ID} .fr-hidden{display:none!important}`;
+        style.textContent = `
+        #${PANEL_ID} {
+            position: fixed;
+            z-index: 2147483646;
+            background: #17191d;
+            color: #f2f3f5;
+            border: 1px solid #555;
+            border-radius: 8px;
+            box-shadow: 0 8px 32px #0008;
+            font: 13px/1.4 system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #${PANEL_ID} * {
+            box-sizing: border-box;
+        }
+        #${PANEL_ID} .fr-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            background: #24272d;
+            cursor: move;
+            user-select: none;
+        }
+        #${PANEL_ID} .fr-head strong {
+            font-size: 14px;
+        }
+        #${PANEL_ID} button,
+        #${PANEL_ID} select {
+            background: #343840;
+            color: #f2f3f5;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 4px 7px;
+            cursor: pointer;
+        }
+        #${PANEL_ID} button:hover {
+            background: #454a54;
+        }
+        #${PANEL_ID} .fr-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 8px;
+            border-bottom: 1px solid #45484e;
+        }
+        #${PANEL_ID} .fr-status {
+            padding: 5px 9px;
+            color: #c7ccd4;
+        }
+        #${PANEL_ID} .fr-status.error {
+            color: #ff9999;
+        }
+        #${PANEL_ID} .fr-tablewrap {
+            overflow: auto;
+            flex: 1;
+            min-height: 0;
+        }
+        #${PANEL_ID} table {
+            border-collapse: collapse;
+            width: max-content;
+            min-width: 100%;
+            table-layout: fixed;
+        }
+        #${PANEL_ID} th,
+        #${PANEL_ID} td {
+            border-bottom: 1px solid #363940;
+            padding: 6px;
+            text-align: left;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+            max-width: 400px;
+        }
+        #${PANEL_ID} th {
+          position: sticky;
+           top: 0;
+           background: #25282e;
+              z-index: 1;
+           white-space: nowrap;
+              overflow: hidden;
+               text-overflow: ellipsis;
+        }
+          #${PANEL_ID} th[data-col] {
+          position: sticky;
+        }
+        #${PANEL_ID} td input {
+            width: 100%;
+            min-width: 80px;
+            background: #101216;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 5px;
+        }
+        #${PANEL_ID} .fr-regex {
+            font: 12px/1.35 ui-monospace, monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        #${PANEL_ID} .fr-small {
+            font-size: 11px;
+            color: #bdc2ca;
+        }
+        #${PANEL_ID} .fr-resize {
+            height: 7px;
+            cursor: ns-resize;
+            background: #292c32;
+        }
+        #${PANEL_ID} .fr-colresize {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 6px;
+            height: 100%;
+            cursor: col-resize;
+            user-select: none;
+            touch-action: none;
+            z-index: 2;
+        }
+        #${PANEL_ID} .fr-colresize:hover {
+            background: #747e91;
+        }
+        #${PANEL_ID} .fr-foot {
+            padding: 6px 9px;
+            color: #aeb4be;
+            border-top: 1px solid #444;
+            font-size: 11px;
+        }
+        #${PANEL_ID} .fr-hidden {
+            display: none !important;
+        }
+    `;
         document.head.appendChild(style);
     }
     function createPanel() {
@@ -748,7 +874,7 @@
                         <th data-col="suffix">Suffix</th>
                         <th data-col="frequency">#</th>
                         <th data-col="regex" title="Generated regex">Regex</th>
-                        <th>Actions</th>
+                        <th data-col="actions">Actions</th>
                     </tr>
                 </thead>
                 <tbody id="fr-rows"></tbody>
@@ -866,14 +992,80 @@
         if (settings.showHiddenSingletons) return candidates;
         const max = Math.max(0, ...candidates.map((c) => c.frequency));
         return candidates.filter(
-            (c) =>
-                c.clusterSeed || c.frequency >= max * settings.singletonCutoff
+            (c) => c.clusterSeed || c.frequency > max * settings.singletonCutoff
         );
+    }
+    function applyColumnWidths() {
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        const table = panel.querySelector("table");
+        const headers = [...table.querySelectorAll("thead th")];
+        headers.forEach((th) => {
+            const key = th.dataset.col;
+            if (!key) return;
+            const width = settings.columnWidths?.[key];
+            if (Number.isFinite(width) && width > 0) {
+                th.style.width = `${Math.max(50, Math.min(400, width))}px`;
+            }
+            if (th.querySelector(".fr-colresize")) return;
+            const handle = document.createElement("span");
+            handle.className = "fr-colresize";
+            handle.title = "Drag to resize column";
+            handle.setAttribute("aria-label", `Resize ${key} column`);
+            handle.addEventListener("pointerdown", (e) => {
+                startColumnResize(e, key, th);
+            });
+            th.appendChild(handle);
+        });
+    }
+    function startColumnResize(e, key, th) {
+        e.preventDefault();
+        e.stopPropagation();
+        columnResize = {
+            key,
+            startX: e.clientX,
+            startWidth: th.getBoundingClientRect().width
+        };
+        document.addEventListener("pointermove", moveColumnResize);
+        document.addEventListener("pointerup", endColumnResize, { once: true });
+    }
+    function moveColumnResize(e) {
+        if (!columnResize) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        const th = panel.querySelector(`th[data-col="${columnResize.key}"]`);
+        if (!th) return;
+        const width = Math.max(
+            50,
+            Math.min(
+                400,
+                columnResize.startWidth + e.clientX - columnResize.startX
+            )
+        );
+        th.style.width = `${width}px`;
+    }
+    function endColumnResize() {
+        const panel = document.getElementById(PANEL_ID);
+        if (panel && columnResize) {
+            const th = panel.querySelector(
+                `th[data-col="${columnResize.key}"]`
+            );
+            if (th) {
+                settings.columnWidths ??= {};
+                settings.columnWidths[columnResize.key] = Math.round(
+                    th.getBoundingClientRect().width
+                );
+                saveSettings();
+            }
+        }
+        columnResize = null;
+        document.removeEventListener("pointermove", moveColumnResize);
     }
     function renderRows() {
         const panel = document.getElementById(PANEL_ID);
         if (!panel) return;
         const tbody = panel.querySelector("#fr-rows");
+        applyColumnWidths();
         const shown = visibleCandidates();
         panel.querySelector("#fr-count").textContent =
             `${candidates.length} Candidates · ${starts.length} Starts`;
@@ -895,6 +1087,7 @@
         </tr>`;
             })
             .join("");
+        applyColumnWidths();
         tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
             const c = shown.find((x) => x.id === tr.dataset.id);
             if (!c) return;
@@ -1039,6 +1232,12 @@
                 true
             );
         }
+    }
+    function showStatus(message, isError = false) {
+        const status = document.querySelector("#fr-scanner-status");
+        if (!status) return;
+        status.textContent = message;
+        status.classList.toggle("fr-error", isError);
     }
     function runScan() {
         clearHighlights();
