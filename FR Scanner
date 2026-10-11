@@ -222,34 +222,42 @@
         return index === 0;
     }
     function scanOccurrences(text) {
-        const foundCandidates = [],
-            foundStarts = [];
-        OCCURRENCE_RE.lastIndex = 0;
+        const starts = [];
+        const candidates = [];
+        const re = new RegExp(OCCURRENCE_RE.source, OCCURRENCE_RE.flags);
         let m;
-        while ((m = OCCURRENCE_RE.exec(text))) {
-            const value = normalizeSpace(m[1]);
-            if (!value) continue;
-            const occ = {
-                text: value,
-                index: m.index + m[0].indexOf(m[1]),
-                end: m.index + m[0].indexOf(m[1]) + m[1].length
+        while ((m = re.exec(text)) !== null) {
+            const phrase = m[1];
+            const start = m.index + m[0].indexOf(phrase);
+            const end = start + phrase.length;
+            // Inspect the text before this occurrence.
+            const before = text.slice(0, start);
+            const lastBoundary = Math.max(
+                before.lastIndexOf("."),
+                before.lastIndexOf("!"),
+                before.lastIndexOf("?")
+            );
+            const afterBoundary = before.slice(lastBoundary + 1);
+            const isStart =
+                afterBoundary.trim() === "" &&
+                (lastBoundary === -1 || /[.!?]/.test(before[lastBoundary]));
+            const occurrence = {
+                text: phrase,
+                normalized: normalize(phrase),
+                start,
+                end
             };
-            // Avoid treating a single-token prefix of a longer capitalized phrase as an extra match.
-            const previous = foundCandidates
-                .concat(foundStarts)
-                .sort((a, b) => a.index - b.index)
-                .at(-1);
-            if (
-                previous &&
-                occ.index >= previous.index &&
-                occ.index < previous.end
-            )
-                continue;
-            if (isSentenceStart(text, occ.index)) foundStarts.push(occ);
-            else foundCandidates.push(occ);
-            if (m[0].length === 0) OCCURRENCE_RE.lastIndex++;
+            if (isStart) {
+                starts.push(occurrence);
+            } else {
+                candidates.push(occurrence);
+            }
+            // Guard against a zero-length match.
+            if (m[0].length === 0) {
+                re.lastIndex++;
+            }
         }
-        return { foundCandidates, foundStarts };
+        return { starts, candidates };
     }
     function collect(records, kind) {
         const map = new Map();
@@ -265,7 +273,7 @@
                     normalized: key,
                     occurrenceCount: 0,
                     frequency: 0,
-                    originalIndex: occ.index,
+                    originalIndex: occ.start,
                     occurrences: [],
                     prefixes: new Map(),
                     suffixes: new Map(),
@@ -391,8 +399,8 @@
     }
     function analyze(text) {
         const scanned = scanOccurrences(text);
-        const list = collect(scanned.foundCandidates, "c");
-        const startList = collect(scanned.foundStarts, "s");
+        const list = collect(scanned.candidates, "c");
+        const startList = collect(scanned.starts, "s");
         // Pass One: exact full normalized identity.
         for (const s of startList) {
             const c = findExactCandidate(s, list);
@@ -425,7 +433,7 @@
         return {
             candidates: list,
             starts: startList,
-            scanned: scanned.foundCandidates.length + scanned.foundStarts.length
+            scanned: scanned.candidates.length + scanned.starts.length
         };
     }
     function sharedToken(a, b) {
