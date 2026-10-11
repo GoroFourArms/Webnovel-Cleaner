@@ -212,7 +212,7 @@
     }
     // One occurrence is one regex match. Sentence position determines Start vs Candidate.
     const OCCURRENCE_RE =
-        /(?<![A-Z0-9'’.-])(?:[A-Z](?:\.[A-Z])+\.\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’.-]*)(?:[ \t]+(?:[A-Z](?:\.[A-Z])+\.\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’.-]*))*(?![A-Za-z0-9'’.-])/g;
+        /(?<![A-Z0-9'’.-])((?:[A-Z](?:\.[A-Z])+\.\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’.-]*)(?:[ \t]+(?:[A-Z](?:\.[A-Z])+\.\.?|[A-Z]\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’.-]*))*)(?![A-Za-z0-9'’.-])/g;
     function isSentenceStart(text, index) {
         for (let i = index - 1; i >= 0; i--) {
             const c = text[i];
@@ -867,7 +867,7 @@
     function initialize() {
         if (typeof GM_registerMenuCommand === "function") {
             GM_registerMenuCommand("Toggle FR Scanner", () => {
-                const panel = document.getElementById("fr-scanner-panel");
+                const panel = document.getElementById(PANEL_ID);
                 if (panel) {
                     panel.remove();
                     return;
