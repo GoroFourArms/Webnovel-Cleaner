@@ -6,6 +6,7 @@
             "request": "launch",
             "name": "Run Current File",
             "program": "${file}",
+            "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
             "console": "integratedTerminal"
         }
     ]

@@ -651,35 +651,38 @@
         const value = String(candidate ?? "").trim();
         if (!value) return "";
         const parts = value.split(/\s+/).filter(Boolean);
-        let source = "";
-        if (template === "Japanese") {
-            const rightTwo = parts.slice(-2).map(escapeRegex);
-            if (rightTwo.length === 2) {
-                source = `${rightTwo[0]}\\s*${rightTwo[1]}|${rightTwo[1]}\\s*${rightTwo[0]}`;
-            } else {
-                source = escapeRegex(value);
-            }
-        } else {
-            source = escapeRegex(value);
-            if (template === "Korean") {
-                source = source.replace(/-/g, "[ -]?").replace(/\s+/g, "[ -]?");
-            } else if (template === "Korean 2") {
-                source = source.replace(/-/g, "[- ]?").replace(/\s+/g, "[- ]+");
-                // Make the second token from the right optional.
-                if (parts.length >= 2) {
-                    const last = escapeRegex(parts.at(-1));
-                    const optional = escapeRegex(parts.at(-2));
-                    const prefix = parts
-                        .slice(0, -2)
-                        .map(escapeRegex)
-                        .join("[- ]+");
-                    source = prefix
-                        ? `${prefix}[- ]+(?:${optional}[- ]+)?${last}`
-                        : `(?:${optional}[- ]+)?${last}`;
-                }
-            }
+        const escape = (text) => escapeRegex(text);
+        // Names without a hyphen always use Other format.
+        if (!value.includes("-")) {
+            return `(?<![a-z])${escape(value)}(?![a-z])`;
         }
-        return `(?<![a-z])(?:${source})(?![a-z])`;
+        if (template === "Korean") {
+            const finalName = escape(parts[parts.length - 1]).replace(
+                /-/g,
+                "[ -]?"
+            );
+            if (parts.length === 1) {
+                return `(?<![a-z])${finalName}(?![a-z])`;
+            }
+            if (parts.length === 2) {
+                const previous = escape(parts[0]);
+                return `(?<![a-z])(?:${previous})?${finalName}(?![a-z])`;
+            }
+            const title = parts.slice(0, -2).join(" ");
+            const previous = parts[parts.length - 2];
+            const fullName = escape(value);
+            return `(?<![a-z])(?:(?:${escape(title)} )?(?:${escape(previous)})?${finalName}|${fullName})(?![a-z])`;
+        }
+        if (template === "Japanese") {
+            const lastTwo = parts.slice(-2);
+            if (lastTwo.length === 2) {
+                const first = escape(lastTwo[0]);
+                const second = escape(lastTwo[1]);
+                return `(?<![a-z])(?:${first}\\s+${second}|${second}\\s+${first})(?![a-z])`;
+            }
+            return `(?<![a-z])${escape(value)}(?![a-z])`;
+        }
+        return `(?<![a-z])${escape(value)}(?![a-z])`;
     }
     function displayAffixes(map) {
         if (!map.size) return "—";
