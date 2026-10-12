@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FR Scanner 2
 // @namespace    fr-scanner
-// @version      2.0.0
-// @description  Scan visible page text, count normalized name tokens, and prepare template-specific regexes.
+// @version      3.0.1
+// @description  FR Scanner 2 v3: scan visible text, normalize names, rank token counts, and prepare template-specific regexes.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -14,9 +14,8 @@
 // ==/UserScript==
 (() => {
     "use strict";
-    const STORE_KEY = "frScanner.settings.v2";
+    const STORE_KEY = "frScanner.settings.v3";
     const PANEL_ID = "fr-scanner-panel";
-    const STYLE_ID = "fr-scanner-style";
     const EXCLUDED_TAGS = new Set([
         "SCRIPT",
         "STYLE",
@@ -68,16 +67,21 @@
         width: 700,
         height: 500,
         minimized: false,
-        template: "",
+        template: "Other",
         singletonCutoff: 0.05,
         showHiddenSingletons: false,
         edits: {},
-        columnWidths: {},
-        wordFilters: {}
+        columnWidths: {}
     };
-    // These words are commonly capitalized because they occur at the
-    // beginnings of sentences. Excluding them prevents many false positives.
-    // Remove or add words here to customize the filter.
+    // Exact, case-sensitive matches. Edit in code; no UI editor.
+    const WORD_FILTER = new Set([
+        // "Example",
+    ]);
+    // Capitalized common words to filter. Maintained manually.
+    const HIGH_FREQUENCY_CAPITAL_WORDS = new Set([
+        // "The",
+        // "This",
+    ]);
     const COMMON_CAPITALIZED_WORDS = new Set(
         (
             "a an the this that these those another any each every either " +
@@ -101,106 +105,63 @@
     const TITLE_PATTERN =
         /^(?:Mr|Mrs|Ms|Miss|Dr|Prof|Sr|Jr|St|Rev|Hon|Capt|Col|Gen|Sgt|Lt|Maj)\.$/i;
     const TOKEN_SOURCE =
-        "(?:[A-Z](?:\\.[A-Z])+\\.?|[A-Z]\\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’\\-]*)";
+        "(?:[A-Z](?:\\.[A-Z])+\\.?|[A-Z]\\.|[A-Z]{2,}|[A-Z][A-Za-z0-9'’\-]*)";
     const OCCURRENCE_RE = new RegExp(
         `\\b${TOKEN_SOURCE}(?:\\s+${TOKEN_SOURCE})*\\b`,
         "g"
     );
+    const TEXT_CONTAINER_SELECTOR = "";
     let settings = loadSettings();
     let currentText = "";
     let candidates = [];
-    let starts = [];
     let highlightStyle = null;
     let highlightedCandidateId = null;
-    let drag = null;
-    let resize = null;
-    let columnResize = null;
     function loadSettings() {
-        let saved = {};
         try {
-            const raw = localStorage.getItem(STORE_KEY);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (
-                    parsed &&
-                    typeof parsed === "object" &&
-                    !Array.isArray(parsed)
-                ) {
-                    saved = parsed;
-                }
+            const saved =
+                typeof GM_getValue === "function"
+                    ? GM_getValue(STORE_KEY, {})
+                    : {};
+            const parsed = saved && typeof saved === "object" ? saved : {};
+            const merged = {
+                ...DEFAULTS,
+                ...parsed,
+                edits: { ...(parsed.edits || {}) },
+                columnWidths: { ...(parsed.columnWidths || {}) }
+            };
+            for (const key of ["x", "y", "width", "height"]) {
+                const value = Number(merged[key]);
+                merged[key] = Number.isFinite(value) ? value : DEFAULTS[key];
             }
-        } catch (error) {
-            console.warn("FR Scanner: Could not load saved settings.", error);
-        }
-        const defaults = JSON.parse(JSON.stringify(DEFAULTS));
-        const merged = {
-            ...defaults,
-            ...saved,
-            // Keep nested settings objects instead of replacing defaults entirely.
-            edits: {
-                ...defaults.edits,
-                ...(saved.edits && typeof saved.edits === "object"
-                    ? saved.edits
-                    : {})
-            },
-            columnWidths: {
-                ...defaults.columnWidths,
-                ...(saved.columnWidths && typeof saved.columnWidths === "object"
-                    ? saved.columnWidths
-                    : {})
-            },
-            wordFilters: {
-                ...defaults.wordFilters,
-                ...(saved.wordFilters && typeof saved.wordFilters === "object"
-                    ? saved.wordFilters
-                    : {})
+            merged.singletonCutoff = Number(merged.singletonCutoff);
+            if (
+                !Number.isFinite(merged.singletonCutoff) ||
+                merged.singletonCutoff < 0 ||
+                merged.singletonCutoff > 1
+            ) {
+                merged.singletonCutoff = DEFAULTS.singletonCutoff;
             }
-        };
-        // Validate numeric settings.
-        const validNumber = (value, fallback, minimum, maximum) => {
-            const number = Number(value);
-            return Number.isFinite(number)
-                ? Math.min(maximum, Math.max(minimum, number))
-                : fallback;
-        };
-        merged.x = validNumber(merged.x, defaults.x, 0, 100000);
-        merged.y = validNumber(merged.y, defaults.y, 0, 100000);
-        merged.width = validNumber(merged.width, defaults.width, 420, 100000);
-        merged.height = validNumber(
-            merged.height,
-            defaults.height,
-            240,
-            100000
-        );
-        merged.singletonCutoff = validNumber(
-            merged.singletonCutoff,
-            defaults.singletonCutoff,
-            0,
-            1
-        );
-        // Validate boolean settings.
-        merged.minimized = Boolean(merged.minimized);
-        merged.showHiddenSingletons = Boolean(merged.showHiddenSingletons);
-        // Only accept known templates.
-        if (!TEMPLATES.includes(merged.template)) {
-            merged.template = defaults.template;
-        }
-        // Keep word-filter settings limited to supported values.
-        for (const [word, mode] of Object.entries(merged.wordFilters)) {
-            if (mode !== "Single Token" && mode !== "Anytime") {
-                delete merged.wordFilters[word];
+            merged.minimized = Boolean(merged.minimized);
+            if (!TEMPLATES.includes(merged.template)) {
+                merged.template = "Other";
             }
+            // Discard legacy UI-managed filters.
+            delete merged.wordFilters;
+            return merged;
+        } catch (_) {
+            return {
+                ...DEFAULTS,
+                edits: {},
+                columnWidths: {}
+            };
         }
-        return merged;
     }
     function saveSettings() {
         try {
-            localStorage.setItem(STORE_KEY, JSON.stringify(settings));
-            return true;
-        } catch (error) {
-            console.warn("FR Scanner: Could not save settings.", error);
-            return false;
-        }
+            if (typeof GM_setValue === "function") {
+                GM_setValue(STORE_KEY, settings);
+            }
+        } catch (_) {}
     }
     function normalizeSpace(value) {
         return String(value ?? "")
@@ -212,36 +173,51 @@
             .trim();
     }
     function normalizeToken(value) {
-        let token = normalizeSpace(value)
-            .toLowerCase()
-            .replace(/^[\s"'“”‘’([{]+|[\s"'“”‘’)}\]]+$/g, "");
+        let token = normalizeSpace(value).replace(
+            /^[\s"'“”‘’([{]+|[\s"'“”‘’)}\\]]+$/g,
+            ""
+        );
         if (!token) return "";
-        // Possessives: Smith's -> smith; Smiths' -> smiths.
-        token = token.replace(/['’]s$/i, "");
+        // Normalize case for phrase identity and comparison.
+        token = token.toLowerCase();
+        // Possessives:
+        // smith's -> smith
+        // smiths' -> smiths
+        token = token.replace(/['’]s$/, "");
         token = token.replace(/s['’]$/, "s");
-        // A deliberately conservative plural normalizer.
-        // It is intended for counting, not linguistic lemmatization.
+        // Conservative plural normalization.
+        // This is for phrase matching, not full linguistic lemmatization.
         if (token.length > 4 && /ies$/.test(token)) {
+            // stories -> story
             token = token.slice(0, -3) + "y";
         } else if (token.length > 4 && /(ches|shes|xes|zes)$/.test(token)) {
+            // churches -> church; boxes -> box
             token = token.slice(0, -2);
         } else if (
             token.length > 4 &&
             /ses$/.test(token) &&
             !/sses$/.test(token)
         ) {
+            // Conservative handling for selected -ses plurals.
             token = token.slice(0, -2);
         } else if (
             token.length > 3 &&
             /s$/.test(token) &&
             !/(ss|us|is)$/.test(token)
         ) {
+            // cats -> cat; retain endings such as -ss, -us, and -is.
             token = token.slice(0, -1);
         }
         return token;
     }
     function tokens(value) {
-        return normalizeSpace(value).split(/\s+/).filter(Boolean);
+        return normalizeSpace(value)
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((token) =>
+                token.replace(/^[\s"'“”‘’([{]+|[\s"'“”‘’)}\\],.!?:;]+$/g, "")
+            )
+            .filter(Boolean);
     }
     function isCommonCapitalizedWord(rawToken) {
         const clean = normalizeSpace(rawToken).replace(/[.,:;!?]+$/g, "");
@@ -250,32 +226,20 @@
         return COMMON_CAPITALIZED_WORDS.has(normalized);
     }
     function meaningfulTokens(phrase) {
-        const normalizedTokens = tokens(phrase);
-        const filters = settings.wordFilters || {};
-        return normalizedTokens.filter((token) => {
-            // Keep the original token's casing for case-sensitive matching.
-            for (const [filterText, mode] of Object.entries(filters)) {
-                if (!filterText) continue;
-                if (mode === "Single Token") {
-                    // Remove a token only when it exactly matches the filter.
-                    if (token === filterText) {
-                        return false;
-                    }
-                } else if (mode === "Anytime") {
-                    // Remove tokens containing the filter text, case-sensitively.
-                    if (token.includes(filterText)) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        });
-    }
-    function identity(value) {
-        return meaningfulTokens(value).join(" ");
+        return tokens(phrase)
+            .filter((token) => {
+                // Exact, case-sensitive filtering.
+                if (WORD_FILTER.has(token)) return false;
+                if (HIGH_FREQUENCY_CAPITAL_WORDS.has(token)) return false;
+                // Preserve the existing common-capitalized-word rule.
+                if (isCommonCapitalizedWord(token)) return false;
+                return true;
+            })
+            .map(normalizeToken)
+            .filter(Boolean);
     }
     function escapeRegex(value) {
-        return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return String(value).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
     }
     function esc(value) {
         return String(value ?? "").replace(
@@ -290,9 +254,6 @@
                 })[char]
         );
     }
-    // ---------------------------------------------------------------------
-    // Visible page text extraction
-    // ---------------------------------------------------------------------
     function isExcluded(element) {
         if (!element || element.nodeType !== 1) return false;
         if (EXCLUDED_TAGS.has(element.tagName)) return true;
@@ -325,7 +286,7 @@
             return true;
         }
         if (
-            /(^|\b)(advert|advertisement|ad-container|popup|modal|comment|comments|recommend|related-post|chapter-list|pagination|pager|table-of-contents|toc)(\b|[-_])/i.test(
+            /(^|\b)(advert|advertisement|ad-container|popup|modal|comment|comments|recommend|related-post|chapter-list|pagination|pager|table-of-contents|toc)(\b|[-\_])/i.test(
                 classText
             )
         ) {
@@ -349,9 +310,39 @@
                 style.opacity !== "0"
             );
         }
-        const blocks = [
-            ...page.querySelectorAll("article, main, section, div")
-        ].filter(isUsable);
+        let selectedContainer = null;
+        if (TEXT_CONTAINER_SELECTOR.trim()) {
+            try {
+                selectedContainer = page.querySelector(TEXT_CONTAINER_SELECTOR);
+            } catch (error) {
+                console.warn(
+                    "FR Scanner: Invalid text container selector:",
+                    TEXT_CONTAINER_SELECTOR,
+                    error
+                );
+            }
+        }
+        if (TEXT_CONTAINER_SELECTOR.trim() && !selectedContainer) {
+            console.warn(
+                "FR Scanner: Text container not found:",
+                TEXT_CONTAINER_SELECTOR
+            );
+            return "";
+        }
+        const blocks = (
+            selectedContainer
+                ? [
+                      selectedContainer,
+                      ...selectedContainer.querySelectorAll(
+                          "article, main, section, div, address, p"
+                      )
+                  ]
+                : [
+                      ...page.querySelectorAll(
+                          "article, main, section, div, address, p"
+                      )
+                  ]
+        ).filter(isUsable);
         function textLength(element) {
             const walker = document.createTreeWalker(
                 element,
@@ -391,11 +382,12 @@
             .filter((item) => item.length >= MIN_TEXT_LENGTH)
             .sort((a, b) => b.length - a.length);
         if (!ranked.length) return "";
-        const root = ranked.find(
-            ({ element }) =>
-                element !== document.body &&
-                element !== document.documentElement
-        )?.element;
+        const root =
+            ranked.find(
+                ({ element }) =>
+                    element !== document.body &&
+                    element !== document.documentElement
+            )?.element || page;
         if (!root) return "";
         const pieces = [];
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -444,33 +436,28 @@
         }
         return result.trim();
     }
-    // ---------------------------------------------------------------------
-    // Occurrence detection
-    // ---------------------------------------------------------------------
     function findOccurrenceSpans(text) {
         const occurrences = [];
-        const regex = new RegExp(OCCURRENCE_RE.source, "g");
+        OCCURRENCE_RE.lastIndex = 0;
         let match;
-        while ((match = regex.exec(text)) !== null) {
+        while ((match = OCCURRENCE_RE.exec(text)) !== null) {
             const phrase = match[0];
-            const rawTokens = tokens(phrase);
-            const filters = settings.wordFilters || {};
-            // Single Token: discard only a standalone matching occurrence.
-            if (
-                rawTokens.length === 1 &&
-                filters[rawTokens[0]] === "Single Token"
-            ) {
+            const normalizedTokens = meaningfulTokens(phrase);
+            // Discard occurrences whose tokens were all filtered.
+            if (normalizedTokens.length === 0) {
                 continue;
             }
-            // Anytime: remove matching complete tokens from the phrase.
-            const retainedTokens = rawTokens.filter(
-                (token) => filters[token] !== "Anytime"
-            );
-            if (!retainedTokens.length) continue;
-            const normalizedTokens = meaningfulTokens(retainedTokens.join(" "));
-            if (!normalizedTokens.length) continue;
             occurrences.push({
-                text: phrase,
+                text: tokens(phrase)
+                    .filter((rawToken) =>
+                        WORD_FILTER.has(rawToken) ||
+                        HIGH_FREQUENCY_CAPITAL_WORDS.has(rawToken) ||
+                        isCommonCapitalizedWord(rawToken)
+                            ? false
+                            : true
+                    )
+                    .join(" "),
+                originalText: phrase,
                 start: match.index,
                 end: match.index + phrase.length,
                 normalized: normalizedTokens.join(" "),
@@ -479,133 +466,89 @@
         }
         return occurrences;
     }
-    // ---------------------------------------------------------------------
-    // Containment and token counts
-    // ---------------------------------------------------------------------
-    function isContiguousSubsequence(shortTokens, longTokens) {
-        if (!shortTokens.length || shortTokens.length >= longTokens.length) {
-            return false;
-        }
-        for (
-            let start = 0;
-            start <= longTokens.length - shortTokens.length;
-            start++
-        ) {
-            let matches = true;
-            for (let offset = 0; offset < shortTokens.length; offset++) {
-                if (shortTokens[offset] !== longTokens[start + offset]) {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) return true;
-        }
-        return false;
+    function tokenSetIsSubset(shortTokens, longTokens) {
+        const longSet = new Set(longTokens);
+        return [...new Set(shortTokens)].every((token) => longSet.has(token));
     }
     function compareCountVectors(a, b) {
-        const left = [...a.tokenCounts].sort((x, y) => y - x);
-        const right = [...b.tokenCounts].sort((x, y) => y - x);
-        const length = Math.max(left.length, right.length);
-        for (let i = 0; i < length; i++) {
-            const leftValue = left[i] ?? 0;
-            const rightValue = right[i] ?? 0;
-            if (leftValue !== rightValue) {
-                return rightValue - leftValue;
-            }
-        }
-        return a.originalIndex - b.originalIndex;
+        const maxA = Math.max(0, ...(a.tokenCounts || []));
+        const maxB = Math.max(0, ...(b.tokenCounts || []));
+        return maxB - maxA || (a.originalIndex ?? 0) - (b.originalIndex ?? 0);
     }
     function analyze(text) {
         const occurrences = findOccurrenceSpans(text);
-        // Count meaningful normalized tokens across all detected occurrences.
-        // Repeated tokens within one occurrence count repeatedly.
         const tokenFrequency = new Map();
+        const grouped = new Map();
         for (const occurrence of occurrences) {
             for (const token of occurrence.normalizedTokens) {
                 tokenFrequency.set(token, (tokenFrequency.get(token) || 0) + 1);
             }
         }
-        // Group occurrences by normalized phrase identity.
-        const grouped = new Map();
-        for (const occurrence of occurrences) {
+        occurrences.forEach((occurrence, index) => {
             const key = occurrence.normalized;
-            // Ignore occurrences with no meaningful normalized identity.
-            if (!key || !occurrence.normalizedTokens.length) continue;
-            let item = grouped.get(key);
-            if (!item) {
-                item = {
-                    id: `candidate-${grouped.size}-${key}`,
+            let candidate = grouped.get(key);
+            if (!candidate) {
+                candidate = {
+                    id: `fr-${index}-${key}`,
                     name: occurrence.text,
                     normalized: key,
                     normalizedTokens: [...occurrence.normalizedTokens],
                     occurrences: [],
                     occurrenceCount: 0,
-                    originalIndex: occurrence.start,
+                    originalIndex: index,
                     tokenCounts: [],
                     countDisplay: "",
-                    edit: settings.edits[key] ?? occurrence.text
+                    edit: undefined
                 };
-                grouped.set(key, item);
+                grouped.set(key, candidate);
             }
-            item.occurrences.push(occurrence);
-            item.occurrenceCount++;
-            // Prefer the shortest readable version for display.
-            if (occurrence.text.length < item.name.length) {
-                item.name = occurrence.text;
-            }
-            if (occurrence.start < item.originalIndex) {
-                item.originalIndex = occurrence.start;
-            }
-        }
-        const allCandidates = [...grouped.values()];
-        // Remove a shorter candidate only when its complete meaningful token
-        // sequence appears contiguously inside a candidate with more tokens.
-        // A candidate with its own unique token is not removed by this rule.
-        const list = allCandidates.filter((shorter) => {
-            return !allCandidates.some((longer) => {
-                if (shorter === longer) return false;
-                if (
-                    longer.normalizedTokens.length <=
-                    shorter.normalizedTokens.length
-                ) {
-                    return false;
-                }
-                return isContiguousSubsequence(
-                    shorter.normalizedTokens,
-                    longer.normalizedTokens
-                );
-            });
+            candidate.occurrences.push(occurrence);
+            candidate.occurrenceCount++;
         });
-        // Calculate token counts using all detected occurrences, including
-        // occurrences belonging to candidates removed by the containment rule.
+        let list = [...grouped.values()];
         for (const candidate of list) {
             candidate.tokenCounts = candidate.normalizedTokens.map(
                 (token) => tokenFrequency.get(token) || 0
             );
             candidate.countDisplay = candidate.tokenCounts.join(", ");
-            candidate.frequency = Math.max(0, ...candidate.tokenCounts);
-            candidate.prefixes = new Map();
-            candidate.suffixes = new Map();
-            candidate.clusterSeed = null;
         }
-        // Determine the cutoff from the most frequent meaningful token.
-        const maximumTokenCount = Math.max(0, ...tokenFrequency.values());
-        const cutoff = maximumTokenCount * settings.singletonCutoff;
-        // Keep all surviving candidates internally; visibility is controlled
-        // separately by visibleCandidates().
+        // Same tokens in a different order: keep the more frequent phrase.
+        const reordered = new Map();
         for (const candidate of list) {
-            candidate.hiddenByCutoff =
-                candidate.tokenCounts.length > 0 &&
-                candidate.tokenCounts.every((count) => count <= cutoff);
+            const key = [...candidate.normalizedTokens].sort().join("\u001F");
+            const existing = reordered.get(key);
+            if (
+                !existing ||
+                candidate.occurrenceCount > existing.occurrenceCount
+            ) {
+                reordered.set(key, candidate);
+            }
+        }
+        list = [...reordered.values()];
+        // Remove phrases whose tokens are contained in a longer phrase.
+        list = list.filter(
+            (candidate) =>
+                !list.some(
+                    (other) =>
+                        other !== candidate &&
+                        other.normalizedTokens.length >
+                            candidate.normalizedTokens.length &&
+                        tokenSetIsSubset(
+                            candidate.normalizedTokens,
+                            other.normalizedTokens
+                        )
+                )
+        );
+        for (const candidate of list) {
+            candidate.edit =
+                settings.edits?.[candidate.normalized] ?? candidate.name;
         }
         list.sort(compareCountVectors);
         return {
             candidates: list,
-            starts: [],
             scanned: occurrences.length,
             tokenFrequency,
-            maximumTokenCount,
-            cutoff
+            maximumTokenCount: Math.max(0, ...tokenFrequency.values())
         };
     }
     function generateRegex(candidate, template) {
@@ -643,8 +586,8 @@
                 const first = escape(lastTwo[0]);
                 const second = escape(lastTwo[1]);
                 return (
-                    `(?<![a-z])(?:${first}\\s+${second}|` +
-                    `${second}\\s+${first})(?![a-z])`
+                    `(?<![a-z])(?:${first}\\\s+${second}|` +
+                    `${second}\\\s+${first})(?![a-z])`
                 );
             }
             return `(?<![a-z])${escape(value)}(?![a-z])`;
@@ -652,284 +595,108 @@
         // Other and Korean 2 retain the original fallback format.
         return `(?<![a-z])${escape(value)}(?![a-z])`;
     }
-    // ---------------------------------------------------------------------
-    // Styling and panel creation
-    // ---------------------------------------------------------------------
-    function ensureStyle() {
-        if (document.getElementById(STYLE_ID)) return;
-        const style = document.createElement("style");
-        style.id = STYLE_ID;
-        style.textContent = `
-            #${PANEL_ID} {
-                position: fixed;
-                z-index: 2147483646;
-                background: #17191d;
-                color: #f2f3f5;
-                border: 1px solid #555;
-                border-radius: 8px;
-                box-shadow: 0 8px 32px #0008;
-                font: 13px/1.4 system-ui, sans-serif;
-                display: flex;
-                flex-direction: column;
-                overflow: hidden;
-            }
-            #${PANEL_ID} * { box-sizing: border-box; }
-            #${PANEL_ID} .fr-head {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                padding: 8px 10px;
-                background: #24272d;
-                cursor: move;
-                user-select: none;
-            }
-            #${PANEL_ID} .fr-head strong { font-size: 14px; }
-            #${PANEL_ID} button,
-            #${PANEL_ID} select {
-                background: #343840;
-                color: #f2f3f5;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px 7px;
-                cursor: pointer;
-            }
-            #${PANEL_ID} button:hover { background: #454a54; }
-            #${PANEL_ID} .fr-toolbar {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 6px;
-                padding: 8px;
-                border-bottom: 1px solid #45484e;
-            }
-            #${PANEL_ID} .fr-status {
-                padding: 5px 9px;
-                color: #c7ccd4;
-                border-bottom: 1px solid #363940;
-            }
-            #${PANEL_ID} .fr-status.error { color: #ff9999; }
-            #${PANEL_ID} .fr-tablewrap {
-                overflow: auto;
-                flex: 1;
-                min-height: 0;
-            }
-            #${PANEL_ID} table {
-                border-collapse: collapse;
-                width: max-content;
-                min-width: 100%;
-                table-layout: fixed;
-            }
-            #${PANEL_ID} th,
-            #${PANEL_ID} td {
-                border-bottom: 1px solid #363940;
-                padding: 6px;
-                text-align: left;
-                vertical-align: top;
-                overflow-wrap: anywhere;
-                max-width: 400px;
-            }
-            #${PANEL_ID} th {
-                position: sticky;
-                top: 0;
-                background: #25282e;
-                z-index: 1;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            #${PANEL_ID} td input {
-                width: 100%;
-                min-width: 100px;
-                background: #101216;
-                color: #fff;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 5px;
-            }
-            #${PANEL_ID} .fr-regex {
-                font: 12px/1.35 ui-monospace, monospace;
-                white-space: pre-wrap;
-                word-break: break-all;
-            }
-            #${PANEL_ID} .fr-small {
-                font-size: 11px;
-                color: #bdc2ca;
-            }
-            #${PANEL_ID} .fr-resize {
-                height: 7px;
-                cursor: ns-resize;
-                background: #292c32;
-                flex-shrink: 0;
-            }
-            #${PANEL_ID} .fr-colresize {
-                position: absolute;
-                top: 0;
-                right: 0;
-                width: 6px;
-                height: 100%;
-                cursor: col-resize;
-                user-select: none;
-                touch-action: none;
-                z-index: 2;
-            }
-            #${PANEL_ID} .fr-colresize:hover { background: #747e91; }
-            #${PANEL_ID} .fr-foot {
-                padding: 6px 9px;
-                color: #aeb4be;
-                border-top: 1px solid #444;
-                font-size: 11px;
-            }
-            #${PANEL_ID} .fr-hidden { display: none !important; }
-        `;
-        document.head.appendChild(style);
-    }
     function createPanel() {
-        if (document.getElementById(PANEL_ID)) return;
-        ensureStyle();
-        const panel = document.createElement("section");
+        const panel = document.createElement("div");
         panel.id = PANEL_ID;
+
         panel.innerHTML = `
-        <div class="fr-head">
+        <div class="fr-head" id="fr-head">
             <strong>FR Scanner 2</strong>
-            <div class="fr-head-actions">
-                <button id="fr-minimize" type="button">Minimize</button>
-                <button id="fr-close" type="button">Close</button>
-            </div>
+            <button id="fr-rescan" type="button">Rescan</button>
+            <button id="fr-minimize" type="button">Minimize</button>
+            <button id="fr-close" type="button">Close</button>
         </div>
+
         <div class="fr-toolbar" id="fr-toolbar">
-            <button id="fr-scan" type="button">Scan</button>
-            <button id="fr-copy" type="button">Copy</button>
-            <button id="fr-export" type="button">Export</button>
-            <button id="fr-clear" type="button">Clear</button>
             <label>
-                Template:
+                Template
                 <select id="fr-template"></select>
             </label>
-            <label>
-                <input id="fr-show-filtered" type="checkbox">
-                Show filtered
-            </label>
+            <button id="fr-copy" type="button">Copy</button>
         </div>
-        <div id="fr-word-filter-host"></div>
-        <div class="fr-status" id="fr-status">
-            Ready to scan.
-        </div>
-        <div class="fr-status" id="fr-count">
-            No results yet.
-        </div>
+
+        <div class="fr-status" id="fr-status">Ready.</div>
+
         <div class="fr-tablewrap" id="fr-tablewrap">
             <table id="fr-table">
                 <thead>
                     <tr>
+                        <th data-col="highlight">HL</th>
                         <th data-col="name">Name</th>
-                        <th data-col="counts">Token Counts</th>
+                        <th data-col="counts">Counts</th>
                         <th data-col="regex">Regex</th>
                         <th data-col="actions">Actions</th>
                     </tr>
                 </thead>
-                <tbody id="fr-rows"></tbody>
+                <tbody id="fr-tbody"></tbody>
             </table>
         </div>
+
         <div class="fr-resize"></div>
     `;
+
+        document.body.appendChild(panel);
+
         const templateSelect = panel.querySelector("#fr-template");
+
         for (const template of TEMPLATES) {
             const option = document.createElement("option");
             option.value = template;
             option.textContent = template;
             templateSelect.appendChild(option);
         }
-        templateSelect.value = TEMPLATES.includes(settings.template)
-            ? settings.template
-            : "Other";
-        settings.template = templateSelect.value;
-        panel.querySelector("#fr-show-filtered").checked = Boolean(
-            settings.showHiddenSingletons
-        );
-        panel
-            .querySelector("#fr-word-filter-host")
-            .appendChild(createWordFilterControls());
-        panel.style.left = `${Math.max(0, settings.x)}px`;
-        panel.style.top = `${Math.max(0, settings.y)}px`;
-        panel.style.width = `${Math.max(520, settings.width)}px`;
-        panel.style.height = `${Math.max(260, settings.height)}px`;
-        document.body.appendChild(panel);
-        panel.querySelector("#fr-minimize").addEventListener("click", () => {
-            settings.minimized = !settings.minimized;
-            saveSettings();
-            applyMinimized();
-        });
-        panel.querySelector("#fr-close").addEventListener("click", () => {
-            clearHighlights();
-            panel.remove();
-        });
-        panel.querySelector("#fr-scan").addEventListener("click", runScan);
-        panel.querySelector("#fr-copy").addEventListener("click", () => {
-            const text = visibleCandidates()
-                .map((candidate) =>
-                    generateRegex(
-                        candidate.edit ?? candidate.name,
-                        settings.template
-                    )
-                )
-                .filter(Boolean)
-                .join("\n");
-            copyText(text);
-        });
-        panel.querySelector("#fr-export").addEventListener("click", () => {
-            const text = visibleCandidates()
-                .map((candidate) =>
-                    generateRegex(
-                        candidate.edit ?? candidate.name,
-                        settings.template
-                    )
-                )
-                .filter(Boolean)
-                .join("\n");
-            if (!text) {
-                showStatus("There are no regex results to export.", true);
-                return;
-            }
-            const blob = new Blob([text], {
-                type: "text/plain;charset=utf-8"
-            });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = "fr-scanner-regex.txt";
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            URL.revokeObjectURL(url);
-            showStatus("Regex results exported.");
-        });
-        panel.querySelector("#fr-clear").addEventListener("click", () => {
-            clearHighlights();
-            currentText = "";
-            candidates = [];
-            starts = [];
-            renderRows();
-            showStatus("Results cleared.");
-        });
+
+        templateSelect.value = settings.template;
+
         templateSelect.addEventListener("change", () => {
             settings.template = templateSelect.value;
             saveSettings();
             renderRows();
         });
-        panel
-            .querySelector("#fr-show-filtered")
-            .addEventListener("change", (event) => {
-                settings.showHiddenSingletons = event.target.checked;
-                saveSettings();
-                renderRows();
-            });
-        panel
-            .querySelector(".fr-head")
-            .addEventListener("pointerdown", startDrag);
-        panel
-            .querySelector(".fr-resize")
-            .addEventListener("pointerdown", startResize);
-        applyMinimized();
+
+        panel.querySelector("#fr-rescan").addEventListener("click", scanPage);
+
+        panel.querySelector("#fr-copy").addEventListener("click", async () => {
+            const text = visibleCandidates()
+                .map((candidate) =>
+                    generateRegex(
+                        candidate.edit ?? candidate.name,
+                        settings.template
+                    )
+                )
+                .filter(Boolean)
+                .join("\n");
+
+            if (!text) {
+                showStatus("There are no regex results to copy.", true);
+                return;
+            }
+
+            try {
+                await navigator.clipboard.writeText(text);
+                showStatus("Regex results copied.");
+            } catch (error) {
+                showStatus("Could not copy to clipboard.", true);
+            }
+        });
+
+        panel.querySelector("#fr-minimize").addEventListener("click", () => {
+            settings.minimized = !settings.minimized;
+            applyMinimized();
+            saveSettings();
+        });
+
+        panel.querySelector("#fr-close").addEventListener("click", () => {
+            panel.remove();
+        });
+
+        makeDraggable(panel);
+        makeResizable(panel);
+        makeColumnsResizable(panel);
+        applySettings(panel);
         renderRows();
+
+        return panel;
     }
     function applyMinimized() {
         const panel = document.getElementById(PANEL_ID);
@@ -939,13 +706,7 @@
             .querySelector("#fr-toolbar")
             .classList.toggle("fr-hidden", minimized);
         panel
-            .querySelector("#fr-word-filter-host")
-            .classList.toggle("fr-hidden", minimized);
-        panel
             .querySelector("#fr-status")
-            .classList.toggle("fr-hidden", minimized);
-        panel
-            .querySelector("#fr-count")
             .classList.toggle("fr-hidden", minimized);
         panel
             .querySelector("#fr-tablewrap")
@@ -960,205 +721,22 @@
             ? "Restore"
             : "Minimize";
     }
-    function startDrag(event) {
-        if (event.button !== 0) return;
-        // Do not start dragging when the user interacts with a control.
-        if (event.target.closest("button, input, select, textarea, a")) {
-            return;
-        }
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel || settings.minimized) return;
-        event.preventDefault();
-        const startPointerX = event.clientX;
-        const startPointerY = event.clientY;
-        const startLeft = panel.getBoundingClientRect().left;
-        const startTop = panel.getBoundingClientRect().top;
-        function onPointerMove(moveEvent) {
-            const maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
-            const maxTop = Math.max(0, window.innerHeight - panel.offsetHeight);
-            const newLeft = Math.min(
-                maxLeft,
-                Math.max(0, startLeft + moveEvent.clientX - startPointerX)
-            );
-            const newTop = Math.min(
-                maxTop,
-                Math.max(0, startTop + moveEvent.clientY - startPointerY)
-            );
-            panel.style.left = `${newLeft}px`;
-            panel.style.top = `${newTop}px`;
-            panel.style.right = "auto";
-            panel.style.bottom = "auto";
-            settings.x = newLeft;
-            settings.y = newTop;
-        }
-        function onPointerUp() {
-            document.removeEventListener("pointermove", onPointerMove);
-            document.removeEventListener("pointerup", onPointerUp);
-            saveSettings();
-        }
-        document.addEventListener("pointermove", onPointerMove);
-        document.addEventListener("pointerup", onPointerUp);
-    }
-    function moveDrag(event) {
-        if (!drag) return;
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel) return;
-        panel.style.left = `${Math.max(0, drag.left + event.clientX - drag.x)}px`;
-        panel.style.top = `${Math.max(0, drag.top + event.clientY - drag.y)}px`;
-    }
-    function endDrag() {
-        if (!drag) return;
-        const panel = document.getElementById(PANEL_ID);
-        if (panel) {
-            settings.x = panel.offsetLeft;
-            settings.y = panel.offsetTop;
-            saveSettings();
-        }
-        drag = null;
-        document.removeEventListener("pointermove", moveDrag);
-    }
-    function startResize(event) {
-        if (event.button !== 0) return;
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel || settings.minimized) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const startPointerX = event.clientX;
-        const startPointerY = event.clientY;
-        const startWidth = panel.getBoundingClientRect().width;
-        const startHeight = panel.getBoundingClientRect().height;
-        const minWidth = 420;
-        const minHeight = 240;
-        function onPointerMove(moveEvent) {
-            const maxWidth = Math.max(
-                minWidth,
-                window.innerWidth - panel.getBoundingClientRect().left
-            );
-            const maxHeight = Math.max(
-                minHeight,
-                window.innerHeight - panel.getBoundingClientRect().top
-            );
-            const newWidth = Math.min(
-                maxWidth,
-                Math.max(
-                    minWidth,
-                    startWidth + moveEvent.clientX - startPointerX
-                )
-            );
-            const newHeight = Math.min(
-                maxHeight,
-                Math.max(
-                    minHeight,
-                    startHeight + moveEvent.clientY - startPointerY
-                )
-            );
-            panel.style.width = `${newWidth}px`;
-            panel.style.height = `${newHeight}px`;
-            settings.width = newWidth;
-            settings.height = newHeight;
-        }
-        function onPointerUp() {
-            document.removeEventListener("pointermove", onPointerMove);
-            document.removeEventListener("pointerup", onPointerUp);
-            saveSettings();
-        }
-        document.addEventListener("pointermove", onPointerMove);
-        document.addEventListener("pointerup", onPointerUp);
-    }
-    function moveResize(event) {
-        if (!resize) return;
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel) return;
-        panel.style.width = `${Math.max(520, resize.w + event.clientX - resize.x)}px`;
-        panel.style.height = `${Math.max(260, resize.h + event.clientY - resize.y)}px`;
-    }
-    function endResize() {
-        const panel = document.getElementById(PANEL_ID);
-        if (panel) {
-            settings.width = panel.offsetWidth;
-            settings.height = panel.offsetHeight;
-            saveSettings();
-        }
-        resize = null;
-        document.removeEventListener("pointermove", moveResize);
-    }
-    // ---------------------------------------------------------------------
-    // Column resizing
-    // ---------------------------------------------------------------------
     function applyColumnWidths() {
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel) return;
-        const table = panel.querySelector("table");
-        const headers = [...table.querySelectorAll("thead th")];
-        headers.forEach((header) => {
-            const key = header.dataset.col;
-            if (!key) return;
-            const width = settings.columnWidths?.[key];
-            if (Number.isFinite(width) && width > 0) {
-                header.style.width = `${Math.max(50, Math.min(400, width))}px`;
-            }
-            if (header.querySelector(".fr-colresize")) return;
-            const handle = document.createElement("span");
-            handle.className = "fr-colresize";
-            handle.title = "Drag to resize column";
-            handle.setAttribute("aria-label", `Resize ${key} column`);
-            handle.addEventListener("pointerdown", (event) => {
-                startColumnResize(event, key, header);
+        const table = document.getElementById("fr-table");
+        if (!table) return;
+        for (const [column, width] of Object.entries(
+            settings.columnWidths || {}
+        )) {
+            const cells = table.querySelectorAll(`[data-col="${column}"]`);
+            cells.forEach((cell) => {
+                cell.style.width = `${Math.max(50, Math.min(400, width))}px`;
+                cell.style.minWidth = "0";
+                cell.style.maxWidth = "400px";
             });
-            header.appendChild(handle);
-        });
-    }
-    function startColumnResize(event, key, header) {
-        event.preventDefault();
-        event.stopPropagation();
-        columnResize = {
-            key,
-            startX: event.clientX,
-            startWidth: header.getBoundingClientRect().width
-        };
-        document.addEventListener("pointermove", moveColumnResize);
-        document.addEventListener("pointerup", endColumnResize, { once: true });
-    }
-    function moveColumnResize(event) {
-        if (!columnResize) return;
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel) return;
-        const header = panel.querySelector(
-            `th[data-col="${columnResize.key}"]`
-        );
-        if (!header) return;
-        const width = Math.max(
-            50,
-            Math.min(
-                400,
-                columnResize.startWidth + event.clientX - columnResize.startX
-            )
-        );
-        header.style.width = `${width}px`;
-    }
-    function endColumnResize() {
-        const panel = document.getElementById(PANEL_ID);
-        if (panel && columnResize) {
-            const header = panel.querySelector(
-                `th[data-col="${columnResize.key}"]`
-            );
-            if (header) {
-                settings.columnWidths ??= {};
-                settings.columnWidths[columnResize.key] = Math.round(
-                    header.getBoundingClientRect().width
-                );
-                saveSettings();
-            }
         }
-        columnResize = null;
-        document.removeEventListener("pointermove", moveColumnResize);
     }
-    // ---------------------------------------------------------------------
-    // Table rendering
-    // ---------------------------------------------------------------------
     function visibleCandidates() {
-        if (settings.showHiddenSingletons) return candidates;
-        return candidates.filter((candidate) => !candidate.hiddenByCutoff);
+        return candidates;
     }
     function renderRows() {
         const panel = document.getElementById(PANEL_ID);
@@ -1171,56 +749,44 @@
             (total, candidate) => total + (candidate.occurrenceCount || 0),
             0
         );
-        const hiddenCount = candidates.length - shown.length;
         countEl.textContent =
             `${candidates.length} phrases · ${shown.length} shown · ` +
             `${totalOccurrences} occurrences`;
-        if (typeof applyColumnWidths === "function") {
-            applyColumnWidths();
-        }
-        if (shown.length === 0) {
-            tbody.innerHTML = "";
-            if (candidates.length > 0 && hiddenCount > 0) {
-                showStatus(
-                    `${hiddenCount} phrase(s) are hidden by the token-count filter. ` +
-                        "Enable “Show filtered” to display them."
-                );
-            }
-            return;
-        }
         tbody.innerHTML = shown
             .map((candidate) => {
                 const edit = candidate.edit ?? candidate.name ?? "";
                 const regex = generateRegex(edit, settings.template);
                 return `
             <tr data-id="${esc(candidate.id)}">
-                <td>
+                <td data-col="highlight">
+                    <button type="button" class="fr-highlight">
+                        Highlight
+                    </button>
+                </td>
+                <td data-col="name">
                     <input
                         class="fr-edit"
                         aria-label="Edit candidate"
                         value="${esc(edit)}"
                     >
-                    <div class="fr-small">
-                        ${candidate.occurrenceCount || 0} occurrence(s)
-                    </div>
                 </td>
-                <td title="Token counts in the phrase's original token order">
+                <td data-col="counts"
+                    title="Token counts in original token order">
                     ${esc(candidate.countDisplay ?? "")}
                 </td>
-                <td>
+                <td data-col="regex">
                     <div class="fr-regex">${esc(regex)}</div>
                 </td>
-                <td>
-                    <button type="button" class="fr-highlight">Highlight</button>
-                    <button type="button" class="fr-copy">Copy regex</button>
+                <td data-col="actions">
+                    <button type="button" class="fr-copy">
+                        Copy regex
+                    </button>
                 </td>
             </tr>
         `;
             })
             .join("");
-        if (typeof applyColumnWidths === "function") {
-            applyColumnWidths();
-        }
+        applyColumnWidths();
         tbody.querySelectorAll("tr[data-id]").forEach((row) => {
             const candidate = shown.find(
                 (item) => String(item.id) === row.dataset.id
@@ -1251,112 +817,6 @@
                 toggleHighlight(candidate, highlightButton);
             });
         });
-        if (hiddenCount > 0) {
-            showStatus(
-                `${hiddenCount} phrase(s) are hidden by the token-count filter. ` +
-                    "Enable “Show filtered” to display them."
-            );
-        }
-    }
-    function createWordFilterControls() {
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel) return;
-        const host = panel.querySelector("#fr-word-filter-host");
-        if (!host) return;
-        function renderFilters() {
-            host.innerHTML = "";
-            const title = document.createElement("div");
-            title.className = "fr-filter-title";
-            title.textContent = "Word filters (case-sensitive)";
-            host.appendChild(title);
-            const addRow = document.createElement("div");
-            addRow.className = "fr-filter-add";
-            const wordInput = document.createElement("input");
-            wordInput.type = "text";
-            wordInput.placeholder = "Enter word or phrase";
-            wordInput.setAttribute("aria-label", "Word to filter");
-            const modeSelect = document.createElement("select");
-            modeSelect.setAttribute("aria-label", "Word filter mode");
-            for (const mode of ["Single Token", "Anytime"]) {
-                const option = document.createElement("option");
-                option.value = mode;
-                option.textContent = mode;
-                modeSelect.appendChild(option);
-            }
-            const addButton = document.createElement("button");
-            addButton.type = "button";
-            addButton.textContent = "Add filter";
-            addButton.addEventListener("click", () => {
-                const word = wordInput.value.trim();
-                if (!word) {
-                    showStatus("Enter a word or phrase to add a filter.", true);
-                    wordInput.focus();
-                    return;
-                }
-                settings.wordFilters[word] = modeSelect.value;
-                saveSettings();
-                renderFilters();
-                runScan();
-            });
-            wordInput.addEventListener("keydown", (event) => {
-                if (event.key === "Enter") {
-                    event.preventDefault();
-                    addButton.click();
-                }
-            });
-            addRow.append(wordInput, modeSelect, addButton);
-            host.appendChild(addRow);
-            const filters = Object.entries(settings.wordFilters || {});
-            const list = document.createElement("div");
-            list.className = "fr-filter-list";
-            if (filters.length === 0) {
-                const empty = document.createElement("div");
-                empty.className = "fr-small";
-                empty.textContent = "No word filters added.";
-                list.appendChild(empty);
-            }
-            for (const [word, mode] of filters) {
-                const row = document.createElement("div");
-                row.className = "fr-filter-row";
-                const wordLabel = document.createElement("span");
-                wordLabel.className = "fr-filter-word";
-                wordLabel.textContent = word;
-                const filterMode = document.createElement("select");
-                filterMode.setAttribute(
-                    "aria-label",
-                    `Filter mode for ${word}`
-                );
-                for (const optionMode of ["Single Token", "Anytime"]) {
-                    const option = document.createElement("option");
-                    option.value = optionMode;
-                    option.textContent = optionMode;
-                    filterMode.appendChild(option);
-                }
-                filterMode.value = mode;
-                filterMode.addEventListener("change", () => {
-                    settings.wordFilters[word] = filterMode.value;
-                    saveSettings();
-                    runScan();
-                });
-                const removeButton = document.createElement("button");
-                removeButton.type = "button";
-                removeButton.textContent = "Remove";
-                removeButton.setAttribute(
-                    "aria-label",
-                    `Remove filter ${word}`
-                );
-                removeButton.addEventListener("click", () => {
-                    delete settings.wordFilters[word];
-                    saveSettings();
-                    renderFilters();
-                    runScan();
-                });
-                row.append(wordLabel, filterMode, removeButton);
-                list.appendChild(row);
-            }
-            host.appendChild(list);
-        }
-        renderFilters();
     }
     async function copyText(text) {
         if (!text) {
@@ -1387,9 +847,6 @@
             );
         }
     }
-    // ---------------------------------------------------------------------
-    // Highlighting
-    // ---------------------------------------------------------------------
     function clearHighlights() {
         try {
             if ("highlights" in CSS) {
@@ -1446,7 +903,7 @@
             while ((node = walker.nextNode())) {
                 const text = node.nodeValue;
                 const regex = new RegExp(
-                    `(^|[^\\p{L}\\p{N}])(${escapeRegex(target)})(?=$|[^\\p{L}\\p{N}])`,
+                    `(^|[^\\\p{L}\\\p{N}])(${escapeRegex(target)})(?=$|[^\\\p{L}\\\p{N}])`,
                     "gu"
                 );
                 let match;
@@ -1509,7 +966,6 @@
             currentText = extractVisibleText();
             if (!currentText) {
                 candidates = [];
-                starts = [];
                 renderRows();
                 showStatus(
                     "No usable visible page text found. Try a page containing the story text.",
@@ -1519,20 +975,13 @@
             }
             const result = analyze(currentText);
             candidates = result.candidates;
-            starts = [];
             for (const candidate of candidates) {
                 candidate.edit =
                     settings.edits[candidate.normalized] ?? candidate.name;
             }
             renderRows();
-            showStatus(
-                `Scan complete: ${result.scanned} detected occurrence(s), ` +
-                    `${result.tokenFrequency.size} distinct normalized token(s), ` +
-                    `maximum token count ${result.maximumTokenCount}.`
-            );
         } catch (error) {
             candidates = [];
-            starts = [];
             renderRows();
             showStatus(
                 `Scan failed safely: ${error?.message || "unknown error"}`,
@@ -1540,9 +989,6 @@
             );
         }
     }
-    // ---------------------------------------------------------------------
-    // Initialization
-    // ---------------------------------------------------------------------
     function initialize() {
         if (typeof GM_registerMenuCommand === "function") {
             GM_registerMenuCommand("Toggle FR Scanner 2", () => {

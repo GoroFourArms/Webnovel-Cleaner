@@ -784,16 +784,16 @@
             max-width: 400px;
         }
         #${PANEL_ID} th {
-          position: sticky;
-           top: 0;
-           background: #25282e;
-              z-index: 1;
-           white-space: nowrap;
-              overflow: hidden;
-               text-overflow: ellipsis;
+            position: sticky;
+            top: 0;
+            background: #25282e;
+            z-index: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-          #${PANEL_ID} th[data-col] {
-          position: sticky;
+        #${PANEL_ID} th[data-col] {
+            position: sticky;
         }
         #${PANEL_ID} td input {
             width: 100%;
@@ -815,6 +815,7 @@
         }
         #${PANEL_ID} .fr-resize {
             height: 7px;
+            flex-shrink: 0;
             cursor: ns-resize;
             background: #292c32;
         }
@@ -832,14 +833,41 @@
         #${PANEL_ID} .fr-colresize:hover {
             background: #747e91;
         }
-        #${PANEL_ID} .fr-foot {
-            padding: 6px 9px;
-            color: #aeb4be;
-            border-top: 1px solid #444;
-            font-size: 11px;
-        }
         #${PANEL_ID} .fr-hidden {
             display: none !important;
+        }
+        #${PANEL_ID} .fr-filter-title {
+            color: #c7ccd4;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        #${PANEL_ID} .fr-filter-add,
+        #${PANEL_ID} .fr-filter-row {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 5px;
+        }
+        #${PANEL_ID} .fr-filter-add input {
+            min-width: 100px;
+            width: 150px;
+            background: #101216;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 5px;
+        }
+        #${PANEL_ID} .fr-filter-word {
+            min-width: 90px;
+            overflow-wrap: anywhere;
+        }
+        #${PANEL_ID} .fr-word-filter-host {
+            padding: 8px;
+            border-bottom: 1px solid #45484e;
+        }
+        #${PANEL_ID} .fr-status.error {
+            color: #ff9999;
         }
     `;
         document.head.appendChild(style);
@@ -849,34 +877,38 @@
         ensureStyle();
         const panel = document.createElement("section");
         panel.id = PANEL_ID;
-        panel.style.left = `${Math.max(0, settings.x)}px`;
-        panel.style.top = `${Math.max(0, settings.y)}px`;
-        panel.style.width = `${Math.max(520, settings.width)}px`;
-        panel.style.height = `${Math.max(260, settings.height)}px`;
         panel.innerHTML = `
         <div class="fr-head">
             <span id="fr-count" class="fr-small"></span>
             <span style="flex:1"></span>
-            <button id="fr-rescan">Rescan</button>
-            <button id="fr-min">${settings.minimized ? "Restore" : "Minimize"}</button>
-            <button id="fr-close" title="Close panel">×</button>
+            <button id="fr-scan" type="button">Rescan</button>
+            <button id="fr-minimize" type="button">
+                ${settings.minimized ? "Restore" : "Minimize"}
+            </button>
+            <button id="fr-close" type="button" title="Close panel">×</button>
         </div>
         <div class="fr-toolbar" id="fr-toolbar">
-            <label>Template
-                <select id="fr-template">
-                    ${TEMPLATES.map((t) => `<option>${esc(t)}</option>`).join("")}
-                </select>
+            <label>
+                Template
+                <select id="fr-template"></select>
+            </label>
+            <button id="fr-copy" type="button">Copy</button>
+            <button id="fr-export" type="button">Export</button>
+            <button id="fr-clear" type="button">Clear</button>
+            <label>
+                <input id="fr-show-filtered" type="checkbox">
+                Show filtered
             </label>
         </div>
+        <div class="fr-word-filter-host" id="fr-word-filter-host"></div>
+        <div class="fr-status" id="fr-status">Ready to scan.</div>
         <div class="fr-tablewrap" id="fr-tablewrap">
-            <table>
+            <table id="fr-table">
                 <thead>
                     <tr>
-                        <th data-col="candidate">Candidate</th>
-                        <th data-col="prefix">Prefix</th>
-                        <th data-col="suffix">Suffix</th>
-                        <th data-col="frequency">#</th>
-                        <th data-col="regex" title="Generated regex">Regex</th>
+                        <th data-col="name">Name</th>
+                        <th data-col="counts">Token Counts</th>
+                        <th data-col="regex">Regex</th>
                         <th data-col="actions">Actions</th>
                     </tr>
                 </thead>
@@ -886,9 +918,26 @@
         <div class="fr-resize" title="Resize panel"></div>
     `;
         document.body.appendChild(panel);
-        panel.querySelector("#fr-template").value = settings.template;
-        panel.querySelector("#fr-rescan").addEventListener("click", runScan);
-        panel.querySelector("#fr-min").addEventListener("click", () => {
+        panel.style.left = `${Math.max(0, settings.x)}px`;
+        panel.style.top = `${Math.max(0, settings.y)}px`;
+        panel.style.width = `${Math.max(520, settings.width)}px`;
+        panel.style.height = `${Math.max(260, settings.height)}px`;
+        const templateSelect = panel.querySelector("#fr-template");
+        for (const template of TEMPLATES) {
+            const option = document.createElement("option");
+            option.value = template;
+            option.textContent = template;
+            templateSelect.appendChild(option);
+        }
+        templateSelect.value = TEMPLATES.includes(settings.template)
+            ? settings.template
+            : "Other";
+        settings.template = templateSelect.value;
+        panel.querySelector("#fr-show-filtered").checked = Boolean(
+            settings.showHiddenSingletons
+        );
+        createWordFilterControls();
+        panel.querySelector("#fr-minimize").addEventListener("click", () => {
             settings.minimized = !settings.minimized;
             saveSettings();
             applyMinimized();
@@ -897,11 +946,66 @@
             clearHighlights();
             panel.remove();
         });
-        panel.querySelector("#fr-template").addEventListener("change", (e) => {
-            settings.template = e.target.value;
+        panel.querySelector("#fr-scan").addEventListener("click", runScan);
+        panel.querySelector("#fr-copy").addEventListener("click", () => {
+            const text = visibleCandidates()
+                .map((candidate) =>
+                    generateRegex(
+                        candidate.edit ?? candidate.name,
+                        settings.template
+                    )
+                )
+                .filter(Boolean)
+                .join("\n");
+            copyText(text);
+        });
+        panel.querySelector("#fr-export").addEventListener("click", () => {
+            const text = visibleCandidates()
+                .map((candidate) =>
+                    generateRegex(
+                        candidate.edit ?? candidate.name,
+                        settings.template
+                    )
+                )
+                .filter(Boolean)
+                .join("\n");
+            if (!text) {
+                showStatus("There are no regex results to export.", true);
+                return;
+            }
+            const blob = new Blob([text], {
+                type: "text/plain;charset=utf-8"
+            });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "fr-scanner-regex.txt";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+            showStatus("Regex results exported.");
+        });
+        panel.querySelector("#fr-clear").addEventListener("click", () => {
+            clearHighlights();
+            currentText = "";
+            candidates = [];
+            starts = [];
+            renderRows();
+            showStatus("Results cleared.");
+        });
+        templateSelect.addEventListener("change", () => {
+            settings.template = templateSelect.value;
             saveSettings();
             renderRows();
         });
+        panel
+            .querySelector("#fr-show-filtered")
+            .addEventListener("change", (event) => {
+                settings.showHiddenSingletons = event.target.checked;
+                saveSettings();
+                renderRows();
+            });
         panel
             .querySelector(".fr-head")
             .addEventListener("pointerdown", startDrag);
@@ -914,19 +1018,26 @@
     function applyMinimized() {
         const panel = document.getElementById(PANEL_ID);
         if (!panel) return;
+        const minimized = Boolean(settings.minimized);
         panel
             .querySelector("#fr-toolbar")
-            .classList.toggle("fr-hidden", settings.minimized);
+            .classList.toggle("fr-hidden", minimized);
+        panel
+            .querySelector("#fr-word-filter-host")
+            .classList.toggle("fr-hidden", minimized);
+        panel
+            .querySelector("#fr-status")
+            .classList.toggle("fr-hidden", minimized);
         panel
             .querySelector("#fr-tablewrap")
-            .classList.toggle("fr-hidden", settings.minimized);
+            .classList.toggle("fr-hidden", minimized);
         panel
             .querySelector(".fr-resize")
-            .classList.toggle("fr-hidden", settings.minimized);
-        panel.style.height = settings.minimized
+            .classList.toggle("fr-hidden", minimized);
+        panel.style.height = minimized
             ? "38px"
             : `${Math.max(260, settings.height)}px`;
-        panel.querySelector("#fr-min").textContent = settings.minimized
+        panel.querySelector("#fr-minimize").textContent = minimized
             ? "Restore"
             : "Minimize";
     }
