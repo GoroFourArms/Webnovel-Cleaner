@@ -74,6 +74,7 @@
         "#story-content",
         "#article-content",
         "#main-content",
+        ".hentry",
         ".chapter-content",
         ".chapter__content",
         ".chapter-body",
@@ -117,18 +118,7 @@
         ".advertisement",
         ".ads"
     ].join(",");
-    const WORD_FILTER = new Set([
-        "An",
-        "Do",
-        "Ha",
-        "He",
-        "Ho",
-        "I",
-        "No",
-        "Oh",
-        "So",
-        "You"
-    ]);
+    const WORD_FILTER = new Set(["An", "Do", "Ha", "He", "Ho", "I", "No", "Oh", "So", "You"]);
     const HIGH_FREQUENCY_CAPITAL_WORDS = new Set([
         "A",
         "And",
@@ -229,6 +219,7 @@
     let settings = loadSettings();
     let highlightedElements = [];
     let currentCandidates = [];
+    let highlightedCandidates = new Set();
     function loadSettings() {
         const defaults = {
             x: 20,
@@ -255,15 +246,9 @@
     function isExcluded(element) {
         if (!element || element.nodeType !== 1) return false;
         if (EXCLUDED_TAGS.has(element.tagName)) return true;
-        if (element.hidden || element.getAttribute("aria-hidden") === "true")
-            return true;
+        if (element.hidden || element.getAttribute("aria-hidden") === "true") return true;
         const style = getComputedStyle(element);
-        if (
-            style.display === "none" ||
-            style.visibility === "hidden" ||
-            style.opacity === "0"
-        )
-            return true;
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return true;
         return false;
     }
     function findDeepestChapterContainer(root = document) {
@@ -283,12 +268,7 @@
                 });
             } catch (_) {}
         }
-        const deepest = [...matches].filter(
-            (el) =>
-                ![...matches].some(
-                    (other) => other !== el && el.contains(other)
-                )
-        );
+        const deepest = [...matches].filter((el) => ![...matches].some((other) => other !== el && el.contains(other)));
         if (!deepest.length) return null;
         return deepest
             .map((element) => ({
@@ -296,6 +276,15 @@
                 length: (element.innerText || "").trim().length
             }))
             .sort((a, b) => b.length - a.length)[0].element;
+    }
+    function getElementSelector(element) {
+        if (!element) return "document.body";
+        if (element.id) return `#${element.id}`;
+        const classes = [...element.classList];
+        if (classes.length) {
+            return "." + classes.join(".");
+        }
+        return element.tagName.toLowerCase();
     }
     function extractVisibleText() {
         const page = document.body || document.documentElement;
@@ -305,17 +294,11 @@
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
                 const element = node.parentElement;
-                if (!node.nodeValue?.trim() || !element)
-                    return NodeFilter.FILTER_REJECT;
-                if (element.closest("#" + PANEL_ID))
-                    return NodeFilter.FILTER_REJECT;
+                if (!node.nodeValue?.trim() || !element) return NodeFilter.FILTER_REJECT;
+                if (element.closest("#" + PANEL_ID)) return NodeFilter.FILTER_REJECT;
                 let current = element;
                 while (current && current !== root.parentElement) {
-                    if (
-                        isExcluded(current) ||
-                        current.matches?.(NON_CHAPTER_SELECTOR)
-                    )
-                        return NodeFilter.FILTER_REJECT;
+                    if (isExcluded(current) || current.matches?.(NON_CHAPTER_SELECTOR)) return NodeFilter.FILTER_REJECT;
                     if (current === root) break;
                     current = current.parentElement;
                 }
@@ -329,16 +312,13 @@
                 .replace(/\s+/g, " ")
                 .trim();
             if (!text) continue;
-            const block = node.parentElement?.closest(
-                [...BLOCK_TAGS].join(",")
-            );
+            const block = node.parentElement?.closest([...BLOCK_TAGS].join(","));
             pieces.push({ text, block });
         }
         let result = "";
         let prevBlock = null;
         for (const piece of pieces) {
-            if (result)
-                result += piece.block && piece.block !== prevBlock ? "\n" : " ";
+            if (result) result += piece.block && piece.block !== prevBlock ? "\n" : " ";
             result += piece.text;
             prevBlock = piece.block;
         }
@@ -384,12 +364,7 @@
             const phrase = occ.phrase;
             const rawTokens = phrase.split(/\s+/);
             const normTokens = rawTokens.map(normalizeToken);
-            if (
-                rawTokens.length === 1 &&
-                (WORD_FILTER.has(phrase) ||
-                    HIGH_FREQUENCY_CAPITAL_WORDS.has(phrase))
-            )
-                return;
+            if ((rawTokens.length === 1 && WORD_FILTER.has(phrase)) || HIGH_FREQUENCY_CAPITAL_WORDS.has(phrase)) return;
             if (!rawMap.has(phrase)) {
                 rawMap.set(phrase, {
                     phrase: phrase,
@@ -409,17 +384,14 @@
         // Set-based Duplicate Resolution
         const deduplicatedMap = new Map();
         candidates.forEach((cand) => {
-            const distinctKey = Array.from(cand.distinctTokens)
-                .sort()
-                .join("|");
+            const distinctKey = Array.from(cand.distinctTokens).sort().join("|");
             if (!deduplicatedMap.has(distinctKey)) {
                 deduplicatedMap.set(distinctKey, cand);
             } else {
                 const existing = deduplicatedMap.get(distinctKey);
                 if (
                     cand.occurrences > existing.occurrences ||
-                    (cand.occurrences === existing.occurrences &&
-                        cand.firstPos < existing.firstPos)
+                    (cand.occurrences === existing.occurrences && cand.firstPos < existing.firstPos)
                 ) {
                     deduplicatedMap.set(distinctKey, cand);
                 }
@@ -430,11 +402,8 @@
         candidates = candidates.filter((c, idx, arr) => {
             for (let other of arr) {
                 if (other === c) continue;
-                const isSubset = Array.from(c.distinctTokens).every((t) =>
-                    other.distinctTokens.has(t)
-                );
-                const isStrict =
-                    other.distinctTokens.size > c.distinctTokens.size;
+                const isSubset = Array.from(c.distinctTokens).every((t) => other.distinctTokens.has(t));
+                const isStrict = other.distinctTokens.size > c.distinctTokens.size;
                 if (isSubset && isStrict) return false;
             }
             return true;
@@ -461,17 +430,14 @@
             const threshold = 0.05 * globalMaxScore;
             candidates = candidates.filter((c) => c.maxTokenCount > threshold);
         }
-        // Sort by MAX TOKEN COUNT (Descending), tie-breaker by First Occurrence Position (Ascending)
+        // Sort by fMAX TOKEN COUNT (Descending), tie-breaker by First Occurrence Position (Ascending)
         candidates.sort((a, b) => {
-            if (b.maxTokenCount !== a.maxTokenCount)
-                return b.maxTokenCount - a.maxTokenCount;
+            if (b.maxTokenCount !== a.maxTokenCount) return b.maxTokenCount - a.maxTokenCount;
             return a.firstPos - b.firstPos;
         });
         candidates.forEach((c) => {
             c.identityKey = Array.from(c.distinctTokens).sort().join("|");
-            c.tokenCountsStr = c.normalizedTokens
-                .map((t) => tokenFreqs.get(t) || 0)
-                .join(",");
+            c.tokenCountsStr = c.normalizedTokens.map((t) => tokenFreqs.get(t) || 0).join(",");
         });
         return candidates;
     }
@@ -484,13 +450,8 @@
                 return `(?<![a-z])${escapeRegex(phrase)}(?![a-z])`;
             }
             // Hyphen is replaced by [ -]?
-            const phraseWithHyphensEscaped = phrase
-                .split("-")
-                .map(escapeRegex)
-                .join("[ -]?");
-            const tokens = phraseWithHyphensEscaped
-                .split(/\s+/)
-                .filter(Boolean);
+            const phraseWithHyphensEscaped = phrase.split("-").map(escapeRegex).join("[ -]?");
+            const tokens = phraseWithHyphensEscaped.split(/\s+/).filter(Boolean);
             const n = tokens.length;
             if (n === 1) {
                 return `(?<![a-z])${tokens[0]}(?![a-z])`;
@@ -521,14 +482,17 @@
             }
             return `(?<![a-z])(?:${corePattern})(?![a-z])`;
         }
-        if (template === "Japanese" && parts.length >= 2) {
-            const prefix = parts.slice(0, -2).map(escape).join("\\s+");
-            const first = escape(parts[parts.length - 2]);
-            const second = escape(parts[parts.length - 1]);
-            const optionalPrefix = prefix ? `(?:${prefix}\\s+)?` : "";
-            return `(?<![a-z])${optionalPrefix}(?:${first}\\s+${second}|${second}\\s+${first})(?![a-z])`;
+        if (template === "Japanese") {
+            const parts = phrase.split(/ /);
+            if (parts.length >= 2) {
+                const prefix = parts.slice(0, -2).map(escapeRegex).join("\\s+");
+                const first = escapeRegex(parts[parts.length - 2]);
+                const second = escapeRegex(parts[parts.length - 1]);
+                const optionalPrefix = prefix ? `(?:${prefix}\\s+)?` : "";
+                return `(?<![a-z])${optionalPrefix}(?:${first}\\s+${second}|${second}\\s+${first})(?![a-z])`;
+            }
+            return `(?<![a-z])${escapeRegex(phrase)}(?![a-z])`;
         }
-        // Default 'Other' template
         return `(?<![a-z])${escapeRegex(phrase)}(?![a-z])`;
     }
     // --- DOM Highlighting Engine ---
@@ -536,10 +500,7 @@
         highlightedElements.forEach((el) => {
             const parent = el.parentNode;
             if (parent) {
-                parent.replaceChild(
-                    document.createTextNode(el.textContent),
-                    el
-                );
+                parent.replaceChild(document.createTextNode(el.textContent), el);
                 parent.normalize();
             }
         });
@@ -548,30 +509,17 @@
     function applyHighlights() {
         clearHighlights();
         if (!settings.highlightedAll || currentCandidates.length === 0) return;
-        const bodyWalker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-            {
-                acceptNode(node) {
-                    if (
-                        node.parentNode &&
-                        EXCLUDED_TAGS.has(node.parentNode.tagName)
-                    )
-                        return NodeFilter.FILTER_REJECT;
-                    if (
-                        node.parentElement &&
-                        node.parentElement.closest("#" + PANEL_ID)
-                    )
-                        return NodeFilter.FILTER_REJECT;
-                    return node.nodeValue.trim().length > 0
-                        ? NodeFilter.FILTER_ACCEPT
-                        : NodeFilter.FILTER_REJECT;
-                }
-            }
-        );
-        const textNodes = [];
-        while (bodyWalker.nextNode()) textNodes.push(bodyWalker.currentNode);
         currentCandidates.forEach((cand) => {
+            const bodyWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+                acceptNode(node) {
+                    if (node.parentNode && EXCLUDED_TAGS.has(node.parentNode.tagName)) return NodeFilter.FILTER_REJECT;
+                    if (node.parentElement && node.parentElement.closest("#" + PANEL_ID))
+                        return NodeFilter.FILTER_REJECT;
+                    return node.nodeValue.trim().length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                }
+            });
+            const textNodes = [];
+            while (bodyWalker.nextNode()) textNodes.push(bodyWalker.currentNode);
             const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
             const patternStr = generateRegex(displayName, settings.template);
             const regex = new RegExp(patternStr, "gi");
@@ -587,14 +535,13 @@
                     const matchStart = match.index;
                     const matchEnd = regex.lastIndex;
                     if (matchStart > lastIdx) {
-                        frag.appendChild(
-                            document.createTextNode(
-                                text.slice(lastIdx, matchStart)
-                            )
-                        );
+                        frag.appendChild(document.createTextNode(text.slice(lastIdx, matchStart)));
                     }
                     const span = document.createElement("span");
-                    span.className = "fr-highlight-mark";
+                    span.className =
+                        match[0] !== displayName && match[0].toLowerCase() === displayName.toLowerCase()
+                            ? "fr-highlight-mark fr-highlight-case-mismatch"
+                            : "fr-highlight-mark";
                     span.textContent = match[0];
                     frag.appendChild(span);
                     highlightedElements.push(span);
@@ -602,9 +549,7 @@
                     if (match[0].length === 0) regex.lastIndex++;
                 }
                 if (lastIdx < text.length) {
-                    frag.appendChild(
-                        document.createTextNode(text.slice(lastIdx))
-                    );
+                    frag.appendChild(document.createTextNode(text.slice(lastIdx)));
                 }
                 if (node.parentNode) {
                     node.parentNode.replaceChild(frag, node);
@@ -619,6 +564,7 @@
         style.id = STYLE_ID;
         style.textContent = `
             #${PANEL_ID} {
+                width: fit-content;
                 position: fixed;
                 z-index: 2147483647;
                 display: flex;
@@ -667,10 +613,10 @@
                 background: #1c1e22;
             }
             #${PANEL_ID} table {
-                border-collapse: collapse;
-                width: 100%;
-                table-layout: auto;
-            }
+    border-collapse: collapse;
+    width: max-content;
+    table-layout: auto;
+}
             #${PANEL_ID} th {
                 position: sticky;
                 top: 0;
@@ -702,6 +648,13 @@
                 color: #9cdcfe;
                 font-family: monospace;
             }
+             #${PANEL_ID} th,
+            #${PANEL_ID} td {
+                width: fit-content;
+                max-width: 400px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
             #${PANEL_ID} .fr-regex {
                 font-family: ui-monospace, monospace;
                 font-size: 11px;
@@ -715,6 +668,10 @@
                 background-color: rgba(255, 235, 59, 0.35) !important;
                 border-bottom: 1px dashed #ffeb3b !important;
             }
+            .fr-highlight-case-mismatch {
+              background-color: rgba(255, 152, 0, 0.4) !important;
+             border-bottom: 1px dashed #ff9800 !important;
+}
         `;
         document.head.appendChild(style);
     }
@@ -725,13 +682,11 @@
         panel.id = PANEL_ID;
         panel.style.left = `${Math.max(0, settings.x)}px`;
         panel.style.top = `${Math.max(0, settings.y)}px`;
-        panel.style.width = `${Math.max(520, settings.width)}px`;
         panel.style.height = `${Math.max(260, settings.height)}px`;
         panel.innerHTML = `
             <div class="fr-head">
-                <span class="fr-title">FR Scanner 2</span>
+                <span id="fr-chapter-selector" title="Matched chapter container"></span>
                 <label style="display:flex; align-items:center; gap:4px; margin-left: auto;">
-                    Template:
                     <select id="fr-template">
                         ${TEMPLATES.map((t) => `<option value="${t}" ${t === settings.template ? "selected" : ""}>${t}</option>`).join("")}
                     </select>
@@ -779,43 +734,53 @@
         runScan();
     }
     function makeDraggable(panel, handle) {
-        let isDragging = false,
-            startX,
-            startY,
-            initialLeft,
-            initialTop;
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+        let activePointerId = null;
+        function stopDragging() {
+            if (!isDragging) return;
+            isDragging = false;
+            activePointerId = null;
+            settings.x = panel.offsetLeft;
+            settings.y = panel.offsetTop;
+            saveSettings();
+        }
         handle.addEventListener("pointerdown", (e) => {
-            if (
-                e.target.tagName === "SELECT" ||
-                e.target.tagName === "BUTTON" ||
-                e.target.tagName === "INPUT"
-            )
-                return;
+            if (e.target.closest("button, select, input, label")) return;
+            if (e.button !== 0) return;
             isDragging = true;
+            activePointerId = e.pointerId;
             startX = e.clientX;
             startY = e.clientY;
             initialLeft = panel.offsetLeft;
             initialTop = panel.offsetTop;
+            e.preventDefault();
             panel.setPointerCapture(e.pointerId);
         });
-        handle.addEventListener("pointermove", (e) => {
-            if (!isDragging) return;
-            panel.style.left = `${initialLeft + (e.clientX - startX)}px`;
-            panel.style.top = `${initialTop + (e.clientY - startY)}px`;
+        panel.addEventListener("pointermove", (e) => {
+            if (!isDragging || e.pointerId !== activePointerId) return;
+            panel.style.left = `${Math.max(0, initialLeft + e.clientX - startX)}px`;
+            panel.style.top = `${Math.max(0, initialTop + e.clientY - startY)}px`;
         });
-        handle.addEventListener("pointerup", (e) => {
-            if (isDragging) {
-                isDragging = false;
-                settings.x = panel.offsetLeft;
-                settings.y = panel.offsetTop;
-                saveSettings();
+        panel.addEventListener("pointerup", (e) => {
+            if (e.pointerId !== activePointerId) return;
+            stopDragging();
+            if (panel.hasPointerCapture(e.pointerId)) {
                 panel.releasePointerCapture(e.pointerId);
             }
         });
+        panel.addEventListener("pointercancel", stopDragging);
+        panel.addEventListener("lostpointercapture", stopDragging);
+        window.addEventListener("blur", stopDragging);
     }
     function runScan() {
         clearHighlights();
         const text = extractVisibleText();
+        const container = findDeepestChapterContainer();
+        const selectorDisplay = document.getElementById("fr-chapter-selector");
+        if (selectorDisplay) {
+            selectorDisplay.textContent = getElementSelector(container);
+        }
         const occurrences = extractOccurrences(text);
         currentCandidates = processCandidates(occurrences);
         renderRows();
@@ -850,7 +815,7 @@
             // Counts Cell
             const tdCounts = document.createElement("td");
             tdCounts.className = "fr-counts";
-            tdCounts.textContent = cand.tokenCountsStr;
+            tdCounts.textContent = cand.tokenCountsStr.split(",").slice(0, 4).join(",");
             // Regex Cell
             const tdRegex = document.createElement("td");
             tdRegex.className = "fr-regex";
@@ -859,12 +824,25 @@
             // Action Cell
             const tdAction = document.createElement("td");
             const btnCopy = document.createElement("button");
-            btnCopy.textContent = "Copy";
+            btnCopy.textContent = "📋";
             btnCopy.title = "Copy Regular Expression";
             btnCopy.addEventListener("click", () => {
                 navigator.clipboard.writeText(regexStr);
             });
             tdAction.appendChild(btnCopy);
+            const btnHighlight = document.createElement("button");
+            btnHighlight.textContent = highlightedCandidates.has(cand.identityKey) ? "🔆" : "🔍";
+            btnHighlight.title = "Toggle Highlight for This Candidate";
+            btnHighlight.addEventListener("click", () => {
+                if (highlightedCandidates.has(cand.identityKey)) {
+                    highlightedCandidates.delete(cand.identityKey);
+                } else {
+                    highlightedCandidates.add(cand.identityKey);
+                }
+                applyHighlights();
+                renderRows();
+            });
+            tdAction.appendChild(btnHighlight);
             tr.append(tdName, tdCounts, tdRegex, tdAction);
             tbody.appendChild(tr);
         });
