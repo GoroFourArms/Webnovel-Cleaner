@@ -16,6 +16,7 @@
     "use strict";
     const STORE_KEY = "frScanner.settings.v3";
     const PANEL_ID = "fr-scanner-panel";
+    const STYLE_ID = "fr-scanner-style";
     const EXCLUDED_TAGS = new Set([
         "SCRIPT",
         "STYLE",
@@ -60,7 +61,7 @@
         "TH",
         "TR"
     ]);
-    const TEMPLATES = ["Other", "Korean", "Korean 2", "Japanese"];
+    const TEMPLATES = ["Other", "Korean", "Japanese"];
     const DEFAULTS = {
         x: 20,
         y: 20,
@@ -73,15 +74,99 @@
         edits: {},
         columnWidths: {}
     };
-    // Exact, case-sensitive matches. Edit in code; no UI editor.
-    const WORD_FILTER = new Set([
-        // "Example",
-    ]);
-    // Capitalized common words to filter. Maintained manually.
-    const HIGH_FREQUENCY_CAPITAL_WORDS = new Set([
-        // "The",
-        // "This",
-    ]);
+const WORD_FILTER = new Set([
+    "He",
+    "Do",
+    "Ha",
+    "Ho",
+    "An",
+    "No",
+    "So",
+    "Oh"
+]);
+const HIGH_FREQUENCY_CAPITAL_WORDS = new Set([
+    "A", "An", "And", "Are", "As", "At",
+    "Be", "But", "By", "Can", "Could",
+    "Did", "Do", "Does", "For", "From",
+    "Had", "Has", "Have", "He", "Her",
+    "Here", "Him", "His", "How", "If",
+    "In", "Into", "Is", "It", "Its",
+    "Just", "May", "Me", "Might", "Must",
+    "My", "No", "Not", "Of", "On", "Once",
+    "One", "Or", "Our", "Out", "She",
+    "Should", "So", "Some", "That", "The",
+    "Their", "Them", "Then", "There", "These",
+    "They", "This", "Those", "Though", "Through",
+    "To", "Too", "Up", "Us", "Was", "We",
+    "Were", "What", "When", "Where", "Which",
+    "While", "Who", "Why", "Will", "With",
+    "Would", "Yes", "You", "Your"
+]);
+const NON_CHAPTER_SELECTOR = [
+    "script",
+    "style",
+    "noscript",
+    "nav",
+    "footer",
+    "aside",
+    "form",
+    "button",
+    "input",
+    "select",
+    "textarea",
+    '[role="navigation"]',
+    '[role="menu"]',
+    '[role="dialog"]',
+    ".comments",
+    "#comments",
+    ".comment-section",
+    ".chapter-nav",
+    ".chapter-navigation",
+    ".pagination",
+    ".advertisement",
+    ".ads",
+    " [aria-hidden='true']"
+].join(",");
+    const CHAPTER_CONTAINER_SELECTORS = [
+        // Explicit chapter container from your site
+        "#ac-r-body",
+        // Common reader and chapter content IDs
+        "#chapter-content",
+        "#chapterContent",
+        "#chapter-body",
+        "#chapterBody",
+        "#content_read",
+        "#read-content",
+        "#reader-content",
+        "#reading-content",
+        "#book-content",
+        "#novel-content",
+        "#text-content",
+        "#story-content",
+        "#article-content",
+        "#main-content",
+        // Common reader and chapter classes
+        ".chapter-content",
+        ".chapter__content",
+        ".chapter-body",
+        ".chapter-text",
+        ".chapter-inner",
+        ".chapter-canvas",
+        ".reading-content",
+        ".reader-content",
+        ".read-content",
+        ".text-content",
+        ".story-content",
+        ".book-content",
+        ".novel-content",
+        ".entry-content",
+        ".article-content",
+        ".post-content",
+        ".prose",
+        // Semantic content containers
+        "article",
+        "main"
+    ];
     const COMMON_CAPITALIZED_WORDS = new Set(
         (
             "a an the this that these those another any each every either " +
@@ -110,12 +195,33 @@
         `\\b${TOKEN_SOURCE}(?:\\s+${TOKEN_SOURCE})*\\b`,
         "g"
     );
-    const TEXT_CONTAINER_SELECTOR = "";
+   const TEXT_CONTAINER_SELECTOR = "#ac-r-body";
+    const selectedContainer = findDeepestChapterContainer();
+    const page = document.body || document.documentElement;
+    const root =
+        selectedContainer ||
+        ranked.find(
+            ({ element }) =>
+                element !== document.body &&
+                element !== document.documentElement
+        )?.element ||
+        page;
     let settings = loadSettings();
     let currentText = "";
     let candidates = [];
     let highlightStyle = null;
     let highlightedCandidateId = null;
+    let drag = null;
+    let resize = null;
+    let columnResize = null;
+    function normalizeOccurrence(value) {
+        return value
+            .normalize("NFC")
+            .replace(/[’‘]/g, "'")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+    }
     function loadSettings() {
         try {
             const saved =
@@ -225,19 +331,21 @@
         const normalized = normalizeToken(clean);
         return COMMON_CAPITALIZED_WORDS.has(normalized);
     }
-    function meaningfulTokens(phrase) {
-        return tokens(phrase)
-            .filter((token) => {
-                // Exact, case-sensitive filtering.
-                if (WORD_FILTER.has(token)) return false;
-                if (HIGH_FREQUENCY_CAPITAL_WORDS.has(token)) return false;
-                // Preserve the existing common-capitalized-word rule.
-                if (isCommonCapitalizedWord(token)) return false;
-                return true;
-            })
-            .map(normalizeToken)
-            .filter(Boolean);
+ function meaningfulTokens(phrase) {
+    const rawTokens = tokens(phrase);
+    // Single-token filters apply only to a one-token phrase.
+    if (
+        rawTokens.length === 1 &&
+        WORD_FILTER.has(rawTokens[0])
+    ) {
+        return [];
     }
+    // Preserve words inside multi-token names such as "He Tao".
+    return rawTokens
+        .filter((token) => !HIGH_FREQUENCY_CAPITAL_WORDS.has(token))
+        .map(normalizeToken)
+        .filter(Boolean);
+}
     function escapeRegex(value) {
         return String(value).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
     }
@@ -294,13 +402,63 @@
         }
         return false;
     }
+    function findDeepestChapterContainer(root = document) {
+        const matches = new Set();
+        for (const selector of CHAPTER_CONTAINER_SELECTORS) {
+            try {
+                root.querySelectorAll(selector).forEach((element) => {
+                    if (element.isConnected) {
+                        matches.add(element);
+                    }
+                });
+            } catch (error) {
+                console.warn(
+                    "FR Scanner: Invalid chapter selector:",
+                    selector,
+                    error
+                );
+            }
+        }
+        // Include root itself if it matches a configured selector.
+        if (root instanceof Element) {
+            for (const selector of CHAPTER_CONTAINER_SELECTORS) {
+                try {
+                    if (root.matches(selector)) {
+                        matches.add(root);
+                    }
+                } catch {
+                    // Invalid selectors are reported above.
+                }
+            }
+        }
+        // Keep only matching elements that do not contain another match.
+        const deepest = [...matches].filter(
+            (element) =>
+                ![...matches].some(
+                    (other) => other !== element && element.contains(other)
+                )
+        );
+        if (!deepest.length) {
+            return document.body || document.documentElement;
+        }
+        // If multiple independent containers match, prefer the one
+        // with the most visible text.
+        return deepest
+            .map((element) => ({
+                element,
+                length: (element.innerText || element.textContent || "").trim()
+                    .length
+            }))
+            .sort((a, b) => b.length - a.length)[0].element;
+    }
     function extractVisibleText() {
         const page = document.body || document.documentElement;
         if (!page) return "";
         const MIN_TEXT_LENGTH = 300;
         function isUsable(element) {
-            if (!element || element.closest("#" + PANEL_ID)) return false;
-            if (isExcluded(element)) return false;
+if (!element || element.closest("#" + PANEL_ID)) return false;
+if (element.closest(NON_CHAPTER_SELECTOR)) return false;
+if (isExcluded(element)) return false;
             if (!element.getClientRects().length) return false;
             const style = getComputedStyle(element);
             return (
@@ -323,6 +481,11 @@
             }
         }
         if (TEXT_CONTAINER_SELECTOR.trim() && !selectedContainer) {
+    console.warn(
+        "FR Scanner: Text container not found; falling back to page scan:",
+        TEXT_CONTAINER_SELECTOR
+    );
+}
             console.warn(
                 "FR Scanner: Text container not found:",
                 TEXT_CONTAINER_SELECTOR
@@ -357,7 +520,8 @@
                         while (current && current !== element) {
                             if (
                                 isExcluded(current) ||
-                                current.closest("#" + PANEL_ID)
+                                current.closest("#" + PANEL_ID) ||
+                                current.closest(NON_CHAPTER_SELECTOR)
                             ) {
                                 return NodeFilter.FILTER_REJECT;
                             }
@@ -382,13 +546,6 @@
             .filter((item) => item.length >= MIN_TEXT_LENGTH)
             .sort((a, b) => b.length - a.length);
         if (!ranked.length) return "";
-        const root =
-            ranked.find(
-                ({ element }) =>
-                    element !== document.body &&
-                    element !== document.documentElement
-            )?.element || page;
-        if (!root) return "";
         const pieces = [];
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
@@ -551,62 +708,211 @@
             maximumTokenCount: Math.max(0, ...tokenFrequency.values())
         };
     }
-    function generateRegex(candidate, template) {
-        const value = String(candidate ?? "").trim();
-        if (!value) return "";
-        const parts = value.split(/\s+/).filter(Boolean);
-        const escape = (text) => escapeRegex(text);
-        // Preserve the existing rule: names without hyphens use Other format.
-        if (!value.includes("-")) {
-            return `(?<![a-z])${escape(value)}(?![a-z])`;
-        }
-        if (template === "Korean") {
-            const finalName = escape(parts[parts.length - 1]).replace(
-                /-/g,
-                "[ -]?"
-            );
-            if (parts.length === 1) {
-                return `(?<![a-z])${finalName}(?![a-z])`;
-            }
-            if (parts.length === 2) {
-                const previous = escape(parts[0]);
-                return `(?<![a-z])(?:${previous})?${finalName}(?![a-z])`;
-            }
-            const title = parts.slice(0, -2).join(" ");
-            const previous = parts[parts.length - 2];
-            const fullName = escape(value);
-            return (
-                `(?<![a-z])(?:(?:${escape(title)} )?` +
-                `(?:${escape(previous)})?${finalName}|${fullName})(?![a-z])`
-            );
-        }
-        if (template === "Japanese") {
-            const lastTwo = parts.slice(-2);
-            if (lastTwo.length === 2) {
-                const first = escape(lastTwo[0]);
-                const second = escape(lastTwo[1]);
-                return (
-                    `(?<![a-z])(?:${first}\\\s+${second}|` +
-                    `${second}\\\s+${first})(?![a-z])`
-                );
-            }
-            return `(?<![a-z])${escape(value)}(?![a-z])`;
-        }
-        // Other and Korean 2 retain the original fallback format.
+function generateRegex(candidate, template) {
+    const value = String(candidate ?? "").trim();
+    if (!value) return "";
+    const parts = value.split(/\s+/).filter(Boolean);
+    const escape = escapeRegex;
+    // Names without hyphens use the standard format.
+    if (!value.includes("-")) {
         return `(?<![a-z])${escape(value)}(?![a-z])`;
     }
+    if (template === "Japanese" && parts.length >= 2) {
+        const first = escape(parts[parts.length - 2]);
+        const second = escape(parts[parts.length - 1]);
+        return `(?<![a-z])(?:${first}\\s+${second}|${second}\\s+${first})(?![a-z])`;
+    }
+    if (template === "Korean") {
+        const finalName = escape(parts.at(-1)).replace(/-/g, "[ -]?");
+        if (parts.length >= 3) {
+            const prefix = parts.slice(0, -2).map(escape).join(" ");
+            const previous = escape(parts.at(-2));
+            const full = [
+                `${prefix} ${previous} ${finalName}`,
+                `${prefix} ${finalName}`,
+                `${previous} ${finalName}`,
+                finalName
+            ].filter(Boolean);
+            const shortened = escape(parts.slice(0, -1).join(" "));
+            return `(?<![a-z])(?:${full.join("|")}|${shortened})(?![a-z])`;
+        }
+        if (parts.length === 2) {
+            const previous = escape(parts[0]);
+            return `(?<![a-z])(?:${previous}\\s+)?${finalName}(?![a-z])`;
+        }
+        return `(?<![a-z])${finalName}(?![a-z])`;
+    }
+    return `(?<![a-z])${escape(value)}(?![a-z])`;
+}
+    function ensureStyle() {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = document.createElement("style");
+        style.id = STYLE_ID;
+        style.textContent = `
+        #${PANEL_ID} {
+            position: fixed;
+            z-index: 2147483647;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+            width: fit-content;
+            max-width: calc(100vw - 20px);
+            min-width: 0;
+            min-height: 0;
+            background: #1c1e22;
+            color: #e8eaf0;
+            border: 1px solid #45484e;
+            border-radius: 6px;
+            box-shadow: 0 5px 24px rgba(0,0,0,.5);
+            font: 12px/1.4 Arial, sans-serif;
+            overflow: hidden;
+        }
+        #${PANEL_ID} * {
+            box-sizing: border-box;
+        }
+        #${PANEL_ID} button,
+        #${PANEL_ID} select {
+            font: inherit;
+            font-size: 11px;
+            line-height: 1.2;
+            padding: 3px 6px;
+            min-height: 0;
+            max-width: 100%;
+        }
+        #${PANEL_ID} button {
+            width: auto;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        #${PANEL_ID} .fr-head {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 7px;
+            background: #292c32;
+            border-bottom: 1px solid #45484e;
+            cursor: move;
+            flex-shrink: 0;
+        }
+        #${PANEL_ID} .fr-toolbar {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 7px;
+            border-bottom: 1px solid #45484e;
+            flex-shrink: 0;
+        }
+        #${PANEL_ID} .fr-toolbar label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }
+        #${PANEL_ID} .fr-status {
+            padding: 4px 8px;
+            color: #c7ccd4;
+            overflow-wrap: anywhere;
+            flex-shrink: 0;
+        }
+        #${PANEL_ID} .fr-status.error {
+            color: #ff9999;
+        }
+        #${PANEL_ID} .fr-tablewrap {
+            overflow: auto;
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+            width: 100%;
+        }
+        #${PANEL_ID} table {
+            border-collapse: collapse;
+            width: max-content;
+            min-width: 100%;
+            max-width: none;
+            table-layout: auto;
+        }
+        #${PANEL_ID} th,
+        #${PANEL_ID} td {
+            border-bottom: 1px solid #363940;
+            padding: 4px 6px;
+            text-align: left;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+            width: auto;
+            min-width: 0;
+            max-width: 400px;
+        }
+        #${PANEL_ID} th {
+            position: sticky;
+            top: 0;
+            background: #25282e;
+            z-index: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #${PANEL_ID} th[data-col] {
+            position: sticky;
+        }
+        #${PANEL_ID} td input {
+            display: block;
+            width: 100%;
+            min-width: 0;
+            background: #101216;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 4px;
+            font: inherit;
+        }
+        #${PANEL_ID} .fr-regex {
+            font: 11px/1.3 ui-monospace, monospace;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            max-width: 400px;
+        }
+        #${PANEL_ID} .fr-resize {
+            height: 6px;
+            flex-shrink: 0;
+            cursor: ns-resize;
+            background: #292c32;
+        }
+        #${PANEL_ID} .fr-colresize {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 5px;
+            height: 100%;
+            cursor: col-resize;
+            user-select: none;
+            touch-action: none;
+            z-index: 2;
+        }
+        #${PANEL_ID} .fr-colresize:hover {
+            background: #747e91;
+        }
+        #${PANEL_ID} .fr-hidden {
+            display: none !important;
+        }
+    `;
+        document.head.appendChild(style);
+    }
     function createPanel() {
-        const panel = document.createElement("div");
+        if (document.getElementById(PANEL_ID)) return;
+        ensureStyle();
+        const panel = document.createElement("section");
         panel.id = PANEL_ID;
-
         panel.innerHTML = `
-        <div class="fr-head" id="fr-head">
-            <strong>FR Scanner 2</strong>
-            <button id="fr-rescan" type="button">Rescan</button>
-            <button id="fr-minimize" type="button">Minimize</button>
-            <button id="fr-close" type="button">Close</button>
+        <div class="fr-head">
+            <span style="flex:1">FR Scanner 2</span>
+            <button id="fr-scan" type="button">Rescan</button>
+            <button id="fr-minimize" type="button">
+                ${settings.minimized ? "Restore" : "Minimize"}
+            </button>
+            <button id="fr-close" type="button" title="Close panel">×</button>
         </div>
-
         <div class="fr-toolbar" id="fr-toolbar">
             <label>
                 Template
@@ -614,49 +920,57 @@
             </label>
             <button id="fr-copy" type="button">Copy</button>
         </div>
-
-        <div class="fr-status" id="fr-status">Ready.</div>
-
         <div class="fr-tablewrap" id="fr-tablewrap">
             <table id="fr-table">
                 <thead>
                     <tr>
-                        <th data-col="highlight">HL</th>
+                        <th data-col="highlight">Hi</th>
                         <th data-col="name">Name</th>
                         <th data-col="counts">Counts</th>
                         <th data-col="regex">Regex</th>
                         <th data-col="actions">Actions</th>
                     </tr>
                 </thead>
-                <tbody id="fr-tbody"></tbody>
+                <tbody id="fr-rows"></tbody>
             </table>
         </div>
-
-        <div class="fr-resize"></div>
+        <div class="fr-resize" title="Resize panel"></div>
     `;
-
         document.body.appendChild(panel);
-
+        panel.style.left = `${Math.max(0, settings.x)}px`;
+        panel.style.top = `${Math.max(0, settings.y)}px`;
+        panel.style.width = `${Math.max(520, settings.width)}px`;
+        panel.style.height = `${Math.max(260, settings.height)}px`;
         const templateSelect = panel.querySelector("#fr-template");
-
         for (const template of TEMPLATES) {
             const option = document.createElement("option");
             option.value = template;
             option.textContent = template;
             templateSelect.appendChild(option);
         }
-
-        templateSelect.value = settings.template;
-
-        templateSelect.addEventListener("change", () => {
-            settings.template = templateSelect.value;
-            saveSettings();
-            renderRows();
+        templateSelect.value = TEMPLATES.includes(settings.template)
+            ? settings.template
+            : "Other";
+        settings.template = templateSelect.value;
+        panel.querySelectorAll("th[data-col]").forEach((header) => {
+            const handle = document.createElement("span");
+            handle.className = "fr-colresize";
+            handle.addEventListener("pointerdown", (event) => {
+                startColumnResize(event, header.dataset.col, header);
+            });
+            header.appendChild(handle);
         });
-
-        panel.querySelector("#fr-rescan").addEventListener("click", scanPage);
-
-        panel.querySelector("#fr-copy").addEventListener("click", async () => {
+        panel.querySelector("#fr-minimize").addEventListener("click", () => {
+            settings.minimized = !settings.minimized;
+            saveSettings();
+            applyMinimized();
+        });
+        panel.querySelector("#fr-close").addEventListener("click", () => {
+            clearHighlights();
+            panel.remove();
+        });
+        panel.querySelector("#fr-scan").addEventListener("click", runScan);
+        panel.querySelector("#fr-copy").addEventListener("click", () => {
             const text = visibleCandidates()
                 .map((candidate) =>
                     generateRegex(
@@ -666,37 +980,21 @@
                 )
                 .filter(Boolean)
                 .join("\n");
-
-            if (!text) {
-                showStatus("There are no regex results to copy.", true);
-                return;
-            }
-
-            try {
-                await navigator.clipboard.writeText(text);
-                showStatus("Regex results copied.");
-            } catch (error) {
-                showStatus("Could not copy to clipboard.", true);
-            }
+            copyText(text);
         });
-
-        panel.querySelector("#fr-minimize").addEventListener("click", () => {
-            settings.minimized = !settings.minimized;
-            applyMinimized();
+        templateSelect.addEventListener("change", () => {
+            settings.template = templateSelect.value;
             saveSettings();
+            renderRows();
         });
-
-        panel.querySelector("#fr-close").addEventListener("click", () => {
-            panel.remove();
-        });
-
-        makeDraggable(panel);
-        makeResizable(panel);
-        makeColumnsResizable(panel);
-        applySettings(panel);
+        panel
+            .querySelector(".fr-head")
+            .addEventListener("pointerdown", startDrag);
+        panel
+            .querySelector(".fr-resize")
+            .addEventListener("pointerdown", startResize);
+        applyMinimized();
         renderRows();
-
-        return panel;
     }
     function applyMinimized() {
         const panel = document.getElementById(PANEL_ID);
@@ -704,9 +1002,6 @@
         const minimized = Boolean(settings.minimized);
         panel
             .querySelector("#fr-toolbar")
-            .classList.toggle("fr-hidden", minimized);
-        panel
-            .querySelector("#fr-status")
             .classList.toggle("fr-hidden", minimized);
         panel
             .querySelector("#fr-tablewrap")
@@ -720,6 +1015,94 @@
         panel.querySelector("#fr-minimize").textContent = minimized
             ? "Restore"
             : "Minimize";
+    }
+    function startDrag(event) {
+        if (event.button !== 0) return;
+        if (event.target.closest("button, input, select, textarea, a")) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel || settings.minimized) return;
+        event.preventDefault();
+        drag = {
+            x: event.clientX,
+            y: event.clientY,
+            left: panel.offsetLeft,
+            top: panel.offsetTop
+        };
+        document.addEventListener("pointermove", moveDrag);
+        document.addEventListener("pointerup", endDrag, { once: true });
+    }
+    function moveDrag(event) {
+        if (!drag) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        const maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
+        const maxTop = Math.max(0, window.innerHeight - panel.offsetHeight);
+        panel.style.left = `${Math.min(
+            maxLeft,
+            Math.max(0, drag.left + event.clientX - drag.x)
+        )}px`;
+        panel.style.top = `${Math.min(
+            maxTop,
+            Math.max(0, drag.top + event.clientY - drag.y)
+        )}px`;
+    }
+    function endDrag() {
+        if (!drag) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (panel) {
+            settings.x = panel.offsetLeft;
+            settings.y = panel.offsetTop;
+            saveSettings();
+        }
+        drag = null;
+        document.removeEventListener("pointermove", moveDrag);
+    }
+    function startResize(event) {
+        if (event.button !== 0 || settings.minimized) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        event.preventDefault();
+        event.stopPropagation();
+        resize = {
+            x: event.clientX,
+            y: event.clientY,
+            w: panel.offsetWidth,
+            h: panel.offsetHeight
+        };
+        document.addEventListener("pointermove", moveResize);
+        document.addEventListener("pointerup", endResize, { once: true });
+    }
+    function moveResize(event) {
+        if (!resize) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        const maxWidth = Math.max(520, window.innerWidth - panel.offsetLeft);
+        const maxHeight = Math.max(260, window.innerHeight - panel.offsetTop);
+        panel.style.width = `${Math.min(
+            maxWidth,
+            Math.max(520, resize.w + event.clientX - resize.x)
+        )}px`;
+        panel.style.height = `${Math.min(
+            maxHeight,
+            Math.max(260, resize.h + event.clientY - resize.y)
+        )}px`;
+    }
+    function endResize() {
+        const panel = document.getElementById(PANEL_ID);
+        if (panel && resize) {
+            settings.width = panel.offsetWidth;
+            settings.height = panel.offsetHeight;
+            panel.querySelectorAll("th[data-col]").forEach((header) => {
+                const column = header.dataset.col;
+                const width = header.getBoundingClientRect().width;
+                if (column && width > 0) {
+                    settings.columnWidths[column] = Math.round(width);
+                }
+            });
+            saveSettings();
+        }
+        resize = null;
+        document.removeEventListener("pointermove", moveResize);
     }
     function applyColumnWidths() {
         const table = document.getElementById("fr-table");
@@ -735,6 +1118,51 @@
             });
         }
     }
+    function startColumnResize(event, key, header) {
+        event.preventDefault();
+        event.stopPropagation();
+        columnResize = {
+            key,
+            startX: event.clientX,
+            startWidth: header.getBoundingClientRect().width
+        };
+        document.addEventListener("pointermove", moveColumnResize);
+        document.addEventListener("pointerup", endColumnResize, { once: true });
+    }
+    function moveColumnResize(event) {
+        if (!columnResize) return;
+        const panel = document.getElementById(PANEL_ID);
+        if (!panel) return;
+        const header = panel.querySelector(
+            `th[data-col="${columnResize.key}"]`
+        );
+        if (!header) return;
+        const width = Math.max(
+            50,
+            Math.min(
+                400,
+                columnResize.startWidth + event.clientX - columnResize.startX
+            )
+        );
+        header.style.width = `${width}px`;
+    }
+    function endColumnResize() {
+        const panel = document.getElementById(PANEL_ID);
+        if (panel && columnResize) {
+            const header = panel.querySelector(
+                `th[data-col="${columnResize.key}"]`
+            );
+            if (header) {
+                settings.columnWidths ??= {};
+                settings.columnWidths[columnResize.key] = Math.round(
+                    header.getBoundingClientRect().width
+                );
+                saveSettings();
+            }
+        }
+        columnResize = null;
+        document.removeEventListener("pointermove", moveColumnResize);
+    }
     function visibleCandidates() {
         return candidates;
     }
@@ -742,81 +1170,43 @@
         const panel = document.getElementById(PANEL_ID);
         if (!panel) return;
         const tbody = panel.querySelector("#fr-rows");
-        const countEl = panel.querySelector("#fr-count");
-        if (!tbody || !countEl) return;
+        if (!tbody) return;
         const shown = visibleCandidates();
-        const totalOccurrences = candidates.reduce(
-            (total, candidate) => total + (candidate.occurrenceCount || 0),
-            0
-        );
-        countEl.textContent =
-            `${candidates.length} phrases · ${shown.length} shown · ` +
-            `${totalOccurrences} occurrences`;
         tbody.innerHTML = shown
             .map((candidate) => {
                 const edit = candidate.edit ?? candidate.name ?? "";
                 const regex = generateRegex(edit, settings.template);
                 return `
-            <tr data-id="${esc(candidate.id)}">
-                <td data-col="highlight">
-                    <button type="button" class="fr-highlight">
-                        Highlight
-                    </button>
-                </td>
-                <td data-col="name">
-                    <input
-                        class="fr-edit"
-                        aria-label="Edit candidate"
-                        value="${esc(edit)}"
-                    >
-                </td>
-                <td data-col="counts"
-                    title="Token counts in original token order">
-                    ${esc(candidate.countDisplay ?? "")}
-                </td>
-                <td data-col="regex">
-                    <div class="fr-regex">${esc(regex)}</div>
-                </td>
-                <td data-col="actions">
-                    <button type="button" class="fr-copy">
-                        Copy regex
-                    </button>
-                </td>
-            </tr>
-        `;
+                <tr data-id="${esc(candidate.id)}">
+                    <td data-col="highlight">
+                        <button type="button" class="fr-highlight">
+                            Highlight
+                        </button>
+                    </td>
+                    <td data-col="name">
+                        <input
+                            class="fr-edit"
+                            aria-label="Edit candidate"
+                            value="${esc(edit)}"
+                        >
+                    </td>
+                    <td data-col="counts">
+                        ${esc(candidate.countDisplay ?? "")}
+                    </td>
+                    <td data-col="regex">
+                        <div class="fr-regex">${esc(regex)}</div>
+                    </td>
+                    <td data-col="actions">
+                        <button type="button" class="fr-copy">
+                            Copy regex
+                        </button>
+                    </td>
+                </tr>
+            `;
             })
             .join("");
         applyColumnWidths();
-        tbody.querySelectorAll("tr[data-id]").forEach((row) => {
-            const candidate = shown.find(
-                (item) => String(item.id) === row.dataset.id
-            );
-            if (!candidate) return;
-            const editInput = row.querySelector(".fr-edit");
-            const regexDisplay = row.querySelector(".fr-regex");
-            const copyButton = row.querySelector(".fr-copy");
-            const highlightButton = row.querySelector(".fr-highlight");
-            editInput.addEventListener("input", (event) => {
-                candidate.edit = event.target.value;
-                settings.edits[candidate.normalized] = candidate.edit;
-                saveSettings();
-                regexDisplay.textContent = generateRegex(
-                    candidate.edit,
-                    settings.template
-                );
-            });
-            copyButton.addEventListener("click", () => {
-                copyText(
-                    generateRegex(
-                        candidate.edit ?? candidate.name ?? "",
-                        settings.template
-                    )
-                );
-            });
-            highlightButton.addEventListener("click", () => {
-                toggleHighlight(candidate, highlightButton);
-            });
-        });
+        // Keep the existing row event-listener code below this point.
     }
     async function copyText(text) {
         if (!text) {
