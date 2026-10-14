@@ -473,29 +473,31 @@
         const boundaryStart = "(?<![a-z])";
         const boundaryEnd = "(?![a-z])";
         if (template === "Korean") {
+            const tokens = phrase.trim().split(" ").filter(Boolean);
+            if (!tokens.length) return "";
             if (!phrase.includes("-")) {
                 return `${boundaryStart}${escapeRegex(phrase)}${boundaryEnd}`;
             }
-            const tokens = phrase.trim().split(" ").filter(Boolean);
-            if (!tokens.length) return "";
             const patterns = tokens.map((token) => escapeRegex(token).replace(/-/g, "[- ]?"));
             const n = patterns.length;
             if (n === 1) {
                 return `${boundaryStart}${patterns[0]}${boundaryEnd}`;
             }
             const variants = new Set();
-            variants.add(patterns.join(" "));
+            const last = patterns[n - 1];
+            const prefix = patterns.slice(0, n - 1);
+            // Alternative 1: far-right token, with preceding tokens optional.
             variants.add(
-                patterns
-                    .slice(0, -2)
-                    .concat([patterns[n - 1], patterns[n - 2]])
-                    .join(" ")
+                `${prefix.length > 1 ? `(?:${prefix.slice(0, -1).join(" ")} )?` : ""}` +
+                    `${prefix.length ? `(?:${prefix[prefix.length - 1]} )?` : ""}${last}`
             );
+            // Alternative 2: preceding two tokens, with any earlier prefix optional.
             if (n >= 3) {
-                variants.add([...patterns.slice(0, -3), patterns[n - 2], patterns[n - 1]].join(" "));
-                variants.add([...patterns.slice(0, -3), patterns[n - 1], patterns[n - 2]].join(" "));
+                const preceding = patterns[n - 2];
+                const earlier = patterns.slice(0, n - 2);
+                variants.add(`${earlier.length ? `(?:${earlier.join(" ")} )?` : ""}${preceding}`);
             }
-            return `${boundaryStart}(?:${[...variants].filter(Boolean).join("|")})${boundaryEnd}`;
+            return `${boundaryStart}(?:${[...variants].join("|")})${boundaryEnd}`;
         }
         if (template === "Japanese") {
             const parts = phrase.trim().split(" ").filter(Boolean);
