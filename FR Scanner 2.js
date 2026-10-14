@@ -119,7 +119,7 @@
         ".ads"
     ].join(",");
     const WORD_FILTER = new Set(["An", "Do", "Ha", "He", "Ho", "I", "No", "Oh", "So", "You"]);
-    const HIGH_FREQUENCY_CAPITAL_WORDS = new Set([
+    const All_Words = new Set([
         "A",
         "And",
         "Are",
@@ -220,12 +220,13 @@
     let highlightedElements = [];
     let currentCandidates = [];
     let highlightedCandidates = new Set();
+    let activeChapterRoot = null;
     function loadSettings() {
         const defaults = {
             x: 20,
             y: 20,
-            width: 560,
-            height: 380,
+            width: 900,
+            height: 450,
             template: "Other",
             edits: {},
             highlightedAll: false
@@ -252,7 +253,7 @@
         return false;
     }
     function findDeepestChapterContainer(root = document) {
-        const matches = new Set();
+        const matches = new Map();
         for (const selector of CHAPTER_CONTAINER_SELECTORS) {
             try {
                 root.querySelectorAll(selector).forEach((el) => {
@@ -263,33 +264,29 @@
                         !isExcluded(el) &&
                         el.getClientRects().length
                     ) {
-                        matches.add(el);
+                        if (!matches.has(el)) matches.set(el, selector);
                     }
                 });
             } catch (_) {}
         }
-        const deepest = [...matches].filter((el) => ![...matches].some((other) => other !== el && el.contains(other)));
+        const deepest = [...matches.keys()].filter(
+            (el) => ![...matches.keys()].some((other) => other !== el && el.contains(other))
+        );
         if (!deepest.length) return null;
-        return deepest
+        const element = deepest
             .map((element) => ({
                 element,
                 length: (element.innerText || "").trim().length
             }))
             .sort((a, b) => b.length - a.length)[0].element;
+        return {
+            element,
+            selector: matches.get(element)
+        };
     }
-    function getElementSelector(element) {
-        if (!element) return "document.body";
-        if (element.id) return `#${element.id}`;
-        const classes = [...element.classList];
-        if (classes.length) {
-            return "." + classes.join(".");
-        }
-        return element.tagName.toLowerCase();
-    }
-    function extractVisibleText() {
-        const page = document.body || document.documentElement;
-        if (!page) return "";
-        const root = findDeepestChapterContainer() || page;
+    function extractVisibleText(root = null) {
+        root = root || document.body || document.documentElement;
+        if (!root) return "";
         const pieces = [];
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
@@ -333,11 +330,12 @@
         } else if (t.endsWith("s") && t.length > 2 && !t.endsWith("ss")) {
             t = t.slice(0, -1);
         }
-        return t.toLowerCase();
+        return t;
     }
     function extractOccurrences(text) {
         const occurrences = [];
-        const regex = /\b([A-Z][a-z]*(?:\.\s+[A-Z][a-z]*|\s+[A-Z][a-z]*)*)\b/g;
+        const regex =
+            /((?:[A-ZĀĒĪŌŪ](?:\.[A-ZĀĒĪŌŪ])+\.?|[A-ZĀĒĪŌŪ]\.|[A-ZĀĒĪŌŪ]{2,}|[A-ZĀĒĪŌŪ][A-Za-zĀĒĪŌŪāēīōū0-9'’-]*)(?:\s+(?:[A-ZĀĒĪŌŪ](?:\.[A-ZĀĒĪŌŪ])+\.?|[A-ZĀĒĪŌŪ]\.|[A-ZĀĒĪŌŪ]{2,}|[A-ZĀĒĪŌŪ][A-Za-zĀĒĪŌŪāēīōū0-9'’-]*))*)/g;
         let match;
         while ((match = regex.exec(text)) !== null) {
             const phrase = match[1].trim();
@@ -358,142 +356,160 @@
         }
         return occurrences;
     }
+    function meaningfulTokens(phrase) {
+        const rawTokens = phrase.trim().split(/\s+/).filter(Boolean);
+        if (rawTokens.length === 0) return [];
+        const lastIndex = rawTokens.length - 1;
+        rawTokens[lastIndex] = normalizeToken(rawTokens[lastIndex]);
+        return rawTokens.filter((token, index) => {
+            if (rawTokens.length === 1 && WORD_FILTER.has(token)) {
+                return false;
+            }
+            return !All_Words.has(token);
+        });
+    }
     function processCandidates(occurrences) {
         const rawMap = new Map();
         occurrences.forEach((occ) => {
             const phrase = occ.phrase;
-            const rawTokens = phrase.split(/\s+/);
-            const normTokens = rawTokens.map(normalizeToken);
-            if ((rawTokens.length === 1 && WORD_FILTER.has(phrase)) || HIGH_FREQUENCY_CAPITAL_WORDS.has(phrase)) return;
-            if (!rawMap.has(phrase)) {
-                rawMap.set(phrase, {
-                    phrase: phrase,
+            const caseKey = phrase.toLowerCase();
+            const normTokens = meaningfulTokens(phrase);
+            if (normTokens.length === 0) return;
+            if (!rawMap.has(caseKey)) {
+                rawMap.set(caseKey, {
+                    phrase,
+                    caseKey,
                     normalizedTokens: normTokens,
                     distinctTokens: new Set(normTokens),
                     occurrences: 0,
+                    firstPos: occ.startPos,
+                    spellingCounts: new Map()
+                });
+            }
+            const cand = rawMap.get(caseKey);
+            cand.occurrences++;
+            cand.firstPos = Math.min(cand.firstPos, occ.startPos);
+            const spelling = cand.spellingCounts.get(phrase);
+            if (spelling) {
+                spelling.count++;
+                spelling.firstPos = Math.min(spelling.firstPos, occ.startPos);
+            } else {
+                cand.spellingCounts.set(phrase, {
+                    count: 1,
                     firstPos: occ.startPos
                 });
             }
-            const cand = rawMap.get(phrase);
-            cand.occurrences++;
-            if (occ.startPos < cand.firstPos) {
-                cand.firstPos = occ.startPos;
-            }
         });
         let candidates = Array.from(rawMap.values());
-        // Set-based Duplicate Resolution
+        candidates.forEach((cand) => {
+            let delegate = null;
+            for (const [phrase, data] of cand.spellingCounts) {
+                if (
+                    !delegate ||
+                    data.count > delegate.count ||
+                    (data.count === delegate.count && data.firstPos < delegate.firstPos)
+                ) {
+                    delegate = {
+                        phrase,
+                        count: data.count,
+                        firstPos: data.firstPos
+                    };
+                }
+            }
+            if (delegate) cand.phrase = delegate.phrase;
+        });
+        // Remove duplicate candidates with identical token sets.
         const deduplicatedMap = new Map();
         candidates.forEach((cand) => {
             const distinctKey = Array.from(cand.distinctTokens).sort().join("|");
-            if (!deduplicatedMap.has(distinctKey)) {
+            const existing = deduplicatedMap.get(distinctKey);
+            if (
+                !existing ||
+                cand.occurrences > existing.occurrences ||
+                (cand.occurrences === existing.occurrences && cand.firstPos < existing.firstPos)
+            ) {
                 deduplicatedMap.set(distinctKey, cand);
-            } else {
-                const existing = deduplicatedMap.get(distinctKey);
-                if (
-                    cand.occurrences > existing.occurrences ||
-                    (cand.occurrences === existing.occurrences && cand.firstPos < existing.firstPos)
-                ) {
-                    deduplicatedMap.set(distinctKey, cand);
-                }
             }
         });
         candidates = Array.from(deduplicatedMap.values());
-        // Strict Redundancy Removal
-        candidates = candidates.filter((c, idx, arr) => {
-            for (let other of arr) {
-                if (other === c) continue;
-                const isSubset = Array.from(c.distinctTokens).every((t) => other.distinctTokens.has(t));
-                const isStrict = other.distinctTokens.size > c.distinctTokens.size;
-                if (isSubset && isStrict) return false;
+        // Remove candidates whose distinct token sets are strict subsets of others.
+        candidates = candidates.filter((cand) => {
+            for (const other of candidates) {
+                if (other === cand) continue;
+                if (other.distinctTokens.size <= cand.distinctTokens.size) continue;
+                const isSubset = Array.from(cand.distinctTokens).every((token) => other.distinctTokens.has(token));
+                if (isSubset) return false;
             }
             return true;
         });
-        // Compute Token Frequencies & Max Token Count for Each Candidate
+        // Count each token's frequency across the remaining candidates.
         const tokenFreqs = new Map();
-        candidates.forEach((c) => {
-            c.distinctTokens.forEach((t) => {
-                tokenFreqs.set(t, (tokenFreqs.get(t) || 0) + c.occurrences);
+        candidates.forEach((cand) => {
+            cand.distinctTokens.forEach((token) => {
+                tokenFreqs.set(token, (tokenFreqs.get(token) || 0) + cand.occurrences);
             });
         });
         let globalMaxScore = 0;
-        candidates.forEach((c) => {
-            let maxTokenCount = 0;
-            c.distinctTokens.forEach((t) => {
-                const freq = tokenFreqs.get(t) || 0;
-                if (freq > maxTokenCount) maxTokenCount = freq;
-            });
-            c.maxTokenCount = maxTokenCount;
-            if (maxTokenCount > globalMaxScore) globalMaxScore = maxTokenCount;
+        candidates.forEach((cand) => {
+            cand.maxTokenCount = Math.max(0, ...Array.from(cand.distinctTokens, (token) => tokenFreqs.get(token) || 0));
+            globalMaxScore = Math.max(globalMaxScore, cand.maxTokenCount);
         });
-        // Hide candidates with max token count <= 5% of global maximum candidate maxTokenCount
+        // Hide candidates at or below 5% of the global maximum.
         if (globalMaxScore > 0) {
-            const threshold = 0.05 * globalMaxScore;
-            candidates = candidates.filter((c) => c.maxTokenCount > threshold);
+            const threshold = globalMaxScore * 0.05;
+            candidates = candidates.filter((cand) => cand.maxTokenCount > threshold);
         }
-        // Sort by fMAX TOKEN COUNT (Descending), tie-breaker by First Occurrence Position (Ascending)
-        candidates.sort((a, b) => {
-            if (b.maxTokenCount !== a.maxTokenCount) return b.maxTokenCount - a.maxTokenCount;
-            return a.firstPos - b.firstPos;
-        });
-        candidates.forEach((c) => {
-            c.identityKey = Array.from(c.distinctTokens).sort().join("|");
-            c.tokenCountsStr = c.normalizedTokens.map((t) => tokenFreqs.get(t) || 0).join(",");
+        // Sort by maximum token frequency, then first occurrence.
+        candidates.sort((a, b) => b.maxTokenCount - a.maxTokenCount || a.firstPos - b.firstPos);
+        candidates.forEach((cand) => {
+            cand.identityKey = Array.from(cand.distinctTokens).sort().join("|");
+            cand.tokenCountsStr = cand.normalizedTokens.map((token) => tokenFreqs.get(token) || 0).join(",");
         });
         return candidates;
     }
     // --- Specialized Regex Template Rules ---
     function generateRegex(phrase, template) {
         const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const boundaryStart = "(?<![a-z])";
+        const boundaryEnd = "(?![a-z])";
         if (template === "Korean") {
             if (!phrase.includes("-")) {
-                // No hyphen -> treat using standard "Other" pattern rules
-                return `(?<![a-z])${escapeRegex(phrase)}(?![a-z])`;
+                return `${boundaryStart}${escapeRegex(phrase)}${boundaryEnd}`;
             }
-            // Hyphen is replaced by [ -]?
-            const phraseWithHyphensEscaped = phrase.split("-").map(escapeRegex).join("[ -]?");
-            const tokens = phraseWithHyphensEscaped.split(/\s+/).filter(Boolean);
-            const n = tokens.length;
+            const tokens = phrase.trim().split(" ").filter(Boolean);
+            if (!tokens.length) return "";
+            const patterns = tokens.map((token) => escapeRegex(token).replace(/-/g, "[- ]?"));
+            const n = patterns.length;
             if (n === 1) {
-                return `(?<![a-z])${tokens[0]}(?![a-z])`;
+                return `${boundaryStart}${patterns[0]}${boundaryEnd}`;
             }
-            const firstToken = tokens[0];
-            const secondToRight = tokens[n - 2];
-            const lastToken = tokens[n - 1];
-            let corePattern = "";
-            if (n === 2) {
-                // 2 tokens: First + (?: SecondToRight)? + Last
-                // Note: when n=2, firstToken === secondToRight, so we frame secondToRight optional
-                corePattern = `${firstToken} (?:${secondToRight} )?${lastToken}`;
-            } else if (n === 3) {
-                // 3 tokens: First + (?: ThirdToRight)? + (?: SecondToRight)? + Last
-                const thirdToRight = tokens[n - 3];
-                corePattern = `${firstToken} (?:${thirdToRight} )?(?:${secondToRight} )?${lastToken}`;
-            } else {
-                // > 3 tokens: Include internal tokens between First and ThirdToRight
-                const thirdToRight = tokens[n - 3];
-                const middle = tokens.slice(1, n - 3).join(" ");
-                const midPrefix = middle ? `${middle} ` : "";
-                corePattern = `${firstToken} ${midPrefix}(?:${thirdToRight} )?(?:${secondToRight} )?${lastToken}`;
-            }
-            // Add additional alternative branch: | followed by thirdToRight and secondToRight (if thirdToRight exists)
+            const variants = new Set();
+            variants.add(patterns.join(" "));
+            variants.add(
+                patterns
+                    .slice(0, -2)
+                    .concat([patterns[n - 1], patterns[n - 2]])
+                    .join(" ")
+            );
             if (n >= 3) {
-                const thirdToRight = tokens[n - 3];
-                corePattern += `|${thirdToRight} ${secondToRight}`;
+                variants.add([...patterns.slice(0, -3), patterns[n - 2], patterns[n - 1]].join(" "));
+                variants.add([...patterns.slice(0, -3), patterns[n - 1], patterns[n - 2]].join(" "));
             }
-            return `(?<![a-z])(?:${corePattern})(?![a-z])`;
+            return `${boundaryStart}(?:${[...variants].filter(Boolean).join("|")})${boundaryEnd}`;
         }
         if (template === "Japanese") {
-            const parts = phrase.split(/ /);
-            if (parts.length >= 2) {
-                const prefix = parts.slice(0, -2).map(escapeRegex).join("\\s+");
-                const first = escapeRegex(parts[parts.length - 2]);
-                const second = escapeRegex(parts[parts.length - 1]);
-                const optionalPrefix = prefix ? `(?:${prefix}\\s+)?` : "";
-                return `(?<![a-z])${optionalPrefix}(?:${first}\\s+${second}|${second}\\s+${first})(?![a-z])`;
+            const parts = phrase.trim().split(" ").filter(Boolean);
+            if (parts.length < 2) {
+                return `${boundaryStart}${escapeRegex(phrase)}${boundaryEnd}`;
             }
-            return `(?<![a-z])${escapeRegex(phrase)}(?![a-z])`;
+            const escaped = parts.map(escapeRegex);
+            const first = escaped[escaped.length - 2];
+            const second = escaped[escaped.length - 1];
+            const prefix = escaped.slice(0, -2).join(" ");
+            const optionalPrefix = prefix ? `(?:${prefix} )?` : "";
+            return `${boundaryStart}${optionalPrefix}(?:${first} ${second}|${second} ${first})${boundaryEnd}`;
         }
-        return `(?<![a-z])${escapeRegex(phrase)}(?![a-z])`;
+        return `${boundaryStart}${escapeRegex(phrase)}${boundaryEnd}`;
     }
     // --- DOM Highlighting Engine ---
     function clearHighlights() {
@@ -508,54 +524,97 @@
     }
     function applyHighlights() {
         clearHighlights();
-        if (!settings.highlightedAll || currentCandidates.length === 0) return;
-        currentCandidates.forEach((cand) => {
-            const bodyWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-                acceptNode(node) {
-                    if (node.parentNode && EXCLUDED_TAGS.has(node.parentNode.tagName)) return NodeFilter.FILTER_REJECT;
-                    if (node.parentElement && node.parentElement.closest("#" + PANEL_ID))
+        if ((!settings.highlightedAll && highlightedCandidates.size === 0) || currentCandidates.length === 0) {
+            return;
+        }
+        const root = activeChapterRoot?.isConnected ? activeChapterRoot : document.body;
+        if (!root) return;
+        const selectedCandidates = currentCandidates.filter(
+            (cand) => settings.highlightedAll || highlightedCandidates.has(cand.identityKey)
+        );
+        const textNodes = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                const parent = node.parentElement;
+                if (!parent || !node.nodeValue.trim()) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                if (parent.closest("#" + PANEL_ID)) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                if (parent.closest([...EXCLUDED_TAGS].map((tag) => tag.toLowerCase()).join(","))) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                let current = parent;
+                while (current && current !== root) {
+                    if (current.hidden || current.getAttribute("aria-hidden") === "true") {
                         return NodeFilter.FILTER_REJECT;
-                    return node.nodeValue.trim().length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-                }
-            });
-            const textNodes = [];
-            while (bodyWalker.nextNode()) textNodes.push(bodyWalker.currentNode);
-            const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
-            const patternStr = generateRegex(displayName, settings.template);
-            const regex = new RegExp(patternStr, "gi");
-            textNodes.forEach((node) => {
-                const text = node.nodeValue;
-                regex.lastIndex = 0;
-                if (!regex.test(text)) return;
-                const frag = document.createDocumentFragment();
-                let lastIdx = 0;
-                let match;
-                regex.lastIndex = 0;
-                while ((match = regex.exec(text)) !== null) {
-                    const matchStart = match.index;
-                    const matchEnd = regex.lastIndex;
-                    if (matchStart > lastIdx) {
-                        frag.appendChild(document.createTextNode(text.slice(lastIdx, matchStart)));
                     }
-                    const span = document.createElement("span");
-                    span.className =
-                        match[0] !== displayName && match[0].toLowerCase() === displayName.toLowerCase()
-                            ? "fr-highlight-mark fr-highlight-case-mismatch"
-                            : "fr-highlight-mark";
-                    span.textContent = match[0];
-                    frag.appendChild(span);
-                    highlightedElements.push(span);
-                    lastIdx = matchEnd;
-                    if (match[0].length === 0) regex.lastIndex++;
+                    const style = getComputedStyle(current);
+                    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    current = current.parentElement;
                 }
-                if (lastIdx < text.length) {
-                    frag.appendChild(document.createTextNode(text.slice(lastIdx)));
-                }
-                if (node.parentNode) {
-                    node.parentNode.replaceChild(frag, node);
-                }
-            });
+                return NodeFilter.FILTER_ACCEPT;
+            }
         });
+        while (walker.nextNode()) {
+            textNodes.push(walker.currentNode);
+        }
+        for (const node of textNodes) {
+            const originalText = node.nodeValue;
+            const matches = [];
+            for (const cand of selectedCandidates) {
+                const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
+                if (!displayName) continue;
+                const regex = new RegExp(generateRegex(displayName, settings.template), "gi");
+                let match;
+                while ((match = regex.exec(originalText)) !== null) {
+                    matches.push({
+                        start: match.index,
+                        end: regex.lastIndex,
+                        text: match[0],
+                        displayName
+                    });
+                    if (match[0].length === 0) {
+                        regex.lastIndex++;
+                    }
+                }
+            }
+            if (matches.length === 0) continue;
+            matches.sort((a, b) => a.start - b.start || b.end - a.end);
+            const nonOverlapping = [];
+            let lastEnd = 0;
+            for (const match of matches) {
+                if (match.start < lastEnd) continue;
+                nonOverlapping.push(match);
+                lastEnd = match.end;
+            }
+            if (nonOverlapping.length === 0) continue;
+            const fragment = document.createDocumentFragment();
+            let lastIndex = 0;
+            for (const match of nonOverlapping) {
+                if (match.start > lastIndex) {
+                    fragment.appendChild(document.createTextNode(originalText.slice(lastIndex, match.start)));
+                }
+                const span = document.createElement("span");
+                span.className =
+                    match.text !== match.displayName && match.text.toLowerCase() === match.displayName.toLowerCase()
+                        ? "fr-highlight-mark fr-highlight-case-mismatch"
+                        : "fr-highlight-mark";
+                span.textContent = match.text;
+                fragment.appendChild(span);
+                highlightedElements.push(span);
+                lastIndex = match.end;
+            }
+            if (lastIndex < originalText.length) {
+                fragment.appendChild(document.createTextNode(originalText.slice(lastIndex)));
+            }
+            if (node.parentNode) {
+                node.parentNode.replaceChild(fragment, node);
+            }
+        }
     }
     // --- Styling & UI ---
     function ensureStyle() {
@@ -598,7 +657,7 @@
             #${PANEL_ID} button, #${PANEL_ID} select {
                 font: inherit;
                 font-size: 11px;
-                line-height: 1.2;
+                line-height: 1;
                 padding: 2px 6px;
                 background: #101216;
                 color: #fff;
@@ -613,10 +672,10 @@
                 background: #1c1e22;
             }
             #${PANEL_ID} table {
-    border-collapse: collapse;
-    width: max-content;
-    table-layout: auto;
-}
+                border-collapse: collapse;
+                width: max-content;
+                table-layout: auto;
+            }
             #${PANEL_ID} th {
                 position: sticky;
                 top: 0;
@@ -651,7 +710,7 @@
              #${PANEL_ID} th,
             #${PANEL_ID} td {
                 width: fit-content;
-                max-width: 400px;
+                max-width: 600px;
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
@@ -662,7 +721,7 @@
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
-                max-width: 220px;
+                max-width: 600px;
             }
             .fr-highlight-mark {
                 background-color: rgba(255, 235, 59, 0.35) !important;
@@ -683,6 +742,7 @@
         panel.style.left = `${Math.max(0, settings.x)}px`;
         panel.style.top = `${Math.max(0, settings.y)}px`;
         panel.style.height = `${Math.max(260, settings.height)}px`;
+        panel.style.setProperty("--fr-panel-width", `${Math.max(320, settings.width)}px`);
         panel.innerHTML = `
             <div class="fr-head">
                 <span id="fr-chapter-selector" title="Matched chapter container"></span>
@@ -692,39 +752,43 @@
                     </select>
                 </label>
                 <button id="fr-scan" title="Rescan Page">Rescan</button>
-                <button id="fr-highlight" title="Toggle Highlight All">Highlight All</button>
+                <button id="fr-highlight" title="Toggle Highlight All">Highlight All: Off</button>
                 <button id="fr-close" title="Close Panel">×</button>
             </div>
             <div class="fr-tablewrap" id="fr-tablewrap">
                 <table id="fr-table">
                     <thead>
-                        <tr>
-                            <th style="width: 35%;">Name</th>
-                            <th style="width: 15%;">Counts</th>
-                            <th style="width: 38%;">Regex</th>
-                            <th style="width: 12%;">Action</th>
-                        </tr>
+<tr>
+    <th>Hi</th>
+    <th>Name</th>
+    <th>Ct</th>
+    <th>Regex</th>
+    <th>RC</th>
+</tr>
                     </thead>
                     <tbody id="fr-rows"></tbody>
                 </table>
             </div>
         `;
+        const highlightAllButton = panel.querySelector("#fr-highlight");
+        function updateHighlightAllButton() {
+            highlightAllButton.textContent = `Highlight All: ${settings.highlightedAll ? "On" : "Off"}`;
+            highlightAllButton.setAttribute("aria-pressed", String(settings.highlightedAll));
+        }
+        updateHighlightAllButton();
         document.body.appendChild(panel);
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
         panel.querySelector("#fr-highlight").addEventListener("click", () => {
             settings.highlightedAll = !settings.highlightedAll;
             saveSettings();
-            if (settings.highlightedAll) {
-                applyHighlights();
-            } else {
-                clearHighlights();
-            }
+            updateHighlightAllButton();
+            applyHighlights();
         });
         panel.querySelector("#fr-template").addEventListener("change", (e) => {
             settings.template = e.target.value;
             saveSettings();
             renderRows();
-            if (settings.highlightedAll) applyHighlights();
+            applyHighlights();
         });
         panel.querySelector("#fr-close").addEventListener("click", () => {
             clearHighlights();
@@ -775,25 +839,24 @@
     }
     function runScan() {
         clearHighlights();
-        const text = extractVisibleText();
-        const container = findDeepestChapterContainer();
+        const match = findDeepestChapterContainer();
+        activeChapterRoot = match?.element ?? document.body;
+        const text = extractVisibleText(activeChapterRoot);
         const selectorDisplay = document.getElementById("fr-chapter-selector");
         if (selectorDisplay) {
-            selectorDisplay.textContent = getElementSelector(container);
+            selectorDisplay.textContent = match?.selector ?? "";
         }
         const occurrences = extractOccurrences(text);
         currentCandidates = processCandidates(occurrences);
         renderRows();
-        if (settings.highlightedAll) {
-            applyHighlights();
-        }
+        applyHighlights();
     }
     function renderRows() {
         const tbody = document.getElementById("fr-rows");
         if (!tbody) return;
         tbody.innerHTML = "";
         if (currentCandidates.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: #888; padding: 15px;">No candidates found.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #888; padding: 15px;">No candidates found.</td></tr>`;
             return;
         }
         currentCandidates.forEach((cand) => {
@@ -809,7 +872,7 @@
                 settings.edits[cand.identityKey] = e.target.value.trim();
                 saveSettings();
                 renderRows();
-                if (settings.highlightedAll) applyHighlights();
+                applyHighlights();
             });
             tdName.appendChild(input);
             // Counts Cell
@@ -830,6 +893,7 @@
                 navigator.clipboard.writeText(regexStr);
             });
             tdAction.appendChild(btnCopy);
+            const tdHighlight = document.createElement("td");
             const btnHighlight = document.createElement("button");
             btnHighlight.textContent = highlightedCandidates.has(cand.identityKey) ? "🔆" : "🔍";
             btnHighlight.title = "Toggle Highlight for This Candidate";
@@ -842,8 +906,8 @@
                 applyHighlights();
                 renderRows();
             });
-            tdAction.appendChild(btnHighlight);
-            tr.append(tdName, tdCounts, tdRegex, tdAction);
+            tdHighlight.appendChild(btnHighlight);
+            tr.append(tdHighlight, tdName, tdCounts, tdRegex, tdAction);
             tbody.appendChild(tr);
         });
     }
