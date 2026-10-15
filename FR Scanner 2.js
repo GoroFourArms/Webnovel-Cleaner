@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FR Scanner Pro
 // @namespace    fr-scanner
-// @version      4.3.0
+// @version      4.3.4
 // @description  Full spec-compliant FR Scanner 2 with menu command opening, max token count sorting, 5% max token count hiding, and specialized Korean regex template logic.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -58,42 +58,6 @@
         "TH",
         "TR"
     ]);
-    const CHAPTER_CONTAINER_SELECTORS = [
-        "#ac-r-body",
-        "#chapter-content",
-        "#chapterContent",
-        "#chapter-body",
-        "#chapterBody",
-        "#content_read",
-        "#read-content",
-        "#reader-content",
-        "#reading-content",
-        "#book-content",
-        "#novel-content",
-        "#text-content",
-        "#story-content",
-        "#article-content",
-        "#main-content",
-        ".hentry",
-        ".chapter-content",
-        ".chapter__content",
-        ".chapter-body",
-        ".chapter-text",
-        ".chapter-inner",
-        ".reading-content",
-        ".reader-content",
-        ".read-content",
-        ".text-content",
-        ".story-content",
-        ".book-content",
-        ".novel-content",
-        ".entry-content",
-        ".article-content",
-        ".post-content",
-        ".prose",
-        "article",
-        "main"
-    ];
     const NON_CHAPTER_SELECTOR = [
         "script",
         "style",
@@ -144,6 +108,7 @@
         "How",
         "If",
         "In",
+        "I'm",
         "Into",
         "Is",
         "It",
@@ -162,6 +127,7 @@
         "Or",
         "Our",
         "Out",
+        "Seeing",
         "She",
         "Should",
         "So",
@@ -196,6 +162,7 @@
         "With",
         "Would",
         "Yes",
+        "Yet",
         "You",
         "Your"
     ]);
@@ -220,13 +187,14 @@
     let highlightedElements = [];
     let currentCandidates = [];
     let highlightedCandidates = new Set();
-    let activeChapterRoot = null;
+    let accumulatedOccurrences = [];
+    let nextOccurrencePos = 0;
+    let observer = null;
+    let processedNodeText = new WeakMap();
     function loadSettings() {
         const defaults = {
             x: 20,
             y: 20,
-            width: 900,
-            height: 450,
             template: "Other",
             edits: {},
             highlightedAll: false
@@ -252,128 +220,117 @@
         if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return true;
         return false;
     }
-    function findDeepestChapterContainer(root = document) {
-        const matches = new Map();
-        for (const selector of CHAPTER_CONTAINER_SELECTORS) {
-            try {
-                root.querySelectorAll(selector).forEach((el) => {
-                    if (
-                        el.isConnected &&
-                        !el.closest("#" + PANEL_ID) &&
-                        !el.closest(NON_CHAPTER_SELECTOR) &&
-                        !isExcluded(el) &&
-                        el.getClientRects().length
-                    ) {
-                        if (!matches.has(el)) matches.set(el, selector);
-                    }
-                });
-            } catch (_) {}
-        }
-        const deepest = [...matches.keys()].filter(
-            (el) => ![...matches.keys()].some((other) => other !== el && el.contains(other))
-        );
-        if (!deepest.length) return null;
-        const element = deepest
-            .map((element) => ({
-                element,
-                length: (element.innerText || "").trim().length
-            }))
-            .sort((a, b) => b.length - a.length)[0].element;
-        return {
-            element,
-            selector: matches.get(element)
-        };
-    }
     function extractVisibleText(root = null) {
         root = root || document.body || document.documentElement;
         if (!root) return "";
         const pieces = [];
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-            acceptNode(node) {
-                const element = node.parentElement;
-                if (!node.nodeValue?.trim() || !element) return NodeFilter.FILTER_REJECT;
-                if (element.closest("#" + PANEL_ID)) return NodeFilter.FILTER_REJECT;
-                let current = element;
-                while (current && current !== root.parentElement) {
-                    if (isExcluded(current) || current.matches?.(NON_CHAPTER_SELECTOR)) return NodeFilter.FILTER_REJECT;
-                    if (current === root) break;
-                    current = current.parentElement;
-                }
-                return NodeFilter.FILTER_ACCEPT;
+        const blockSelector = [...BLOCK_TAGS].filter((tag) => tag !== "BR").join(",");
+        function walk(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                const text = node.nodeValue
+                    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, " ")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                if (text) pieces.push({ text, separator: " " });
+                return;
             }
-        });
-        let node;
-        while ((node = walker.nextNode())) {
-            const text = node.nodeValue
-                .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, " ")
-                .replace(/\s+/g, " ")
-                .trim();
-            if (!text) continue;
-            const block = node.parentElement?.closest([...BLOCK_TAGS].join(","));
-            pieces.push({ text, block });
+            if (node.nodeType !== Node.ELEMENT_NODE && node !== root) return;
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                if (
+                    node.nodeType === Node.ELEMENT_NODE &&
+                    (isExcluded(node) || node.matches(NON_CHAPTER_SELECTOR) || node.closest("#" + PANEL_ID))
+                ) {
+                    return;
+                }
+                if (node.tagName === "BR") {
+                    if (pieces.length) pieces[pieces.length - 1].separator = "\n";
+                    return;
+                }
+                const isBlock = node.matches(blockSelector);
+                if (isBlock && pieces.length) {
+                    pieces[pieces.length - 1].separator = "\n";
+                }
+                for (const child of node.childNodes) walk(child);
+                if (isBlock && pieces.length) {
+                    pieces[pieces.length - 1].separator = "\n";
+                }
+                return;
+            }
+            for (const child of node.childNodes || []) walk(child);
         }
+        walk(root);
         let result = "";
-        let prevBlock = null;
         for (const piece of pieces) {
-            if (result) result += piece.block && piece.block !== prevBlock ? "\n" : " ";
+            if (result) result += piece.separator || " ";
             result += piece.text;
-            prevBlock = piece.block;
         }
         return result.trim();
     }
     // --- Normalization & Extraction Pipeline ---
-    function normalizeToken(tokenStr) {
-        let t = tokenStr.trim();
-        t = t.replace(/(?:'s|s')$/i, "");
-        if (t.endsWith("es") && t.length > 3) {
-            t = t.slice(0, -2);
-        } else if (t.endsWith("s") && t.length > 2 && !t.endsWith("ss")) {
-            t = t.slice(0, -1);
+    function normalizeToken(tokenStr, knownTokens) {
+        const token = tokenStr.trim();
+        if (/'s$/i.test(token)) return token.slice(0, -2);
+        if (/'$/.test(token)) return token.slice(0, -1);
+        if (/s$/i.test(token) && knownTokens.has(token.slice(0, -1).toLowerCase())) {
+            return token.slice(0, -1);
         }
-        return t;
+        return token;
     }
     function extractOccurrences(text) {
         const occurrences = [];
-        const regex =
-            /((?:[A-ZĀĒĪŌŪ](?:\.[A-ZĀĒĪŌŪ])+\.?|[A-ZĀĒĪŌŪ]\.|[A-ZĀĒĪŌŪ]{2,}|[A-ZĀĒĪŌŪ][A-Za-zĀĒĪŌŪāēīōū0-9'’-]*)(?:\s+(?:[A-ZĀĒĪŌŪ](?:\.[A-ZĀĒĪŌŪ])+\.?|[A-ZĀĒĪŌŪ]\.|[A-ZĀĒĪŌŪ]{2,}|[A-ZĀĒĪŌŪ][A-Za-zĀĒĪŌŪāēīōū0-9'’-]*))*)/g;
+        const tokenPattern = String.raw`(?:[A-ZĀĒĪŌŪ]\.(?:[A-ZĀĒĪŌŪ]\.)+|[A-ZĀĒĪŌŪ]\.|[A-ZĀĒĪŌŪ]{2,}|[A-ZĀĒĪŌŪ][A-Za-zĀĒĪŌŪāēīōū0-9'’-]*)`;
+        const regex = new RegExp(`(${tokenPattern}(?:\\s+${tokenPattern})*)`, "g");
         let match;
         while ((match = regex.exec(text)) !== null) {
             const phrase = match[1].trim();
-            const startPos = match.index;
             const parts = phrase.split(/\s+/);
             let valid = true;
             for (let i = 0; i < parts.length - 1; i++) {
-                if (parts[i].endsWith(".")) {
-                    if (!ABBREVIATIONS.has(parts[i].slice(0, -1))) {
-                        valid = false;
-                        break;
-                    }
+                if (parts[i].endsWith(".") && !ABBREVIATIONS.has(parts[i].slice(0, -1))) {
+                    valid = false;
+                    break;
                 }
             }
             if (valid && phrase.length > 1) {
-                occurrences.push({ phrase, startPos });
+                occurrences.push({
+                    phrase,
+                    startPos: match.index
+                });
             }
         }
         return occurrences;
     }
-    function meaningfulTokens(phrase) {
+    function meaningfulTokens(phrase, knownTokens) {
         const rawTokens = phrase.trim().split(/\s+/).filter(Boolean);
         if (rawTokens.length === 0) return [];
-        const lastIndex = rawTokens.length - 1;
-        rawTokens[lastIndex] = normalizeToken(rawTokens[lastIndex]);
-        return rawTokens.filter((token, index) => {
-            if (rawTokens.length === 1 && WORD_FILTER.has(token)) {
-                return false;
-            }
-            return !All_Words.has(token);
+        const filteredTokens = rawTokens.filter((token) => {
+            const word = token
+                .replace(/[’‘]/g, "'")
+                .toLowerCase()
+                .replace(/^./, (c) => c.toUpperCase());
+            if (rawTokens.length === 1 && WORD_FILTER.has(word)) return false;
+            return !All_Words.has(word);
         });
+        if (filteredTokens.length === 0) return [];
+        return filteredTokens.map((token) => normalizeToken(token, knownTokens));
     }
     function processCandidates(occurrences) {
+        const knownTokens = new Set();
+        occurrences.forEach((occ) => {
+            occ.phrase
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean)
+                .forEach((token) => {
+                    const normalized = token.trim().replace(/'s$/i, "").replace(/'$/, "");
+                    knownTokens.add(normalized.toLowerCase());
+                });
+        });
         const rawMap = new Map();
         occurrences.forEach((occ) => {
             const phrase = occ.phrase;
             const caseKey = phrase.toLowerCase();
-            const normTokens = meaningfulTokens(phrase);
+            const normTokens = meaningfulTokens(phrase, knownTokens);
             if (normTokens.length === 0) return;
             if (!rawMap.has(caseKey)) {
                 rawMap.set(caseKey, {
@@ -432,6 +389,60 @@
             }
         });
         candidates = Array.from(deduplicatedMap.values());
+        // Merge candidates sharing exactly one token, only when that token
+        // appears in exactly two candidates and occupies different positions.
+        let merged = true;
+        while (merged) {
+            merged = false;
+            outer: for (let i = 0; i < candidates.length; i++) {
+                for (let j = i + 1; j < candidates.length; j++) {
+                    const a = candidates[i];
+                    const b = candidates[j];
+                    const shared = [...a.distinctTokens].filter((token) => b.distinctTokens.has(token));
+                    if (shared.length !== 1) continue;
+                    const token = shared[0];
+                    const tokenCandidateCount = candidates.filter((cand) => cand.distinctTokens.has(token)).length;
+                    if (tokenCandidateCount !== 2) continue;
+                    const posA = a.normalizedTokens.indexOf(token);
+                    const posB = b.normalizedTokens.indexOf(token);
+                    if (posA === posB) continue;
+                    const combinedTokens = new Set([...a.distinctTokens, ...b.distinctTokens]);
+                    const combinedNormalizedTokens = [...new Set([...a.normalizedTokens, ...b.normalizedTokens])];
+                    const combined = {
+                        ...a,
+                        normalizedTokens: combinedNormalizedTokens,
+                        distinctTokens: combinedTokens,
+                        occurrences: a.occurrences + b.occurrences,
+                        firstPos: Math.min(a.firstPos, b.firstPos),
+                        spellingCounts: new Map(a.spellingCounts)
+                    };
+                    for (const [phrase, data] of b.spellingCounts) {
+                        const existing = combined.spellingCounts.get(phrase);
+                        if (existing) {
+                            existing.count += data.count;
+                            existing.firstPos = Math.min(existing.firstPos, data.firstPos);
+                        } else {
+                            combined.spellingCounts.set(phrase, { ...data });
+                        }
+                    }
+                    let delegate = null;
+                    for (const [phrase, data] of combined.spellingCounts) {
+                        if (
+                            !delegate ||
+                            data.count > delegate.count ||
+                            (data.count === delegate.count && data.firstPos < delegate.firstPos)
+                        ) {
+                            delegate = { phrase, ...data };
+                        }
+                    }
+                    if (delegate) combined.phrase = delegate.phrase;
+                    candidates.splice(j, 1);
+                    candidates.splice(i, 1, combined);
+                    merged = true;
+                    break outer;
+                }
+            }
+        }
         // Remove candidates whose distinct token sets are strict subsets of others.
         candidates = candidates.filter((cand) => {
             for (const other of candidates) {
@@ -472,39 +483,36 @@
         const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const boundaryStart = "(?<![a-z])";
         const boundaryEnd = "(?![a-z])";
+        const tokens = phrase.trim().split(" ").filter(Boolean);
+        if (!tokens.length) return "";
         if (template === "Korean") {
-            const tokens = phrase.trim().split(" ").filter(Boolean);
-            if (!tokens.length) return "";
-            if (!phrase.includes("-")) {
+            const lastIndex = tokens.length - 1;
+            const lastToken = tokens[lastIndex].replace(/(?:'s|s')$/i, "");
+            if (!lastToken.includes("-")) {
                 return `${boundaryStart}${escapeRegex(phrase)}${boundaryEnd}`;
             }
-            const patterns = tokens.map((token) => escapeRegex(token).replace(/-/g, "[- ]?"));
-            const n = patterns.length;
-            if (n === 1) {
-                return `${boundaryStart}${patterns[0]}${boundaryEnd}`;
+            const patterns = tokens.map(escapeRegex);
+            patterns[lastIndex] = escapeRegex(lastToken).replace(/-/g, "[- ]?");
+            const last = patterns[lastIndex];
+            if (tokens.length === 1) {
+                return `${boundaryStart}${last}${boundaryEnd}`;
             }
-            const variants = new Set();
-            const last = patterns[n - 1];
-            const prefix = patterns.slice(0, n - 1);
-            // Alternative 1: far-right token, with preceding tokens optional.
-            variants.add(
-                `${prefix.length > 1 ? `(?:${prefix.slice(0, -1).join(" ")} )?` : ""}` +
-                    `${prefix.length ? `(?:${prefix[prefix.length - 1]} )?` : ""}${last}`
-            );
-            // Alternative 2: preceding two tokens, with any earlier prefix optional.
-            if (n >= 3) {
-                const preceding = patterns[n - 2];
-                const earlier = patterns.slice(0, n - 2);
-                variants.add(`${earlier.length ? `(?:${earlier.join(" ")} )?` : ""}${preceding}`);
+            const preceding = patterns[lastIndex - 1];
+            const prefix = patterns.slice(0, lastIndex - 1);
+            const optionalPrefix = prefix.length ? `(?:${prefix.join(" ")} )?` : "";
+            const variants = [`${optionalPrefix}(?:${preceding} )?${last}`];
+            if (tokens.length >= 3) {
+                const secondPrefix = patterns.slice(0, lastIndex - 2);
+                const optionalSecondPrefix = secondPrefix.length ? `(?:${secondPrefix.join(" ")} )?` : "";
+                variants.push(`${optionalSecondPrefix}${patterns[lastIndex - 2]} ${preceding} ${last}`);
             }
-            return `${boundaryStart}(?:${[...variants].join("|")})${boundaryEnd}`;
+            return `${boundaryStart}(?:${variants.join("|")})${boundaryEnd}`;
         }
         if (template === "Japanese") {
-            const parts = phrase.trim().split(" ").filter(Boolean);
-            if (parts.length < 2) {
+            if (tokens.length < 2) {
                 return `${boundaryStart}${escapeRegex(phrase)}${boundaryEnd}`;
             }
-            const escaped = parts.map(escapeRegex);
+            const escaped = tokens.map(escapeRegex);
             const first = escaped[escaped.length - 2];
             const second = escaped[escaped.length - 1];
             const prefix = escaped.slice(0, -2).join(" ");
@@ -515,21 +523,34 @@
     }
     // --- DOM Highlighting Engine ---
     function clearHighlights() {
-        highlightedElements.forEach((el) => {
-            const parent = el.parentNode;
-            if (parent) {
-                parent.replaceChild(document.createTextNode(el.textContent), el);
-                parent.normalize();
-            }
+        withScanObserverPaused(() => {
+            document.querySelectorAll(".fr-highlight-mark").forEach((mark) => {
+                mark.replaceWith(document.createTextNode(mark.textContent || ""));
+            });
+            highlightedElements = [];
         });
-        highlightedElements = [];
+    }
+    function withScanObserverPaused(callback) {
+        const wasObserving = !!observer;
+        if (wasObserving) observer.disconnect();
+        try {
+            callback();
+        } finally {
+            if (wasObserving && document.body) {
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true
+                });
+            }
+        }
     }
     function applyHighlights() {
         clearHighlights();
         if ((!settings.highlightedAll && highlightedCandidates.size === 0) || currentCandidates.length === 0) {
             return;
         }
-        const root = activeChapterRoot?.isConnected ? activeChapterRoot : document.body;
+        const root = document.body;
         if (!root) return;
         const selectedCandidates = currentCandidates.filter(
             (cand) => settings.highlightedAll || highlightedCandidates.has(cand.identityKey)
@@ -564,61 +585,63 @@
         while (walker.nextNode()) {
             textNodes.push(walker.currentNode);
         }
-        for (const node of textNodes) {
-            const originalText = node.nodeValue;
-            const matches = [];
-            for (const cand of selectedCandidates) {
-                const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
-                if (!displayName) continue;
-                const regex = new RegExp(generateRegex(displayName, settings.template), "gi");
-                let match;
-                while ((match = regex.exec(originalText)) !== null) {
-                    matches.push({
-                        start: match.index,
-                        end: regex.lastIndex,
-                        text: match[0],
-                        displayName
-                    });
-                    if (match[0].length === 0) {
-                        regex.lastIndex++;
+        withScanObserverPaused(() => {
+            for (const node of textNodes) {
+                const originalText = node.nodeValue;
+                const matches = [];
+                for (const cand of selectedCandidates) {
+                    const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
+                    if (!displayName) continue;
+                    const regex = new RegExp(generateRegex(displayName, settings.template), "gi");
+                    let match;
+                    while ((match = regex.exec(originalText)) !== null) {
+                        matches.push({
+                            start: match.index,
+                            end: regex.lastIndex,
+                            text: match[0],
+                            displayName
+                        });
+                        if (match[0].length === 0) {
+                            regex.lastIndex++;
+                        }
                     }
                 }
-            }
-            if (matches.length === 0) continue;
-            matches.sort((a, b) => a.start - b.start || b.end - a.end);
-            const nonOverlapping = [];
-            let lastEnd = 0;
-            for (const match of matches) {
-                if (match.start < lastEnd) continue;
-                nonOverlapping.push(match);
-                lastEnd = match.end;
-            }
-            if (nonOverlapping.length === 0) continue;
-            const fragment = document.createDocumentFragment();
-            let lastIndex = 0;
-            for (const match of nonOverlapping) {
-                if (match.start > lastIndex) {
-                    fragment.appendChild(document.createTextNode(originalText.slice(lastIndex, match.start)));
+                if (matches.length === 0) continue;
+                matches.sort((a, b) => a.start - b.start || b.end - a.end);
+                const nonOverlapping = [];
+                let lastEnd = 0;
+                for (const match of matches) {
+                    if (match.start < lastEnd) continue;
+                    nonOverlapping.push(match);
+                    lastEnd = match.end;
                 }
-                const span = document.createElement("span");
-                span.className =
-                    match.text !== match.displayName && match.text.toLowerCase() === match.displayName.toLowerCase()
-                        ? "fr-highlight-mark fr-highlight-case-mismatch"
-                        : "fr-highlight-mark";
-                span.textContent = match.text;
-                fragment.appendChild(span);
-                highlightedElements.push(span);
-                lastIndex = match.end;
+                if (nonOverlapping.length === 0) continue;
+                const fragment = document.createDocumentFragment();
+                let lastIndex = 0;
+                for (const match of nonOverlapping) {
+                    if (match.start > lastIndex) {
+                        fragment.appendChild(document.createTextNode(originalText.slice(lastIndex, match.start)));
+                    }
+                    const span = document.createElement("span");
+                    span.className =
+                        match.text !== match.displayName && match.text.toLowerCase() === match.displayName.toLowerCase()
+                            ? "fr-highlight-mark fr-highlight-case-mismatch"
+                            : "fr-highlight-mark";
+                    span.textContent = match.text;
+                    fragment.appendChild(span);
+                    highlightedElements.push(span);
+                    lastIndex = match.end;
+                }
+                if (lastIndex < originalText.length) {
+                    fragment.appendChild(document.createTextNode(originalText.slice(lastIndex)));
+                }
+                if (node.parentNode) {
+                    node.parentNode.replaceChild(fragment, node);
+                }
             }
-            if (lastIndex < originalText.length) {
-                fragment.appendChild(document.createTextNode(originalText.slice(lastIndex)));
-            }
-            if (node.parentNode) {
-                node.parentNode.replaceChild(fragment, node);
-            }
-        }
+            initializeTextSnapshots(root);
+        });
     }
-    // --- Styling & UI ---
     function ensureStyle() {
         if (document.getElementById(STYLE_ID)) return;
         const style = document.createElement("style");
@@ -626,6 +649,7 @@
         style.textContent = `
             #${PANEL_ID} {
                 width: fit-content;
+                max-height: 950px;
                 position: fixed;
                 z-index: 2147483647;
                 display: flex;
@@ -675,7 +699,7 @@
             }
             #${PANEL_ID} table {
                 border-collapse: collapse;
-                width: max-content;
+                width: fit-content;
                 table-layout: auto;
             }
             #${PANEL_ID} th {
@@ -697,17 +721,16 @@
                 vertical-align: middle;
             }
             #${PANEL_ID} td input {
-                width: 100%;
+                width: auto;
+                min-width: 0;
+                max-width: 100%;
+                box-sizing: border-box;
                 background: #101216;
                 color: #fff;
                 border: 1px solid #555;
                 border-radius: 3px;
                 padding: 2px 4px;
                 font: inherit;
-            }
-            #${PANEL_ID} .fr-counts {
-                color: #9cdcfe;
-                font-family: monospace;
             }
              #${PANEL_ID} th,
             #${PANEL_ID} td {
@@ -736,6 +759,138 @@
         `;
         document.head.appendChild(style);
     }
+    function appendNewOccurrences(text, sourceNode = null) {
+        const value = String(text || "");
+        if (!sourceNode) {
+            if (value.trim()) addOccurrences(extractOccurrences(value));
+            return;
+        }
+        const previous = processedNodeText.get(sourceNode);
+        if (previous === value) return;
+        processedNodeText.set(sourceNode, value);
+        const oldCounts = new Map();
+        if (previous) {
+            for (const occ of extractOccurrences(previous)) {
+                oldCounts.set(occ.phrase, (oldCounts.get(occ.phrase) || 0) + 1);
+            }
+        }
+        const newCounts = new Map();
+        if (value.trim()) {
+            for (const occ of extractOccurrences(value)) {
+                newCounts.set(occ.phrase, (newCounts.get(occ.phrase) || 0) + 1);
+            }
+        }
+        const additions = [];
+        for (const [phrase, count] of newCounts) {
+            const extra = count - (oldCounts.get(phrase) || 0);
+            for (let i = 0; i < extra; i++) {
+                additions.push({ phrase, startPos: 0 });
+            }
+        }
+        addOccurrences(additions);
+    }
+    function addOccurrences(occurrences) {
+        for (const occ of occurrences) {
+            accumulatedOccurrences.push({
+                ...occ,
+                startPos: nextOccurrencePos++
+            });
+        }
+    }
+    function startScanObserver() {
+        if (observer) observer.disconnect();
+        observer = new MutationObserver((mutations) => {
+            const addedRoots = new Set();
+            const changedTexts = new Set();
+            for (const mutation of mutations) {
+                const target = mutation.target;
+                const targetElement = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+                if (targetElement?.closest(`#${PANEL_ID}`) || targetElement?.closest(".fr-highlight-mark")) {
+                    continue;
+                }
+                if (mutation.type === "childList") {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (
+                                node.id !== PANEL_ID &&
+                                !node.closest(`#${PANEL_ID}`) &&
+                                !node.closest(".fr-highlight-mark")
+                            ) {
+                                addedRoots.add(node);
+                            }
+                        } else if (node.nodeType === Node.TEXT_NODE) {
+                            changedTexts.add(node);
+                        }
+                    }
+                } else if (mutation.type === "characterData") {
+                    changedTexts.add(target);
+                }
+            }
+            const roots = [...addedRoots].filter(
+                (node) => ![...addedRoots].some((other) => other !== node && other.contains(node))
+            );
+            for (const root of roots) {
+                if (
+                    !root.isConnected ||
+                    isExcluded(root) ||
+                    root.matches(NON_CHAPTER_SELECTOR) ||
+                    root.closest(`#${PANEL_ID}`)
+                ) {
+                    continue;
+                }
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                const textNodes = [];
+                if (root.nodeType === Node.TEXT_NODE) {
+                    textNodes.push(root);
+                } else {
+                    let node;
+                    while ((node = walker.nextNode())) {
+                        textNodes.push(node);
+                    }
+                }
+                for (const node of textNodes) {
+                    if (processedNodeText.has(node)) continue;
+                    const parent = node.parentElement;
+                    if (
+                        !parent ||
+                        parent.closest(`#${PANEL_ID}`) ||
+                        parent.closest(".fr-highlight-mark") ||
+                        isExcluded(parent) ||
+                        parent.closest(NON_CHAPTER_SELECTOR)
+                    ) {
+                        continue;
+                    }
+                    appendNewOccurrences(node.textContent || "", node);
+                }
+            }
+            for (const node of changedTexts) {
+                if (!node.isConnected || processedNodeText.has(node) === false) {
+                    continue;
+                }
+                const parent = node.parentElement;
+                if (
+                    !parent ||
+                    parent.closest(`#${PANEL_ID}`) ||
+                    parent.closest(".fr-highlight-mark") ||
+                    isExcluded(parent) ||
+                    parent.closest(NON_CHAPTER_SELECTOR)
+                ) {
+                    continue;
+                }
+                if (
+                    roots.some((root) => root === node || (root.nodeType === Node.ELEMENT_NODE && root.contains(node)))
+                ) {
+                    continue;
+                }
+                appendNewOccurrences(node.textContent || "", node);
+            }
+        });
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            characterData: true
+        });
+    }
     function createPanel() {
         if (document.getElementById(PANEL_ID)) return;
         ensureStyle();
@@ -743,30 +898,28 @@
         panel.id = PANEL_ID;
         panel.style.left = `${Math.max(0, settings.x)}px`;
         panel.style.top = `${Math.max(0, settings.y)}px`;
-        panel.style.height = `${Math.max(260, settings.height)}px`;
-        panel.style.setProperty("--fr-panel-width", `${Math.max(320, settings.width)}px`);
         panel.innerHTML = `
             <div class="fr-head">
-                <span id="fr-chapter-selector" title="Matched chapter container"></span>
                 <label style="display:flex; align-items:center; gap:4px; margin-left: auto;">
                     <select id="fr-template">
                         ${TEMPLATES.map((t) => `<option value="${t}" ${t === settings.template ? "selected" : ""}>${t}</option>`).join("")}
                     </select>
                 </label>
-                <button id="fr-scan" title="Rescan Page">Rescan</button>
+                <button id="fr-scan" title="Scan the page">Scan</button>
+                <button id="fr-empty" title="Clear accumulated scan data">Empty</button>
                 <button id="fr-highlight" title="Toggle Highlight All">Highlight All: Off</button>
                 <button id="fr-close" title="Close Panel">×</button>
             </div>
             <div class="fr-tablewrap" id="fr-tablewrap">
                 <table id="fr-table">
                     <thead>
-<tr>
-    <th>Hi</th>
-    <th>Name</th>
-    <th>Ct</th>
-    <th>Regex</th>
-    <th>RC</th>
-</tr>
+                <tr>
+                   <th>Hi</th>
+                      <th>Name</th>
+                      <th>Ct</th>
+                   <th>Regex</th>
+                   <th>RC</th>
+                </tr>
                     </thead>
                     <tbody id="fr-rows"></tbody>
                 </table>
@@ -780,6 +933,14 @@
         updateHighlightAllButton();
         document.body.appendChild(panel);
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
+        document.getElementById("fr-empty").addEventListener("click", () => {
+            accumulatedOccurrences = [];
+            nextOccurrencePos = 0;
+            processedNodeText = new WeakMap();
+            initializeTextSnapshots(document.body);
+            clearHighlights();
+            renderAccumulatedScan();
+        });
         panel.querySelector("#fr-highlight").addEventListener("click", () => {
             settings.highlightedAll = !settings.highlightedAll;
             saveSettings();
@@ -839,19 +1000,59 @@
         panel.addEventListener("lostpointercapture", stopDragging);
         window.addEventListener("blur", stopDragging);
     }
-    function runScan() {
-        clearHighlights();
-        const match = findDeepestChapterContainer();
-        activeChapterRoot = match?.element ?? document.body;
-        const text = extractVisibleText(activeChapterRoot);
-        const selectorDisplay = document.getElementById("fr-chapter-selector");
-        if (selectorDisplay) {
-            selectorDisplay.textContent = match?.selector ?? "";
-        }
-        const occurrences = extractOccurrences(text);
-        currentCandidates = processCandidates(occurrences);
+    function renderAccumulatedScan() {
+        currentCandidates = processCandidates(accumulatedOccurrences);
         renderRows();
         applyHighlights();
+    }
+    function initializeTextSnapshots(root) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+            const parent = node.parentElement;
+            if (
+                !parent ||
+                parent.closest(`#${PANEL_ID}`) ||
+                parent.closest(".fr-highlight-mark") ||
+                isExcluded(parent) ||
+                parent.closest(NON_CHAPTER_SELECTOR)
+            ) {
+                continue;
+            }
+            if (!processedNodeText.has(node)) {
+                processedNodeText.set(node, node.textContent || "");
+            }
+        }
+    }
+    function runScan() {
+        clearHighlights();
+        if (accumulatedOccurrences.length === 0) {
+            nextOccurrencePos = 0;
+            processedNodeText = new WeakMap();
+            const text = extractVisibleText(document.body);
+            addOccurrences(extractOccurrences(text));
+            initializeTextSnapshots(document.body);
+        } else {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+                const parent = node.parentElement;
+                if (
+                    !parent ||
+                    parent.closest(`#${PANEL_ID}`) ||
+                    parent.closest(".fr-highlight-mark") ||
+                    isExcluded(parent) ||
+                    parent.closest(NON_CHAPTER_SELECTOR)
+                ) {
+                    continue;
+                }
+                if (!processedNodeText.has(node)) {
+                    appendNewOccurrences(node.textContent || "", node);
+                }
+            }
+        }
+        renderAccumulatedScan();
+        startScanObserver();
     }
     function renderRows() {
         const tbody = document.getElementById("fr-rows");
@@ -915,6 +1116,6 @@
     }
     // Register Menu Command to Trigger Panel Opening
     if (typeof GM_registerMenuCommand === "function") {
-        GM_registerMenuCommand("Open FR Scanner 2", createPanel);
+        GM_registerMenuCommand("Open", createPanel);
     }
 })();
