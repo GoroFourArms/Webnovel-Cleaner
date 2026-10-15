@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FR Scanner Pro
 // @namespace    fr-scanner
-// @version      4.3.4
+// @version      4.3.5
 // @description  Full spec-compliant FR Scanner 2 with menu command opening, max token count sorting, 5% max token count hiding, and specialized Korean regex template logic.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -278,7 +278,11 @@
     }
     function extractOccurrences(text) {
         const occurrences = [];
-        const tokenPattern = String.raw`(?:[A-ZĀĒĪŌŪ]\.(?:[A-ZĀĒĪŌŪ]\.)+|[A-ZĀĒĪŌŪ]\.|[A-ZĀĒĪŌŪ]{2,}|[A-ZĀĒĪŌŪ][A-Za-zĀĒĪŌŪāēīōū0-9'’-]*)`;
+        const abbreviationPattern = [...ABBREVIATIONS]
+            .sort((a, b) => b.length - a.length)
+            .map((abbr) => abbr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+            .join("|");
+        const tokenPattern = String.raw`(?:${abbreviationPattern}\.?|[A-ZĀĒĪŌŪ]\.(?:[A-ZĀĒĪŌŪ]\.)+|[A-ZĀĒĪŌŪ]\.|[A-ZĀĒĪŌŪ]{2,}|[A-ZĀĒĪŌŪ][A-Za-zĀĒĪŌŪāēīōū0-9'’-]*)`;
         const regex = new RegExp(`(${tokenPattern}(?:\\s+${tokenPattern})*)`, "g");
         let match;
         while ((match = regex.exec(text)) !== null) {
@@ -474,7 +478,10 @@
         candidates.sort((a, b) => b.maxTokenCount - a.maxTokenCount || a.firstPos - b.firstPos);
         candidates.forEach((cand) => {
             cand.identityKey = Array.from(cand.distinctTokens).sort().join("|");
-            cand.tokenCountsStr = cand.normalizedTokens.map((token) => tokenFreqs.get(token) || 0).join(",");
+            cand.tokenCountsStr = cand.normalizedTokens
+                .filter((token, index, tokens) => tokens.indexOf(token) === index)
+                .map((token) => tokenFreqs.get(token) || 0)
+                .join(",");
         });
         return candidates;
     }
@@ -648,8 +655,10 @@
         style.id = STYLE_ID;
         style.textContent = `
             #${PANEL_ID} {
-                width: fit-content;
-                max-height: 950px;
+               width: min(1100px, calc(100vw - 24px));
+max-width: calc(100vw - 24px);
+height: min(850px, calc(100vh - 24px));
+max-height: calc(100vh - 24px);
                 position: fixed;
                 z-index: 2147483647;
                 display: flex;
@@ -665,16 +674,19 @@
             }
             #${PANEL_ID} * { box-sizing: border-box; }
             #${PANEL_ID} .fr-head {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                padding: 4px 8px;
-                background: #292c32;
-                border-bottom: 1px solid #45484e;
-                cursor: move;
-                user-select: none;
-                flex-shrink: 0;
-            }
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: #292c32;
+    border-bottom: 1px solid #45484e;
+    cursor: move;
+    user-select: none;
+    flex-shrink: 0;
+    min-height: 34px;
+    overflow: visible;
+    white-space: nowrap;
+}
             #${PANEL_ID} .fr-title {
                 font-weight: bold;
                 color: #e8eaf0;
@@ -693,10 +705,14 @@
             }
             #${PANEL_ID} button:hover { background: #363940; }
             #${PANEL_ID} .fr-tablewrap {
-                overflow: auto;
-                flex: 1 1 auto;
-                background: #1c1e22;
-            }
+    overflow-x: auto;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    background: #1c1e22;
+    scrollbar-gutter: stable;
+}
             #${PANEL_ID} table {
                 border-collapse: collapse;
                 width: fit-content;
@@ -908,6 +924,7 @@
                 <button id="fr-scan" title="Scan the page">Scan</button>
                 <button id="fr-empty" title="Clear accumulated scan data">Empty</button>
                 <button id="fr-highlight" title="Toggle Highlight All">Highlight All: Off</button>
+                <button id="fr-minimize" title="Minimize panel">−</button>
                 <button id="fr-close" title="Close Panel">×</button>
             </div>
             <div class="fr-tablewrap" id="fr-tablewrap">
@@ -932,6 +949,14 @@
         }
         updateHighlightAllButton();
         document.body.appendChild(panel);
+        const minimizeButton = panel.querySelector("#fr-minimize");
+        const tableWrap = panel.querySelector("#fr-tablewrap");
+        minimizeButton.addEventListener("click", () => {
+            const minimized = tableWrap.hidden;
+            tableWrap.hidden = !minimized;
+            minimizeButton.textContent = minimized ? "−" : "+";
+            minimizeButton.title = minimized ? "Minimize panel" : "Restore panel";
+        });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
         document.getElementById("fr-empty").addEventListener("click", () => {
             accumulatedOccurrences = [];
