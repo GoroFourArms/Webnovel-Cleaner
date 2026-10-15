@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         FR Scanner
+// @name         FRScanner
 // @namespace    fr-scanner
 // @version      4.3.5
 // @description  Full spec-compliant FR Scanner 2 with menu command opening, max token count sorting, 5% max token count hiding, and specialized Korean regex template logic.
