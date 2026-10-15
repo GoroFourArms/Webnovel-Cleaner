@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FRScanner
 // @namespace    frscanner
-// @version      4.5
+// @version      4.6
 // @description  Full spec-compliant FR Scanner 2 with menu command opening, max token count sorting, 5% max token count hiding, and specialized Korean regex template logic.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -187,6 +187,7 @@
     const TEMPLATES = ["Other", "Korean", "Japanese", "Japanese 2"];
     let settings = loadSettings();
     let highlightedElements = [];
+    let highlightedNodeRecords = [];
     let currentCandidates = [];
     let highlightedCandidates = new Set();
     let accumulatedOccurrences = [];
@@ -399,8 +400,12 @@
                     const shared = [...a.distinctTokens].filter((token) => b.distinctTokens.has(token));
                     if (shared.length !== 1) continue;
                     const token = shared[0];
-                    if (candidates.filter((cand) => cand.distinctTokens.has(token)).length !== 2) continue;
-                    if (a.normalizedTokens.indexOf(token) === b.normalizedTokens.indexOf(token)) continue;
+                    if (candidates.filter((cand) => cand.distinctTokens.has(token)).length !== 2) {
+                        continue;
+                    }
+                    if (a.normalizedTokens.indexOf(token) === b.normalizedTokens.indexOf(token)) {
+                        continue;
+                    }
                     const variants = new Map();
                     for (const source of [a.variants, b.variants]) {
                         for (const [phrase, variant] of source) {
@@ -444,7 +449,9 @@
                         [...cand.distinctTokens].every((token) => other.distinctTokens.has(token))
                 )
         );
-        // Calculate token counts only after candidate processing.
+        return sortAndFilterCandidates(calculateCandidateCounts(candidates));
+    }
+    function calculateCandidateCounts(candidates) {
         const tokenFreqs = new Map();
         for (const cand of candidates) {
             for (const token of cand.distinctTokens) {
@@ -452,29 +459,20 @@
                 tokenFreqs.set(key, (tokenFreqs.get(key) || 0) + cand.occurrences);
             }
         }
-        let globalMaxScore = 0;
         for (const cand of candidates) {
-            cand.maxTokenCount = Math.max(
-                0,
-                ...[...cand.distinctTokens].map((token) => tokenFreqs.get(token.toLowerCase()) || 0)
-            );
-            globalMaxScore = Math.max(globalMaxScore, cand.maxTokenCount);
-        }
-        if (globalMaxScore > 0) {
-            candidates = candidates.filter((cand) => cand.maxTokenCount > globalMaxScore * 0.05);
-        }
-        candidates.sort((a, b) => b.maxTokenCount - a.maxTokenCount || a.firstPos - b.firstPos);
-        for (const cand of candidates) {
-            cand.identityKey = [...cand.distinctTokens]
-                .map((token) => token.toLowerCase())
-                .sort()
-                .join("|");
-            const countTokens = cand.phrase.includes("-")
-                ? [...cand.distinctTokens].slice(0, 1)
-                : [...new Set(cand.normalizedTokens.map((token) => token.toLowerCase()))];
-            cand.tokenCountsStr = countTokens.map((token) => tokenFreqs.get(token.toLowerCase()) || 0).join(",");
+            const tokens = [...new Set(cand.normalizedTokens.map((token) => token.toLowerCase()))];
+            const tokenCounts = tokens.map((token) => tokenFreqs.get(token) || 0);
+            cand.tokenCountsStr = tokenCounts.join(",");
+            cand.maxTokenCount = Math.max(0, ...tokenCounts);
         }
         return candidates;
+    }
+    function sortAndFilterCandidates(candidates) {
+        const globalMaxScore = Math.max(0, ...candidates.map((cand) => cand.maxTokenCount));
+        const filtered =
+            globalMaxScore > 0 ? candidates.filter((cand) => cand.maxTokenCount > globalMaxScore * 0.05) : candidates;
+        filtered.sort((a, b) => b.maxTokenCount - a.maxTokenCount || a.firstPos - b.firstPos);
+        return filtered;
     }
     function generateRegex(phrase, template) {
         const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -557,9 +555,16 @@
     }
     function clearHighlights() {
         withScanObserverPaused(() => {
-            document.querySelectorAll(".fr-highlight-mark").forEach((mark) => {
-                mark.replaceWith(document.createTextNode(mark.textContent || ""));
-            });
+            for (const record of highlightedNodeRecords) {
+                const { originalNode, replacementNodes, parent } = record;
+                if (!parent || !replacementNodes.length) continue;
+                if (!replacementNodes.every((node) => node.parentNode === parent)) continue;
+                parent.replaceChild(originalNode, replacementNodes[0]);
+                for (const node of replacementNodes.slice(1)) {
+                    node.remove();
+                }
+            }
+            highlightedNodeRecords = [];
             highlightedElements = [];
         });
     }
@@ -610,18 +615,18 @@
                 for (const cand of selectedCandidates) {
                     const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
                     if (!displayName) continue;
-                    const regex = new RegExp(generateRegex(displayName, settings.template), "gi");
-                    let match;
-                    while ((match = regex.exec(originalText)) !== null) {
+                    const searchName = displayName.toLowerCase();
+                    const searchText = originalText.toLowerCase();
+                    let start = 0;
+                    let index;
+                    while ((index = searchText.indexOf(searchName, start)) !== -1) {
                         matches.push({
-                            start: match.index,
-                            end: regex.lastIndex,
-                            text: match[0],
+                            start: index,
+                            end: index + displayName.length,
+                            text: originalText.slice(index, index + displayName.length),
                             displayName
                         });
-                        if (match[0].length === 0) {
-                            regex.lastIndex++;
-                        }
+                        start = index + Math.max(1, searchName.length);
                     }
                 }
                 if (matches.length === 0) continue;
@@ -654,10 +659,16 @@
                     fragment.appendChild(document.createTextNode(originalText.slice(lastIndex)));
                 }
                 if (node.parentNode) {
-                    node.parentNode.replaceChild(fragment, node);
+                    const parent = node.parentNode;
+                    const replacementNodes = Array.from(fragment.childNodes);
+                    highlightedNodeRecords.push({
+                        originalNode: node,
+                        replacementNodes,
+                        parent
+                    });
+                    parent.replaceChild(fragment, node);
                 }
             }
-            initializeTextSnapshots(root);
         });
     }
     function ensureStyle() {
@@ -679,43 +690,48 @@
                 border: 1px solid #45484e;
                 border-radius: 6px;
                 box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
-                font: 12px/1.4 Arial, sans-serif;
+                font:
+                    12px/1.4 Arial,
+                    sans-serif;
                 overflow: hidden;
                 box-sizing: border-box;
             }
-                #${PANEL_ID}.fr-minimized {
-    width: max-content;
-    height: auto;
-    max-height: none;
-}
-#${PANEL_ID}.fr-minimized #fr-template,
-#${PANEL_ID}.fr-minimized #fr-scan,
-#${PANEL_ID}.fr-minimized #fr-empty,
-#${PANEL_ID}.fr-minimized #fr-highlight,
-#${PANEL_ID}.fr-minimized #fr-tablewrap {
-    display: none;
-}
-            #${PANEL_ID} * { box-sizing: border-box; }
+            #${PANEL_ID}.fr-minimized {
+                width: max-content;
+                height: auto;
+                max-height: none;
+            }
+            #${PANEL_ID}.fr-minimized #fr-template,
+            #${PANEL_ID}.fr-minimized #fr-scan,
+            #${PANEL_ID}.fr-minimized #fr-empty,
+            #${PANEL_ID}.fr-minimized #fr-highlight,
+            #${PANEL_ID}.fr-minimized #fr-tablewrap {
+                display: none;
+            }
+            #${PANEL_ID} * {
+                box-sizing: border-box;
+            }
             #${PANEL_ID} .fr-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
-    background: #292c32;
-    border-bottom: 1px solid #45484e;
-    cursor: move;
-    user-select: none;
-    flex-shrink: 0;
-    min-height: 34px;
-    overflow: visible;
-    white-space: nowrap;
-}
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 4px 8px;
+                background: #292c32;
+                border-bottom: 1px solid #45484e;
+                cursor: move;
+                user-select: none;
+                flex-shrink: 0;
+                min-height: 34px;
+                overflow: visible;
+                white-space: nowrap;
+            }
             #${PANEL_ID} .fr-title {
                 font-weight: bold;
                 color: #e8eaf0;
                 margin-right: 4px;
             }
-            #${PANEL_ID} button, #${PANEL_ID} select {
+            #${PANEL_ID} button,
+            #${PANEL_ID} select {
                 font: inherit;
                 font-size: 11px;
                 line-height: 1;
@@ -726,22 +742,24 @@
                 border-radius: 3px;
                 cursor: pointer;
             }
-            #${PANEL_ID} button:hover { background: #363940; }
+            #${PANEL_ID} button:hover {
+                background: #363940;
+            }
             #${PANEL_ID} .fr-tablewrap {
-    overflow-x: auto;
-    overflow-y: auto;
-    flex: 1 1 auto;
-    min-height: 0;
-    min-width: 0;
-    background: #1c1e22;
-    scrollbar-gutter: stable;
-}
+                overflow-x: auto;
+                overflow-y: auto;
+                flex: 1 1 auto;
+                min-height: 0;
+                min-width: 0;
+                background: #1c1e22;
+                scrollbar-gutter: stable;
+            }
             #${PANEL_ID} table {
-    border-collapse: collapse;
-    width: max-content;
-    min-width: 0;
-    table-layout: auto;
-}
+                border-collapse: collapse;
+                width: max-content;
+                min-width: 0;
+                table-layout: auto;
+            }
             #${PANEL_ID} th {
                 position: sticky;
                 top: 0;
@@ -761,18 +779,18 @@
                 vertical-align: middle;
             }
             #${PANEL_ID} td input {
-                  display: block;
-                  width: 16ch;
-                  min-width: 16ch;
-                   max-width: 32ch;
-                  background: #101216;
-                  color: #fff;
-                  border: 1px solid #555;
-                  border-radius: 3px;
-              padding: 3px 5px;
-              font: inherit;
+                display: block;
+                width: 16ch;
+                min-width: 16ch;
+                max-width: 32ch;
+                background: #101216;
+                color: #fff;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 3px 5px;
+                font: inherit;
             }
-             #${PANEL_ID} th,
+            #${PANEL_ID} th,
             #${PANEL_ID} td {
                 width: fit-content;
                 max-width: 600px;
@@ -788,18 +806,18 @@
                 text-overflow: ellipsis;
                 max-width: 600px;
             }
-                #${PANEL_ID}.fr-hide-regex #fr-regex-header,
-#${PANEL_ID}.fr-hide-regex .fr-regex {
-    display: none;
-}
+            #${PANEL_ID}.fr-hide-regex #fr-regex-header,
+            #${PANEL_ID}.fr-hide-regex .fr-regex {
+                display: none;
+            }
             .fr-highlight-mark {
                 background-color: rgba(255, 235, 59, 0.35) !important;
                 border-bottom: 1px dashed #ffeb3b !important;
             }
             .fr-highlight-case-mismatch {
-              background-color: rgba(255, 152, 0, 0.4) !important;
-             border-bottom: 1px dashed #ff9800 !important;
-}
+                background-color: rgba(255, 152, 0, 0.4) !important;
+                border-bottom: 1px dashed #ff9800 !important;
+            }
         `;
         document.head.appendChild(style);
     }
@@ -963,7 +981,16 @@
             for (const mutation of mutations) {
                 const target = mutation.target;
                 const targetElement = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
-                if (targetElement?.closest(`#${PANEL_ID}`) || targetElement?.closest(".fr-highlight-mark")) {
+                if (
+                    targetElement?.closest(`#${PANEL_ID}`) ||
+                    targetElement?.closest(".fr-highlight-mark") ||
+                    (mutation.type === "childList" &&
+                        [...mutation.addedNodes, ...mutation.removedNodes].some(
+                            (node) =>
+                                node.nodeType === Node.ELEMENT_NODE &&
+                                (node.matches(".fr-highlight-mark") || node.closest(".fr-highlight-mark"))
+                        ))
+                ) {
                     continue;
                 }
                 if (mutation.type === "childList") {
@@ -1108,12 +1135,12 @@
             minimizeButton.title = minimized ? "Restore panel" : "Minimize panel";
         });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
-        document.getElementById("fr-empty").addEventListener("click", () => {
+        panel.querySelector("#fr-empty").addEventListener("click", () => {
+            clearHighlights();
             accumulatedOccurrences = [];
             nextOccurrencePos = 0;
             processedNodeText = new WeakMap();
             initializeTextSnapshots(document.body);
-            clearHighlights();
             renderAccumulatedScan();
         });
         panel.querySelector("#fr-highlight").addEventListener("click", () => {
@@ -1126,7 +1153,6 @@
             settings.template = e.target.value;
             saveSettings();
             renderRows();
-            applyHighlights();
         });
         panel.querySelector("#fr-close").addEventListener("click", () => {
             clearHighlights();
