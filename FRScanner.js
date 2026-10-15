@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         FRScanner
-// @namespace    fr-scanner
+// @namespace    frscanner
 // @version      4.4
 // @description  Full spec-compliant FR Scanner 2 with menu command opening, max token count sorting, 5% max token count hiding, and specialized Korean regex template logic.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
-// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/FRScanner.js
-// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/FRScanner.js
+// @updateURL    https://raw.githubusercontent.com/GoroFourArms/FRScanner/FRScanner.js
+// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/FRScanner/FRScanner.js
 // @run-at       document-idle
 // ==/UserScript==
 (function () {
