@@ -7,8 +7,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
-// @updateURL    https://raw.githubusercontent.com/GoroFourArms/FRScanner/FRScanner.js
-// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/FRScanner/FRScanner.js
+// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/FRScanner.js
+// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/FRScanner.js
 // @run-at       document-idle
 // ==/UserScript==
 (function () {
