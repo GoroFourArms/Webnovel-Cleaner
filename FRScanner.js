@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FRScanner
 // @namespace    frscanner
-// @version      4.4
+// @version      4.5
 // @description  Full spec-compliant FR Scanner 2 with menu command opening, max token count sorting, 5% max token count hiding, and specialized Korean regex template logic.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -184,7 +184,7 @@
         "Lt",
         "Sgt"
     ]);
-    const TEMPLATES = ["Other", "Korean", "Japanese"];
+    const TEMPLATES = ["Other", "Korean", "Japanese", "Japanese 2"];
     let settings = loadSettings();
     let highlightedElements = [];
     let currentCandidates = [];
@@ -469,9 +469,10 @@
                 .map((token) => token.toLowerCase())
                 .sort()
                 .join("|");
-            cand.tokenCountsStr = [...new Set(cand.normalizedTokens.map((token) => token.toLowerCase()))]
-                .map((token) => tokenFreqs.get(token) || 0)
-                .join(",");
+            const countTokens = cand.phrase.includes("-")
+                ? [...cand.distinctTokens].slice(0, 1)
+                : [...new Set(cand.normalizedTokens.map((token) => token.toLowerCase()))];
+            cand.tokenCountsStr = countTokens.map((token) => tokenFreqs.get(token.toLowerCase()) || 0).join(",");
         }
         return candidates;
     }
@@ -520,26 +521,22 @@
             if (n === 2) {
                 return `${boundaryStart}(?:${koreanTokens[0]} )?${koreanTokens[1]}${boundaryEnd}`;
             }
-            const first = koreanTokens[0];
-            const remaining = koreanTokens.slice(1);
-            const optionalSuffix = remaining
-                .slice(0, -1)
-                .map((token) => `(?:${token} )?`)
-                .join("");
-            const mainPattern = `${first} ${optionalSuffix}${remaining[remaining.length - 1]}`;
-            const alternative = remaining.join(" ");
+            const prefix = koreanTokens.slice(0, n - 2).join(" ");
+            const optionalPrefix = prefix ? `(?:${prefix} )?` : "";
+            const optionalSecondToLast = `(?:${koreanTokens[n - 2]} )?`;
+            const mainPattern = `${optionalPrefix}${optionalSecondToLast}${koreanTokens[n - 1]}`;
+            const alternativePrefix = koreanTokens.slice(0, n - 3).join(" ");
+            const optionalAlternativePrefix = alternativePrefix ? `(?:${alternativePrefix} )?` : "";
+            const alternative = `${optionalAlternativePrefix}${koreanTokens[n - 3]} ${koreanTokens[n - 2]}`;
             return `${boundaryStart}(?:${mainPattern}|${alternative})${boundaryEnd}`;
         }
-        if (template === "Japanese" && tokens.length >= 2) {
-            const last = tokens.length - 1;
-            const first = tokenPattern(tokens[last - 1]);
-            const second = tokenPattern(tokens[last]);
-            const prefix = tokens.slice(0, -2).map(tokenPattern);
-            const optionalPrefix = prefix.length ? `(?:${prefix.join("\\s+")}\\s+)?` : "";
-            const a = cleanToken(tokens[last - 1]).replace(/\.+$/, "");
-            const b = cleanToken(tokens[last]).replace(/\.+$/, "");
-            const separator = /^[A-ZĀĒĪŌŪ]$/.test(a) && /^[A-ZĀĒĪŌŪ]$/.test(b) ? "(?:\\s*\\.\\s*|\\s+)" : "\\s+";
-            return `${boundaryStart}${optionalPrefix}(?:${first}${separator}${second}|${second}${separator}${first})${boundaryEnd}`;
+        if ((template === "Japanese" || template === "Japanese 2") && tokens.length === 2) {
+            const first = tokenPattern(tokens[0]);
+            const second = tokenPattern(tokens[1]);
+            if (template === "Japanese 2") {
+                return `${boundaryStart}(?:${first}\\s+${second}|${second}\\s+${first}|${first})${boundaryEnd}`;
+            }
+            return `${boundaryStart}(?:${first}\\s+${second}|${second}\\s+${first})${boundaryEnd}`;
         }
         return `${boundaryStart}${joinTokens()}${boundaryEnd}`;
     }
@@ -669,10 +666,10 @@
         style.id = STYLE_ID;
         style.textContent = `
             #${PANEL_ID} {
-               width: min(1100px, calc(100vw - 24px));
-max-width: calc(100vw - 24px);
-height: min(850px, calc(100vh - 24px));
-max-height: calc(100vh - 24px);
+                width: fit-content;
+                max-width: calc(100vw - 24px);
+                height: min(850px, calc(100vh - 24px));
+                max-height: calc(100vh - 24px);
                 position: fixed;
                 z-index: 2147483647;
                 display: flex;
@@ -686,6 +683,18 @@ max-height: calc(100vh - 24px);
                 overflow: hidden;
                 box-sizing: border-box;
             }
+                #${PANEL_ID}.fr-minimized {
+    width: max-content;
+    height: auto;
+    max-height: none;
+}
+#${PANEL_ID}.fr-minimized #fr-template,
+#${PANEL_ID}.fr-minimized #fr-scan,
+#${PANEL_ID}.fr-minimized #fr-empty,
+#${PANEL_ID}.fr-minimized #fr-highlight,
+#${PANEL_ID}.fr-minimized #fr-tablewrap {
+    display: none;
+}
             #${PANEL_ID} * { box-sizing: border-box; }
             #${PANEL_ID} .fr-head {
     display: flex;
@@ -752,16 +761,16 @@ max-height: calc(100vh - 24px);
                 vertical-align: middle;
             }
             #${PANEL_ID} td input {
-                width: auto;
-                min-width: 0;
-                max-width: 100%;
-                box-sizing: border-box;
-                background: #101216;
-                color: #fff;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 2px 4px;
-                font: inherit;
+                  display: block;
+                  width: 16ch;
+                  min-width: 16ch;
+                   max-width: 32ch;
+                  background: #101216;
+                  color: #fff;
+                  border: 1px solid #555;
+                  border-radius: 3px;
+              padding: 3px 5px;
+              font: inherit;
             }
              #${PANEL_ID} th,
             #${PANEL_ID} td {
@@ -779,6 +788,10 @@ max-height: calc(100vh - 24px);
                 text-overflow: ellipsis;
                 max-width: 600px;
             }
+                #${PANEL_ID}.fr-hide-regex #fr-regex-header,
+#${PANEL_ID}.fr-hide-regex .fr-regex {
+    display: none;
+}
             .fr-highlight-mark {
                 background-color: rgba(255, 235, 59, 0.35) !important;
                 border-bottom: 1px dashed #ffeb3b !important;
@@ -1050,11 +1063,12 @@ max-height: calc(100vh - 24px);
                         ${TEMPLATES.map((t) => `<option value="${t}" ${t === settings.template ? "selected" : ""}>${t}</option>`).join("")}
                     </select>
                 </label>
-                <button id="fr-scan" title="Scan the page">Scan</button>
-                <button id="fr-empty" title="Clear accumulated scan data">Empty</button>
-                <button id="fr-highlight" title="Toggle Highlight All">Highlight All: Off</button>
-                <button id="fr-minimize" title="Minimize panel">−</button>
-                <button id="fr-close" title="Close Panel">×</button>
+<button id="fr-scan" title="Scan the page">🔍</button>
+<button id="fr-empty" title="Clear accumulated scan data">🗑</button>
+<button id="fr-highlight" title="Toggle Highlight All">🔦</button>
+<button id="fr-hide-regex" title="Hide Regex column" aria-pressed="false">👁</button>
+<button id="fr-minimize" title="Minimize panel">−</button>
+<button id="fr-close" title="Close Panel">×</button>
             </div>
             <div class="fr-tablewrap" id="fr-tablewrap">
                 <table id="fr-table">
@@ -1063,7 +1077,7 @@ max-height: calc(100vh - 24px);
                    <th>Hi</th>
                       <th>Name</th>
                       <th>Ct</th>
-                   <th>Regex</th>
+                   <th id="fr-regex-header">Regex</th>
                    <th>RC</th>
                 </tr>
                     </thead>
@@ -1073,18 +1087,25 @@ max-height: calc(100vh - 24px);
         `;
         const highlightAllButton = panel.querySelector("#fr-highlight");
         function updateHighlightAllButton() {
-            highlightAllButton.textContent = `Highlight All: ${settings.highlightedAll ? "On" : "Off"}`;
+            highlightAllButton.textContent = settings.highlightedAll ? "🔦✓" : "🔦";
+            highlightAllButton.title = settings.highlightedAll ? "Turn highlighting off" : "Turn highlighting on";
             highlightAllButton.setAttribute("aria-pressed", String(settings.highlightedAll));
         }
         updateHighlightAllButton();
         document.body.appendChild(panel);
+        const hideRegexButton = panel.querySelector("#fr-hide-regex");
+        hideRegexButton.addEventListener("click", () => {
+            const hidden = panel.classList.toggle("fr-hide-regex");
+            hideRegexButton.textContent = hidden ? "⊘" : "👁";
+            hideRegexButton.title = hidden ? "Show Regex column" : "Hide Regex column";
+            hideRegexButton.setAttribute("aria-pressed", String(hidden));
+        });
         const minimizeButton = panel.querySelector("#fr-minimize");
         const tableWrap = panel.querySelector("#fr-tablewrap");
         minimizeButton.addEventListener("click", () => {
-            const minimized = tableWrap.hidden;
-            tableWrap.hidden = !minimized;
-            minimizeButton.textContent = minimized ? "−" : "+";
-            minimizeButton.title = minimized ? "Minimize panel" : "Restore panel";
+            const minimized = panel.classList.toggle("fr-minimized");
+            minimizeButton.textContent = minimized ? "▢" : "—";
+            minimizeButton.title = minimized ? "Restore panel" : "Minimize panel";
         });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
         document.getElementById("fr-empty").addEventListener("click", () => {
