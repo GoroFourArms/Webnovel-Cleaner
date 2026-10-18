@@ -1312,6 +1312,7 @@
             #${PANEL_ID} td input {
                 display: block;
                 field-sizing: content;
+                width: auto;
                 min-width: 200px;
                 max-width: 300px;
                 background: #101216;
