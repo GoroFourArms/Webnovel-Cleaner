@@ -2,7 +2,7 @@
 // @name         Capital Phrase Scanner
 // @namespace    CPS
 // @version      1.0
-// @description  Scan and Count Capitalized Phrases and create Regex templates.
+// @description  Scan and count capitalized phrases and generate regex templates.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -321,6 +321,15 @@
                 return;
             }
             if (isExcluded(node) || node.matches(NON_CHAPTER_SELECTOR) || node.closest("#" + PANEL_ID)) {
+                console.debug("[FRScanner] Excluded element:", {
+                    tag: node.tagName,
+                    className: typeof node.className === "string" ? node.className : "",
+                    id: node.id,
+                    text: (node.innerText || node.textContent || "").trim().slice(0, 200),
+                    excluded: isExcluded(node),
+                    matchesNonChapter: node.matches(NON_CHAPTER_SELECTOR),
+                    selector: NON_CHAPTER_SELECTOR
+                });
                 finishRun();
                 return;
             }
@@ -342,9 +351,7 @@
         if (root.nodeType === Node.TEXT_NODE) {
             appendTextNode(root);
         } else {
-            for (const child of root.childNodes) {
-                walk(child);
-            }
+            walk(root);
         }
         finishRun();
         return {
@@ -357,17 +364,36 @@
             .trim()
             .replace(/[’‘]/g, "'")
             .replace(/\.+$/, "");
-        // Expose the plural ending for normalization.
-        // The s is preserved until the plural check is complete.
+        // Preserve plural possessive endings until plural normalization.
         if (/s'$/i.test(token)) {
             token = token.slice(0, -1);
         }
-        // Normalize plurals only when the singular form is known.
-        if (token.length > 1 && /s$/i.test(token) && knownTokens.has(token.slice(0, -1).toLowerCase())) {
-            token = token.slice(0, -1);
-        }
-        // Normalize ordinary possessives after plural normalization.
+        // Remove possessive endings.
         token = token.replace(/'s$/i, "").replace(/'$/, "");
+        // Normalize regular plurals only when the singular is known.
+        if (token.length > 2) {
+            // foxes -> fox; churches -> church; boxes -> box
+            if (/(?:ches|shes|xes|zes|sses)$/i.test(token)) {
+                const singular = token.slice(0, -2);
+                if (knownTokens.has(singular.toLowerCase())) {
+                    token = singular;
+                }
+            }
+            // ladies -> lady; stories -> story
+            else if (/ies$/i.test(token)) {
+                const singular = token.slice(0, -3) + "y";
+                if (knownTokens.has(singular.toLowerCase())) {
+                    token = singular;
+                }
+            }
+            // boys -> boy; dogs -> dog
+            else if (/s$/i.test(token) && !/ss$/i.test(token)) {
+                const singular = token.slice(0, -1);
+                if (knownTokens.has(singular.toLowerCase())) {
+                    token = singular;
+                }
+            }
+        }
         return token;
     }
     function buildKnownTokens(occurrences) {
@@ -494,21 +520,13 @@
             };
         });
     }
-    function getIdentityTokens(tokens) {
-        return tokens
-            .filter((record) => record.filterDecision === "keep" && record.normalized)
-            .map((record) => ({
-                ...record,
-                identity: record.normalized.toLowerCase()
-            }));
-    }
     function meaningfulTokens(phrase, knownTokens) {
         const tokenized = tokenizePhrase(phrase);
         if (!tokenized.length) return [];
         const normalized = normalizeTokens(tokenized, knownTokens);
         const filtered = filterTokens(normalized);
-        const identities = getIdentityTokens(filtered);
-        return identities.map((record) => record.identity);
+        const kept = filtered.filter((record) => record.filterDecision === "keep" && record.normalized);
+        return kept.map((record) => record.normalized);
     }
     function mapOccurrenceToSourceSegments(occurrence, run) {
         const occurrenceStart = occurrence.startPos;
@@ -558,22 +576,26 @@
             sourceNodes: run.segments.map((segment) => segment.node)
         }));
     }
+    function normalizeNameIdentity(phrase) {
+        return String(phrase || "")
+            .toLowerCase()
+            .replace(/[\s-]+/g, "");
+    }
     function processCandidates(occurrences) {
         const knownTokens = buildKnownTokens(occurrences);
         const phraseMap = new Map();
-        // Each exact phrase gets its own candidate.
-        // Never combine different phrases based on normalized tokens.
         for (const occ of occurrences) {
             const phrase = String(occ.phrase || "").trim();
             if (!phrase) continue;
-            // Preserve the existing meaningful-token eligibility filter.
             const tokens = meaningfulTokens(phrase, knownTokens);
             if (!tokens.length) continue;
-            if (!phraseMap.has(phrase)) {
-                phraseMap.set(phrase, {
-                    identity: phrase,
-                    identityKey: phrase,
-                    phrase,
+            const displayPhrase = tokens.join(" ");
+            const identityKey = normalizeNameIdentity(displayPhrase);
+            if (!phraseMap.has(identityKey)) {
+                phraseMap.set(identityKey, {
+                    identity: identityKey,
+                    identityKey,
+                    phrase: displayPhrase,
                     normalizedTokens: tokens,
                     distinctTokens: new Set(tokens),
                     sourceOccurrences: [],
@@ -581,15 +603,19 @@
                     firstPos: occ.startPos ?? occ.position ?? 0
                 });
             }
-            const candidate = phraseMap.get(phrase);
+            const candidate = phraseMap.get(identityKey);
             candidate.sourceOccurrences.push(occ);
             candidate.occurrences++;
             candidate.firstPos = Math.min(candidate.firstPos, occ.startPos ?? occ.position ?? 0);
+            if (
+                displayPhrase.includes("-") &&
+                (!candidate.phrase.includes("-") || displayPhrase.localeCompare(candidate.phrase) < 0)
+            ) {
+                candidate.phrase = displayPhrase;
+                candidate.normalizedTokens = tokens;
+            }
         }
         const candidates = [...phraseMap.values()];
-        // No candidate merging.
-        // No containment-based candidate removal.
-        // No count aggregation across different phrases.
         return sortAndFilterCandidates(calculateCandidateCounts(candidates));
     }
     function calculateCandidateCounts(candidates) {
@@ -606,86 +632,26 @@
         return candidates;
     }
     function sortAndFilterCandidates(candidates) {
-        const globalMaxScore = Math.max(0, ...candidates.map((cand) => cand.phraseCount));
-        // Preserve the existing 5% threshold, now based on phrase counts.
-        const filtered =
-            globalMaxScore > 0 ? candidates.filter((cand) => cand.phraseCount > globalMaxScore * 0.05) : candidates;
-        filtered.sort((a, b) => b.phraseCount - a.phraseCount || a.firstPos - b.firstPos);
-        return filtered;
+        candidates.sort((a, b) => b.phraseCount - a.phraseCount || a.firstPos - b.firstPos);
+        return candidates;
     }
     function generateRegex(phrase, template) {
         const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const boundaryStart = "(?<![a-z])";
         const boundaryEnd = "(?![a-z])";
         const tokens = phrase.trim().split(/\s+/).filter(Boolean);
-        const trace = {
-            displayName: phrase,
-            template,
-            tokens: [...tokens],
-            escapedTokenPatterns: [],
-            boundaries: {
-                start: boundaryStart,
-                end: boundaryEnd
-            },
-            separators: [],
-            templateSpecificAlternatives: [],
-            finalRegex: "",
-            flags: "",
-            compiles: null,
-            compilationError: null
-        };
-        const finish = (regex) => {
-            trace.finalRegex = regex;
-            // The generated value is a regex string, not a RegExp object.
-            // Test compilation with no flags, matching the default constructor behavior.
-            try {
-                new RegExp(regex, trace.flags);
-                trace.compiles = true;
-            } catch (error) {
-                trace.compiles = false;
-                trace.compilationError = error.message;
-            }
-            if (TRACE_REGEX) {
-                console.group(`[FRScanner Regex] ${phrase} (${template})`);
-                console.log("1. Display name:", trace.displayName);
-                console.log("2. Selected template:", trace.template);
-                console.log("3. Extracted tokens:", trace.tokens);
-                console.log("4. Escaped token patterns:", trace.escapedTokenPatterns);
-                console.log("5. Separators:", trace.separators);
-                console.log("6. Boundaries:", trace.boundaries);
-                console.log("7. Template-specific alternatives:", trace.templateSpecificAlternatives);
-                console.log("8. Final regex:", trace.finalRegex);
-                console.log("9. Flags:", trace.flags === "" ? "(none)" : trace.flags);
-                console.log("10. Compiles:", trace.compiles);
-                if (!trace.compiles) {
-                    console.error("Compilation error:", trace.compilationError);
-                }
-                console.groupEnd();
-            }
-            return regex;
-        };
-        if (!tokens.length) {
-            return finish("");
-        }
+        if (!tokens.length) return "";
         const cleanToken = (token) => token.replace(/[’‘]/g, "'").replace(/(?:'s|s')$/i, "");
         const tokenPattern = (token) => {
             const clean = cleanToken(token);
             const base = clean.replace(/\.+$/, "");
-            let pattern;
             if (ABBREVIATIONS.has(base)) {
-                pattern = escapeRegex(base) + "\\.?";
-            } else if (/^[A-ZĀĒĪŌŪ]$/.test(base)) {
-                pattern = escapeRegex(base) + "\\.?";
-            } else {
-                pattern = escapeRegex(base);
+                return escapeRegex(base) + "\\.?";
             }
-            trace.escapedTokenPatterns.push({
-                token,
-                cleanedToken: clean,
-                base,
-                pattern
-            });
-            return pattern;
+            if (/^[A-ZĀĒĪŌŪ]$/.test(base)) {
+                return escapeRegex(base) + "\\.?";
+            }
+            return escapeRegex(base);
         };
         const joinTokens = () => {
             const result = [];
@@ -695,48 +661,25 @@
                     const a = cleanToken(tokens[i]).replace(/\.+$/, "");
                     const b = cleanToken(tokens[i + 1]).replace(/\.+$/, "");
                     const initials = /^[A-ZĀĒĪŌŪ]$/.test(a) && /^[A-ZĀĒĪŌŪ]$/.test(b);
-                    const separator = initials ? "(?:\\s*\\.\\s*| )" : " ";
-                    trace.separators.push({
-                        between: [tokens[i], tokens[i + 1]],
-                        pattern: separator
-                    });
-                    result.push(separator);
+                    result.push(initials ? "(?:\\s*\\.\\s*| )" : " ");
                 }
             }
             return result.join("");
         };
         if (template === "Korean") {
             if (!phrase.includes("-")) {
-                const joined = joinTokens();
-                trace.templateSpecificAlternatives.push({
-                    rule: "Korean template without hyphens",
-                    pattern: joined
-                });
-                return finish(`${boundaryStart}${joined}${boundaryEnd}`);
+                return `${boundaryStart}${joinTokens()}${boundaryEnd}`;
             }
             const koreanTokens = tokens.map((token) =>
                 escapeRegex(cleanToken(token).replace(/\.+$/, "")).replace(/-/g, "[- ]?")
             );
-            trace.escapedTokenPatterns = koreanTokens.map((pattern, index) => ({
-                token: tokens[index],
-                pattern,
-                rule: "Korean hyphen handling"
-            }));
             const n = koreanTokens.length;
             if (n === 1) {
-                trace.templateSpecificAlternatives.push({
-                    rule: "Single Korean token",
-                    pattern: koreanTokens[0]
-                });
-                return finish(`${boundaryStart}${koreanTokens[0]}${boundaryEnd}`);
+                return `${boundaryStart}${koreanTokens[0]}${boundaryEnd}`;
             }
             if (n === 2) {
                 const alternative = `(?:${koreanTokens[0]} )?${koreanTokens[1]}`;
-                trace.templateSpecificAlternatives.push({
-                    rule: "Two-token Korean pattern",
-                    pattern: alternative
-                });
-                return finish(`${boundaryStart}${alternative}${boundaryEnd}`);
+                return `${boundaryStart}${alternative}${boundaryEnd}`;
             }
             const prefix = koreanTokens.slice(0, n - 2).join(" ");
             const optionalPrefix = prefix ? `(?:${prefix} )?` : "";
@@ -745,11 +688,7 @@
             const alternativePrefix = koreanTokens.slice(0, n - 3).join(" ");
             const optionalAlternativePrefix = alternativePrefix ? `(?:${alternativePrefix} )?` : "";
             const alternative = `${optionalAlternativePrefix}${koreanTokens[n - 3]} ${koreanTokens[n - 2]}`;
-            trace.templateSpecificAlternatives.push(
-                { rule: "Korean main pattern", pattern: mainPattern },
-                { rule: "Korean alternative pattern", pattern: alternative }
-            );
-            return finish(`${boundaryStart}(?:${mainPattern}|${alternative})${boundaryEnd}`);
+            return `${boundaryStart}(?:${mainPattern}|${alternative})${boundaryEnd}`;
         }
         if ((template === "Japanese" || template === "Japanese 2") && tokens.length === 2) {
             const first = tokenPattern(tokens[0]);
@@ -758,15 +697,9 @@
             if (template === "Japanese 2") {
                 alternatives.push(first);
             }
-            trace.templateSpecificAlternatives = alternatives.map((pattern, index) => ({
-                index: index + 1,
-                pattern
-            }));
-            const body = alternatives.join("|");
-            return finish(`${boundaryStart}(?:${body})${boundaryEnd}`);
+            return `${boundaryStart}(?:${alternatives.join("|")})${boundaryEnd}`;
         }
-        const joined = joinTokens();
-        return finish(`${boundaryStart}${joined}${boundaryEnd}`);
+        return `${boundaryStart}${joinTokens()}${boundaryEnd}`;
     }
     function withScanObserverPaused(callback) {
         const wasObserving = !!observer;
@@ -848,14 +781,16 @@
         while (walker.nextNode()) {
             textNodes.push(walker.currentNode);
         }
-        // Match individual candidates across combined text runs,
-        // including names split across adjacent elements.
+        // Match candidates against combined text runs so names can span
+        // adjacent inline elements.
         const individualMatchesByNode = new Map();
         const runs = extractVisibleText(root).segments;
         for (const cand of selectedCandidates) {
             const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
             const regexStr = generateRegex(displayName, settings.template);
             console.debug("[FRScanner Regex Debug]", {
+                phrase: cand.phrase,
+                identityKey: cand.identityKey,
                 displayName,
                 regexStr,
                 template: settings.template
@@ -866,6 +801,7 @@
                 regex = new RegExp(regexStr, "g");
             } catch (error) {
                 console.warn("[FRScanner Highlight] Invalid candidate regex", {
+                    phrase: cand.phrase,
                     displayName,
                     regexStr,
                     error
@@ -880,71 +816,104 @@
                         regex.lastIndex++;
                         continue;
                     }
-                    const mapped = mapOccurrenceToSourceSegments(
-                        {
-                            phrase: match[0],
-                            startPos: match.index,
-                            endPos: match.index + match[0].length,
-                            textSnapshot: run.text
-                        },
-                        run
-                    );
-                    for (const segment of mapped.sourceSegments) {
-                        if (!individualMatchesByNode.has(segment.sourceNode)) {
-                            individualMatchesByNode.set(segment.sourceNode, []);
-                        }
-                        individualMatchesByNode.get(segment.sourceNode).push({
-                            start: segment.startPos,
-                            end: segment.endPos,
-                            text: segment.text,
-                            displayName
-                        });
+                    if (!individualMatchesByNode.has(run)) {
+                        individualMatchesByNode.set(run, []);
                     }
+                    individualMatchesByNode.get(run).push({
+                        start: match.index,
+                        end: match.index + match[0].length,
+                        text: match[0],
+                        displayName,
+                        identityKey: cand.identityKey
+                    });
                 }
             }
+        }
+        // Resolve overlaps across complete matches BEFORE mapping them to nodes.
+        for (const run of runs) {
+            const matches = individualMatchesByNode.get(run);
+            if (!matches?.length) continue;
+            const seen = new Set();
+            const uniqueMatches = matches.filter((match) => {
+                const key = `${match.start}:${match.end}:${match.text}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+            uniqueMatches.sort(
+                (a, b) => a.start - b.start || b.end - a.end || a.displayName.localeCompare(b.displayName)
+            );
+            const accepted = [];
+            let lastEnd = 0;
+            for (const match of uniqueMatches) {
+                if (match.start < lastEnd) {
+                    trace("Match skipped: overlaps an earlier complete match", {
+                        skippedMatch: match,
+                        previousMatchEnd: lastEnd,
+                        sourceText: run.text
+                    });
+                    continue;
+                }
+                accepted.push(match);
+                lastEnd = match.end;
+            }
+            const nodeMatches = new Map();
+            for (const match of accepted) {
+                const mapped = mapOccurrenceToSourceSegments(
+                    {
+                        phrase: match.text,
+                        startPos: match.start,
+                        endPos: match.end,
+                        textSnapshot: run.text
+                    },
+                    run
+                );
+                for (const segment of mapped.sourceSegments) {
+                    if (!nodeMatches.has(segment.sourceNode)) {
+                        nodeMatches.set(segment.sourceNode, []);
+                    }
+                    nodeMatches.get(segment.sourceNode).push({
+                        start: segment.startPos,
+                        end: segment.endPos,
+                        text: segment.text,
+                        displayName: match.displayName,
+                        identityKey: match.identityKey,
+                        completeMatchText: match.text
+                    });
+                }
+            }
+            individualMatchesByNode.set(run, nodeMatches);
         }
         withScanObserverPaused(() => {
             for (const node of textNodes) {
                 const originalText = node.nodeValue;
-                const matches = [];
-                for (const cand of selectedCandidates) {
-                    const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
-                    matches.push(
-                        ...(individualMatchesByNode.get(node) || []).filter(
-                            (match) => match.displayName === displayName
-                        )
-                    );
+                const nodeMatches = [];
+                for (const run of runs) {
+                    const matchesForRun = individualMatchesByNode.get(run);
+                    const matchesForNode = matchesForRun?.get(node);
+                    if (matchesForNode) nodeMatches.push(...matchesForNode);
                 }
-                if (matches.length === 0) continue;
-                matches.sort((a, b) => a.start - b.start || b.end - a.end);
-                const nonOverlapping = [];
-                let lastEnd = 0;
-                for (const match of matches) {
-                    if (
-                        !Number.isInteger(match.start) ||
-                        !Number.isInteger(match.end) ||
-                        match.start < 0 ||
-                        match.end <= match.start ||
-                        match.end > originalText.length ||
-                        originalText.slice(match.start, match.end) !== match.text
-                    ) {
+                if (nodeMatches.length === 0) continue;
+                // Reject invalid source ranges before attempting overlap resolution.
+                const validMatches = nodeMatches.filter((match) => {
+                    const valid =
+                        Number.isInteger(match.start) &&
+                        Number.isInteger(match.end) &&
+                        match.start >= 0 &&
+                        match.end > match.start &&
+                        match.end <= originalText.length &&
+                        originalText.slice(match.start, match.end) === match.text;
+                    if (!valid) {
                         trace("Match skipped: invalid source range", {
                             match,
                             sourceText: originalText
                         });
-                        continue;
                     }
-                    if (match.start < lastEnd) {
-                        trace("Match skipped: overlaps an earlier match", {
-                            skippedMatch: match,
-                            previousMatchEnd: lastEnd,
-                            sourceText: originalText
-                        });
-                        continue;
-                    }
-                    nonOverlapping.push(match);
-                    lastEnd = match.end;
-                }
+                    return valid;
+                });
+                // Complete matches have already been deduplicated and overlap-resolved
+                // before being mapped to individual text nodes.
+                const nonOverlapping = validMatches;
                 if (nonOverlapping.length === 0) continue;
                 const fragment = document.createDocumentFragment();
                 let lastIndex = 0;
@@ -953,8 +922,10 @@
                         fragment.appendChild(document.createTextNode(originalText.slice(lastIndex, match.start)));
                     }
                     const span = document.createElement("span");
+                    const comparedText = match.completeMatchText ?? match.text;
                     span.className =
-                        match.text !== match.displayName && match.text.toLowerCase() === match.displayName.toLowerCase()
+                        comparedText !== match.displayName &&
+                        comparedText.toLowerCase() === match.displayName.toLowerCase()
                             ? "fr-highlight-mark fr-highlight-case-mismatch"
                             : "fr-highlight-mark";
                     span.textContent = match.text;
@@ -963,6 +934,7 @@
                     trace("Highlight applied", {
                         text: match.text,
                         displayName: match.displayName,
+                        identityKey: match.identityKey,
                         start: match.start,
                         end: match.end,
                         className: span.className,
@@ -1004,69 +976,51 @@
                 z-index: 2147483647;
                 display: flex;
                 flex-direction: column;
-                background: #1c1e22;
-                color: #e8eaf0;
+                background: #1c1e22 !important;
+                color: #e8eaf0 !important;
                 border: 1px solid #45484e;
                 border-radius: 6px;
                 box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
-                font: 12px/1.4 Arial, sans-serif;
+                font: 14px/1 Arial, sans-serif;
+                color-scheme: dark;
                 overflow: hidden;
                 box-sizing: border-box;
             }
             #${PANEL_ID} .fr-candidate-editor {
-    width: 180px;
-    min-width: 80px;
-    max-width: 300px;
-    padding: 3px 5px;
-    background: #101216;
-    color: #fff;
-    border: 1px solid #555;
-    border-radius: 3px;
-    font: inherit;
-    font-size: 11px;
-}
-#${PANEL_ID} .fr-regex-preview-row {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 8px;
-    background: #1c1e22;
-    border-bottom: 1px solid #45484e;
-    flex-shrink: 0;
-    min-width: 0;
-}
-#${PANEL_ID} #fr-regex-preview {
-    flex: 1;
-    min-width: 0;
-    width: 100%;
-    padding: 3px 5px;
-    background: #101216;
-    color: #ce9178;
-    border: 1px solid #555;
-    border-radius: 3px;
-    font: 11px ui-monospace, monospace;
-}
-#${PANEL_ID}.fr-minimized .fr-regex-preview-row {
-    display: none;
-}
-                width: fit-content;
-                max-width: calc(100vw - 24px);
-                height: min(850px, calc(100vh - 24px));
-                max-height: calc(100vh - 24px);
-                position: fixed;
-                z-index: 2147483647;
+                width: 180px;
+                min-width: 80px;
+                max-width: 300px;
+                padding: 3px 5px;
+                background: #101216;
+                color: #fff;
+                border: 1px solid #555;
+                border-radius: 3px;
+                font: inherit;
+                font-size: 11px;
+            }
+            #${PANEL_ID} .fr-regex-preview-row {
                 display: flex;
-                flex-direction: column;
+                align-items: center;
+                gap: 5px;
+                padding: 4px 8px;
                 background: #1c1e22;
-                color: #e8eaf0;
-                border: 1px solid #45484e;
-                border-radius: 6px;
-                box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
-                font:
-                    12px/1.4 Arial,
-                    sans-serif;
-                overflow: hidden;
-                box-sizing: border-box;
+                border-bottom: 1px solid #45484e;
+                flex-shrink: 0;
+                min-width: 0;
+            }
+            #${PANEL_ID} #fr-regex-preview {
+                flex: 1;
+                min-width: 0;
+                width: 100%;
+                padding: 3px 5px;
+                background: #101216;
+                color: #ce9178;
+                border: 1px solid #555;
+                border-radius: 3px;
+                font: 11px ui-monospace, monospace;
+            }
+            #${PANEL_ID}.fr-minimized .fr-regex-preview-row {
+                 display: none;
             }
             #${PANEL_ID}.fr-minimized {
                 width: max-content;
@@ -1150,23 +1104,26 @@
                 text-align: left;
                 vertical-align: middle;
             }
-                #${PANEL_ID} tbody tr {
-    height: 30px;
-}
-#${PANEL_ID} tbody td {
-    height: 30px;
-    box-sizing: border-box;
-    vertical-align: middle;
-    white-space: nowrap;
-}
-#${PANEL_ID} tbody td button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 22px;
-    line-height: 1;
-    vertical-align: middle;
-}
+            #${PANEL_ID} tbody tr {
+                height: 30px;
+            }           
+            #${PANEL_ID} tbody td {
+                height: 30px;
+                padding: 3px 6px;
+                box-sizing: border-box;
+                vertical-align: middle;
+                white-space: nowrap;
+            }
+            #${PANEL_ID} tbody td button {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                height: 22px;
+                min-height: 22px;
+                padding: 2px 6px;
+                line-height: 1;
+                vertical-align: middle;
+            }
             #${PANEL_ID} td input {
                 display: block;
                 field-sizing: content;
@@ -1194,10 +1151,6 @@
                 overflow: hidden;
                 text-overflow: ellipsis;
                 max-width: 600px;
-            }
-            #${PANEL_ID}.fr-hide-regex #fr-regex-header,
-            #${PANEL_ID}.fr-hide-regex .fr-regex {
-                display: none;
             }
             .fr-highlight-mark {
                 background-color: rgba(255, 235, 59, 0.35) !important;
@@ -1303,48 +1256,28 @@
             const fingerprint = fingerprintText(pageText);
             const pageUrl = location.href;
             const pageScans = loadPageScans();
-            let snapshot = pageScans[pageUrl];
-            if (!snapshot || snapshot.fingerprint !== fingerprint) {
-                const pageOccurrences = [];
-                let position = 0;
-                for (const run of runs) {
-                    for (const occurrence of extractRunOccurrences(run)) {
-                        occurrence.position = position++;
-                        pageOccurrences.push(occurrence);
-                    }
-                }
-                snapshot = {
-                    fingerprint,
-                    occurrences: serializeOccurrences(pageOccurrences)
-                };
-                pageScans[pageUrl] = snapshot;
-                savePageScans(pageScans);
-            }
-            const currentPageOccurrences = [];
-            let occurrenceIndex = 0;
+            const pageOccurrences = [];
+            let position = 0;
             for (const run of runs) {
-                const runOccurrences = extractRunOccurrences(run);
-                for (const occurrence of runOccurrences) {
-                    occurrence.position = occurrenceIndex++;
-                    currentPageOccurrences.push(occurrence);
+                for (const occurrence of extractRunOccurrences(run)) {
+                    occurrence.position = position++;
+                    pageOccurrences.push(occurrence);
                 }
             }
-            if (snapshot.fingerprint === fingerprint) {
-                snapshot.occurrences = serializeOccurrences(currentPageOccurrences);
-                pageScans[pageUrl] = snapshot;
-                savePageScans(pageScans);
-            }
+            const snapshot = {
+                fingerprint,
+                occurrences: serializeOccurrences(pageOccurrences)
+            };
+            pageScans[pageUrl] = snapshot;
+            savePageScans(pageScans);
             accumulatedOccurrences = [];
             nextOccurrencePos = 0;
             processedNodeText = new Map();
-            const savedSnapshot = pageScans[pageUrl];
-            if (savedSnapshot && Array.isArray(savedSnapshot.occurrences)) {
-                for (const occurrence of savedSnapshot.occurrences) {
-                    accumulatedOccurrences.push({
-                        ...occurrence,
-                        position: nextOccurrencePos++
-                    });
-                }
+            for (const occurrence of snapshot.occurrences) {
+                accumulatedOccurrences.push({
+                    ...occurrence,
+                    position: nextOccurrencePos++
+                });
             }
             for (const run of runs) {
                 for (const segment of run.segments) {
@@ -1411,6 +1344,11 @@
                 for (const node of removedNodes) processedNodeText.delete(node);
             }
             const runs = extractVisibleText(document.body).segments;
+            console.log("[FRScanner] Text runs:", runs.length);
+            console.log(
+                "[FRScanner] Text preview:",
+                runs.map((run) => run.text.slice(0, 150))
+            );
             const affectedRuns = runs.filter((run) =>
                 run.segments.some((segment) => {
                     if (affectedNodes.has(segment.node) || affectedNodes.has(segment.node.parentElement)) {
@@ -1467,71 +1405,51 @@
         panel.style.left = `${Math.max(0, settings.x)}px`;
         panel.style.top = `${Math.max(0, settings.y)}px`;
         panel.innerHTML = `
-      <
-      <div class="fr-head">
-        <input
-          id="fr-candidate-editor"
-          class="fr-candidate-editor"
-          type="text"
-          placeholder="Select a candidate..."
-          title="Edit candidate name for regex generation"
-        />
-        <label
-          style="display:flex; align-items:center; gap:4px; margin-left: auto;"
-        >
-          <select id="fr-template">
-            ${TEMPLATES.map(
-                (t) => `<option value="${t}" ${t === settings.template ? "selected" : ""}>${t}</option>`
-            ).join("")}
-          </select>
-        </label>
-        <button id="fr-scan" title="Scan the page">🔍</button>
-        <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
-        <button
-          id="fr-hide-regex"
-          title="Hide Regex column"
-          aria-pressed="false"
-        >
-          👁
-        </button>
-        <button id="fr-minimize" title="Minimize panel">−</button>
-        <button id="fr-close" title="Close Panel">×</button>
-      </div>
-      <div class="fr-regex-preview-row">
-    <input
-        id="fr-regex-preview"
-        type="text"
-        readonly
-        placeholder="Generated regex preview"
-        title="Generated regular expression"
-    />
-    <button
-        id="fr-regex-preview-copy"
-        title="Copy generated regular expression"
-    >📋</button>
-</div>
-      <div class="fr-tablewrap" id="fr-tablewrap">
-        <table id="fr-table">
-          <thead>
-            <tr>
-              <th>Hi</th>
-              <th>Name</th>
-              <th>Ct</th>
-              <th>Ed</th>
-            </tr>
-          </thead>
-          <tbody id="fr-rows"></tbody>
-        </table>
-      </div>
-    `;
+            <div class="fr-head">
+                <input
+                    id="fr-candidate-editor"
+                    class="fr-candidate-editor"
+                    type="text"
+                    placeholder="Select a candidate..."
+                    title="Edit candidate name for regex generation"
+                />
+                <label style="display:flex; align-items:center; gap:4px; margin-left: auto;">
+                    <select id="fr-template">
+                        ${TEMPLATES.map(
+                            (t) => `<option value="${t}" ${t === settings.template ? "selected" : ""}>${t}</option>`
+                        ).join("")}
+                    </select>
+                </label>
+                <button id="fr-scan" title="Scan the page">🔍</button>
+                <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
+                <button id="fr-minimize" title="Minimize panel">−</button>
+                <button id="fr-close" title="Close Panel">×</button>
+            </div>
+            <div class="fr-regex-preview-row">
+                <input
+                    id="fr-regex-preview"
+                    type="text"
+                    readonly
+                    placeholder="Generated regex preview"
+                    title="Generated regular expression"
+                />
+                <button id="fr-regex-preview-copy" title="Copy generated regular expression">📋</button>
+            </div>
+            <div class="fr-tablewrap" id="fr-tablewrap">
+                <table id="fr-table">
+                    <thead>
+                        <tr>
+                            <th>Hi</th>
+                            <th>Name</th>
+                            <th>Ct</th>
+                            <th>Ed</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fr-rows"></tbody>
+                </table>
+            </div>
+        `;
         document.body.appendChild(panel);
-        const hideRegexButton = panel.querySelector("#fr-hide-regex");
-        hideRegexButton.addEventListener("click", () => {
-            const hidden = panel.classList.toggle("fr-hide-regex");
-            hideRegexButton.textContent = hidden ? "⊘" : "👁";
-            hideRegexButton.title = hidden ? "Show Regex column" : "Hide Regex column";
-            hideRegexButton.setAttribute("aria-pressed", String(hidden));
-        });
         const minimizeButton = panel.querySelector("#fr-minimize");
         const tableWrap = panel.querySelector("#fr-tablewrap");
         minimizeButton.addEventListener("click", () => {
