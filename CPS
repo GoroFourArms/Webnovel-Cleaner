@@ -7,8 +7,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
-// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/CapitalPhraseScanner.js
-// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/main/CapitalPhraseScanner.js
+// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/refs/heads/main/CPS
+// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/refs/heads/main/CPS
 // @run-at       document-idle
 // ==/UserScript==
 (function () {
