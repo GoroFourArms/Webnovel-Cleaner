@@ -5,5 +5,7 @@
     "semi": true,
     "trailingComma": "none",
     "printWidth": 120,
-    "embeddedLanguageFormatting": "auto"
+    "embeddedLanguageFormatting": "auto",
+    "bracketSpacing": true,
+    "htmlWhitespaceSensitivity": "ignore"
 }
