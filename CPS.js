@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Capital Phrase Scanner
 // @namespace    CPS
-// @version      1.1
+// @version      1.2
 // @description  Scan and count capitalized phrases and generate regex templates.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -207,6 +207,7 @@
         "Sgt"
     ]);
     const TEMPLATES = ["Other", "Korean", "Japanese", "Japanese 2"];
+    let tokenMatchFilter = null;
     let settings = loadSettings();
     let highlightedElements = [];
     let highlightedNodeRecords = [];
@@ -1148,7 +1149,9 @@
     function renderRows() {
         const tbody = document.getElementById("fr-rows");
         if (!tbody) return;
-        const candidates = [...currentCandidates];
+        const candidates = tokenMatchFilter
+            ? currentCandidates.filter((cand) => candidateSharesToken(tokenMatchFilter, cand))
+            : [...currentCandidates];
         tbody.innerHTML = "";
         if (candidates.length === 0) {
             tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
@@ -1166,6 +1169,18 @@
                 editor.value = settings.edits[cand.identityKey] ?? cand.phrase;
                 updateRegexPreview();
             });
+            // Token-match filter column
+            const tdTokenMatch = document.createElement("td");
+            const btnTokenMatch = document.createElement("button");
+            btnTokenMatch.textContent = "🔗";
+            btnTokenMatch.title = "Show candidates sharing at least one token";
+            btnTokenMatch.addEventListener("click", (e) => {
+                e.stopPropagation();
+                // Clicking the active filter button restores all candidates.
+                tokenMatchFilter = tokenMatchFilter === cand ? null : cand;
+                renderRows();
+            });
+            tdTokenMatch.appendChild(btnTokenMatch);
             // Highlight column
             const tdHighlight = document.createElement("td");
             const btnHighlight = document.createElement("button");
@@ -1201,7 +1216,7 @@
                 updateRegexPreview();
             });
             tdAction.appendChild(btnLoad);
-            tr.append(tdHighlight, tdName, tdCounts, tdAction);
+            tr.append(tdTokenMatch, tdHighlight, tdName, tdCounts, tdAction);
             tbody.appendChild(tr);
         });
     }
