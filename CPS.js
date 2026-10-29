@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Capital Phrase Scanner
 // @namespace    CPS
-// @version      1.2
+// @version      1.2.2
 // @description  Scan and count capitalized phrases and generate regex templates.
 // @match        *://*/*
 // @grant        GM_getValue
