@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Capital Phrase Scanner
 // @namespace    CPS
-// @version      1.0
+// @version      1.1
 // @description  Scan and count capitalized phrases and generate regex templates.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -14,43 +14,6 @@
 (function () {
     "use strict";
     const STORE_KEY = "frScanner.settings";
-    const PAGE_SCANS_KEY = "frScanner.pageScans.v1";
-    function fingerprintText(text) {
-        // Deterministic 32-bit FNV-1a hash.
-        let hash = 0x811c9dc5;
-        for (let i = 0; i < text.length; i++) {
-            hash ^= text.charCodeAt(i);
-            hash = Math.imul(hash, 0x01000193);
-        }
-        return (hash >>> 0).toString(16).padStart(8, "0");
-    }
-    function loadPageScans() {
-        try {
-            const saved = GM_getValue(PAGE_SCANS_KEY, {});
-            return saved && typeof saved === "object" ? saved : {};
-        } catch (error) {
-            console.error("[FRScanner] Failed to load page scans:", error);
-            return {};
-        }
-    }
-    function savePageScans(pageScans) {
-        try {
-            GM_setValue(PAGE_SCANS_KEY, pageScans);
-        } catch (error) {
-            console.error("[FRScanner] Failed to save page scans:", error);
-        }
-    }
-    function serializeOccurrences(occurrences) {
-        return occurrences.map((occurrence) => ({
-            phrase: occurrence.phrase,
-            startPos: occurrence.startPos,
-            endPos: occurrence.endPos,
-            position: occurrence.position,
-            accepted: occurrence.accepted,
-            rejectionReason: occurrence.rejectionReason,
-            textSnapshot: occurrence.textSnapshot
-        }));
-    }
     const PANEL_ID = "fr-scanner-panel";
     const STYLE_ID = "fr-scanner-style";
     const EXCLUDED_TAGS = new Set([
@@ -1252,34 +1215,16 @@
         isScanning = true;
         try {
             const runs = extractVisibleText(document.body).segments;
-            const pageText = runs.map((run) => run.text).join("\n");
-            const fingerprint = fingerprintText(pageText);
-            const pageUrl = location.href;
-            const pageScans = loadPageScans();
-            const pageOccurrences = [];
-            let position = 0;
-            for (const run of runs) {
-                for (const occurrence of extractRunOccurrences(run)) {
-                    occurrence.position = position++;
-                    pageOccurrences.push(occurrence);
-                }
-            }
-            const snapshot = {
-                fingerprint,
-                occurrences: serializeOccurrences(pageOccurrences)
-            };
-            pageScans[pageUrl] = snapshot;
-            savePageScans(pageScans);
             accumulatedOccurrences = [];
             nextOccurrencePos = 0;
             processedNodeText = new Map();
-            for (const occurrence of snapshot.occurrences) {
-                accumulatedOccurrences.push({
-                    ...occurrence,
-                    position: nextOccurrencePos++
-                });
-            }
             for (const run of runs) {
+                const runNodes = run.segments.map((segment) => segment.node);
+                for (const occurrence of extractRunOccurrences(run)) {
+                    occurrence.sourceNodes = runNodes;
+                    occurrence.position = nextOccurrencePos++;
+                    accumulatedOccurrences.push(occurrence);
+                }
                 for (const segment of run.segments) {
                     processedNodeText.set(segment.node, segment.textSnapshot);
                 }
@@ -1292,93 +1237,115 @@
     }
     function startScanObserver() {
         if (observer) observer.disconnect();
-        observer = new MutationObserver((mutations) => {
-            if (isScanning) return;
+        // Coalesce rapid DOM updates into one processing pass.
+        let pendingMutations = [];
+        let flushScheduled = false;
+        const flushMutations = () => {
+            flushScheduled = false;
+            if (isScanning || pendingMutations.length === 0) return;
+            const mutations = pendingMutations;
+            pendingMutations = [];
             const affectedNodes = new Set();
+            const affectedElements = new Set();
             let structureChanged = false;
+            const addNode = (node) => {
+                if (!node) return;
+                affectedNodes.add(node);
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    affectedElements.add(node);
+                } else if (node.parentElement) {
+                    affectedElements.add(node.parentElement);
+                }
+            };
             for (const mutation of mutations) {
                 const target = mutation.target;
                 const targetElement = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
-                if (
-                    targetElement?.closest(`#${PANEL_ID}`) ||
-                    targetElement?.closest(".fr-highlight-mark") ||
-                    (mutation.type === "childList" &&
-                        [...mutation.addedNodes, ...mutation.removedNodes].some(
-                            (node) =>
-                                node.nodeType === Node.ELEMENT_NODE &&
-                                (node.matches(".fr-highlight-mark") || node.closest(".fr-highlight-mark"))
-                        ))
-                ) {
+                // Ignore scanner UI and our own highlight modifications.
+                if (targetElement?.closest(`#${PANEL_ID}`) || targetElement?.closest(".fr-highlight-mark")) {
                     continue;
                 }
                 if (mutation.type === "characterData") {
-                    affectedNodes.add(target);
-                } else if (mutation.type === "childList") {
-                    affectedNodes.add(target);
-                    structureChanged = true;
-                    for (const node of [...mutation.addedNodes, ...mutation.removedNodes]) {
-                        if (node.nodeType === Node.TEXT_NODE) {
-                            affectedNodes.add(node);
-                        } else if (node.nodeType === Node.ELEMENT_NODE) {
-                            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-                            let textNode;
-                            while ((textNode = walker.nextNode())) {
-                                affectedNodes.add(textNode);
-                            }
-                        }
+                    addNode(target);
+                    continue;
+                }
+                if (mutation.type !== "childList") continue;
+                // Ignore mutations consisting entirely of highlight wrappers.
+                const changedChildren = [...mutation.addedNodes, ...mutation.removedNodes].filter((node) => {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        return !node.parentElement?.closest(".fr-highlight-mark");
+                    }
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        return !node.matches(".fr-highlight-mark") && !node.closest(".fr-highlight-mark");
+                    }
+                    return false;
+                });
+                if (changedChildren.length === 0) continue;
+                addNode(target);
+                structureChanged = true;
+                for (const node of changedChildren) {
+                    addNode(node);
+                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+                    let textNode;
+                    while ((textNode = walker.nextNode())) {
+                        addNode(textNode);
                     }
                 }
             }
             if (affectedNodes.size === 0) return;
-            // Remove occurrences tied to removed nodes immediately. Map is iterable so
-            // stale snapshots for detached text nodes can also be discarded.
-            const liveTextNodes = new Set();
-            const liveWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-            let liveTextNode;
-            while ((liveTextNode = liveWalker.nextNode())) liveTextNodes.add(liveTextNode);
-            const removedNodes = new Set(
-                [...affectedNodes].filter((node) => node.nodeType === Node.TEXT_NODE && !liveTextNodes.has(node))
-            );
-            if (removedNodes.size) {
-                reconcileOccurrencesForNodes(removedNodes);
-                for (const node of removedNodes) processedNodeText.delete(node);
+            // Detached nodes can be checked directly; no full-page live-node scan.
+            const removedNodes = new Set();
+            for (const node of affectedNodes) {
+                if (node.nodeType === Node.TEXT_NODE && !node.isConnected) {
+                    removedNodes.add(node);
+                }
             }
+            if (removedNodes.size > 0) {
+                reconcileOccurrencesForNodes(removedNodes);
+                for (const node of removedNodes) {
+                    processedNodeText.delete(node);
+                }
+            }
+            // Extract runs once per batch, not once per individual mutation.
             const runs = extractVisibleText(document.body).segments;
-            console.log("[FRScanner] Text runs:", runs.length);
-            console.log(
-                "[FRScanner] Text preview:",
-                runs.map((run) => run.text.slice(0, 150))
-            );
-            const affectedRuns = runs.filter((run) =>
-                run.segments.some((segment) => {
-                    if (affectedNodes.has(segment.node) || affectedNodes.has(segment.node.parentElement)) {
-                        return true;
-                    }
-                    for (const affectedNode of affectedNodes) {
-                        if (
-                            affectedNode.nodeType === Node.ELEMENT_NODE &&
-                            (affectedNode.contains(segment.node) || segment.node.parentElement?.contains(affectedNode))
-                        ) {
+            let changed = false;
+            for (const run of runs) {
+                const runNodes = run.segments.map((segment) => segment.node);
+                // A removal can affect surviving runs even when they are no
+                // longer related to the detached node.
+                const affected =
+                    (structureChanged && removedNodes.size > 0) ||
+                    run.segments.some((segment) => {
+                        const node = segment.node;
+                        const parent = node.parentElement;
+                        if (affectedNodes.has(node) || affectedNodes.has(parent)) {
                             return true;
                         }
-                    }
-                    return false;
-                })
-            );
-            let changed = false;
-            for (const run of affectedRuns) {
+                        for (const element of affectedElements) {
+                            if (
+                                element === node ||
+                                element.contains(node) ||
+                                node.contains?.(element) ||
+                                parent?.contains(element)
+                            ) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    });
+                if (!affected) continue;
                 const isChanged = run.segments.some(
                     (segment) => processedNodeText.get(segment.node) !== segment.textSnapshot
                 );
-                // Structural changes can invalidate occurrences even when the
-                // surviving text nodes have unchanged snapshots.
+                // A structural change can alter run boundaries even if the
+                // surviving text snapshots themselves are unchanged.
                 if (!isChanged && !(structureChanged && removedNodes.size > 0)) {
                     continue;
                 }
-                reconcileOccurrencesForNodes(new Set(run.segments.map((segment) => segment.node)));
-                const occurrences = extractRunOccurrences(run);
-                for (const occurrence of occurrences) {
-                    occurrence.sourceNodes = run.segments.map((segment) => segment.node);
+                // Remove stale occurrences before inserting replacements.
+                reconcileOccurrencesForNodes(new Set(runNodes));
+                for (const occurrence of extractRunOccurrences(run)) {
+                    occurrence.sourceNodes = runNodes;
                     occurrence.position = nextOccurrencePos++;
                     accumulatedOccurrences.push(occurrence);
                 }
@@ -1390,6 +1357,14 @@
             if (changed) {
                 renderAccumulatedScan();
             }
+        };
+        observer = new MutationObserver((mutations) => {
+            if (isScanning) return;
+            pendingMutations.push(...mutations);
+            if (flushScheduled) return;
+            flushScheduled = true;
+            // Let bursts of page updates settle before processing.
+            setTimeout(flushMutations, 50);
         });
         observer.observe(document.body, {
             childList: true,
@@ -1464,9 +1439,6 @@
             nextOccurrencePos = 0;
             processedNodeText = new Map();
             highlightedCandidates.clear();
-            const pageScans = loadPageScans();
-            delete pageScans[location.href];
-            savePageScans(pageScans);
             runScan();
         });
         panel.querySelector("#fr-template").addEventListener("change", (e) => {
