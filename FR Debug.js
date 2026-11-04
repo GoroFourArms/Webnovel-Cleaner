@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FR Debug
-// @namespace    https://github.com/GoroFourArms/Webnovel-Cleaner
-// @version      1.0.0
-// @description  Imports FoxReplace rules and checks page matches and conflicts.
+// @namespace    https://github.com/FRDebug
+// @version      2.0.0
+// @description  Independently analyze FoxReplace rules against the current page.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -10,12 +10,10 @@
 // ==/UserScript==
 (function () {
     "use strict";
-    const FR_DEBUG_VERSION = "1.0.0";
-    const FR_DEBUG_UI_ID = "fr-debug-panel";
-    const FR_DEBUG_KEYS = {
-        settings: "FR_DEBUG_SETTINGS_V1",
-        database: "FR_DEBUG_DATABASE_V1",
-        lastImport: "FR_DEBUG_LAST_IMPORT_V1"
+    const STORAGE = {
+        settings: "FR_DEBUG_SETTINGS_V2",
+        database: "FR_DEBUG_DATABASE_V2",
+        lastImport: "FR_DEBUG_LAST_IMPORT_V2"
     };
     const DEFAULT_SETTINGS = {
         width: 900,
@@ -25,1061 +23,1688 @@
         columnWidths: {},
         minimized: false
     };
-    const state = {
-        pageText: "",
-        database: [],
-        matchingRules: [],
-        conflicts: [],
-        settings: { ...DEFAULT_SETTINGS },
-        imported: false
+    const EMPTY_DATABASE = {
+        format: "foxreplace",
+        version: null,
+        groups: []
     };
+    const state = {
+        settings: { ...DEFAULT_SETTINGS },
+        database: cloneJSON(EMPTY_DATABASE),
+        pageText: "",
+        matchingRules: [],
+        groupMatches: [],
+        conflicts: [],
+        ruleErrors: [],
+        imported: false,
+        activeTab: "all",
+        gridSearch: "",
+        gridFilters: {},
+        gridSort: {
+            column: "group",
+            direction: "asc"
+        },
+        selectedRows: new Set(),
+        lastSelectedRow: null,
+        collapsedGroups: new Set(),
+        panel: null,
+        status: "Import a FoxReplace JSON file to begin.",
+        lastAnalysis: null
+    };
+    function cloneJSON(value) {
+        return JSON.parse(JSON.stringify(value));
+    }
     function storageGet(key, fallback) {
         try {
-            const value = GM_getValue(key, fallback);
-            return value == null ? fallback : value;
-        } catch (_) {
-            return fallback;
+            if (typeof GM_getValue === "function") {
+                const value = GM_getValue(key, fallback);
+                return value === undefined ? fallback : value;
+            }
+        } catch (error) {
+            console.warn("[FR Debug] Storage read failed:", error);
         }
+        return fallback;
     }
     function storageSet(key, value) {
         try {
-            GM_setValue(key, value);
+            if (typeof GM_setValue === "function") {
+                GM_setValue(key, value);
+            }
         } catch (error) {
-            console.error("[FR Debug] Storage error:", error);
+            console.warn("[FR Debug] Storage write failed:", error);
         }
     }
     function loadSettings() {
-        const saved = storageGet(FR_DEBUG_KEYS.settings, {});
+        const saved = storageGet(STORAGE.settings, {});
+        const settings = saved && typeof saved === "object" ? saved : {};
+        const validNumber = (value, fallback, min, max) => {
+            const number = Number(value);
+            if (!Number.isFinite(number)) return fallback;
+            return Math.min(max, Math.max(min, number));
+        };
         state.settings = {
             ...DEFAULT_SETTINGS,
-            ...(saved && typeof saved === "object" ? saved : {}),
+            ...settings,
+            width: validNumber(settings.width, DEFAULT_SETTINGS.width, 420, 10000),
+            height: validNumber(settings.height, DEFAULT_SETTINGS.height, 220, 10000),
+            left: validNumber(settings.left, DEFAULT_SETTINGS.left, 0, 10000),
+            top: validNumber(settings.top, DEFAULT_SETTINGS.top, 0, 10000),
+            minimized: settings.minimized === true,
             columnWidths: {
                 ...DEFAULT_SETTINGS.columnWidths,
-                ...(saved?.columnWidths || {})
+                ...(settings.columnWidths && typeof settings.columnWidths === "object" ? settings.columnWidths : {})
             }
         };
     }
     function saveSettings() {
-        storageSet(FR_DEBUG_KEYS.settings, state.settings);
+        storageSet(STORAGE.settings, state.settings);
     }
-    function getPageText() {
-        if (!document.body) return "";
-        return document.body.innerText || document.body.textContent || "";
-    }
-    function normalizeRule(value) {
-        return String(value || "")
-            .replace(/\r\n?/g, "\n")
-            .replace(/[ \t]+/g, " ")
-            .trim();
-    }
-    function normalizeUrl(value) {
-        return String(value || "")
-            .trim()
-            .replace(/\/+$/, "")
-            .toLowerCase();
-    }
-    function ruleMatchesPage(rule, pageText, pageUrl) {
-        if (!rule || rule.enabled === false) return false;
-        const urls = Array.isArray(rule.urls)
-            ? rule.urls
-            : rule.url
-              ? [rule.url]
-              : [];
-        if (urls.length) {
-            const currentUrl = normalizeUrl(pageUrl);
-            const urlMatched = urls.some((value) => {
-                const normalized = normalizeUrl(value);
-                return normalized === "*" || currentUrl.includes(normalized);
-            });
-            if (!urlMatched) return false;
+    function loadDatabase() {
+        const saved = storageGet(STORAGE.database, null);
+        if (saved && typeof saved === "object" && Array.isArray(saved.groups)) {
+            state.database = saved;
+            state.imported = true;
+            state.status = `Loaded ${saved.groups.length} saved FoxReplace groups.`;
         }
-        const pattern = String(rule.search ?? rule.find ?? rule.pattern ?? "");
-        if (!pattern) return false;
-        const flags = rule.regex ? "gi" : "gi";
+    }
+    function saveDatabase() {
+        storageSet(STORAGE.database, state.database);
+    }
+    function getGroupName(group, index) {
+        if (typeof group.name === "string" && group.name.trim()) {
+            return group.name.trim();
+        }
+        if (typeof group.title === "string" && group.title.trim()) {
+            return group.title.trim();
+        }
+        return `Group ${index + 1}`;
+    }
+    function ruleText(rule) {
+        return typeof rule.input === "string" ? rule.input : "";
+    }
+    function normalizeImportedRule(sourceRule, groupIndex, ruleIndex) {
+        if (!sourceRule || typeof sourceRule !== "object") {
+            return {
+                original: sourceRule,
+                input: "",
+                output: "",
+                inputType: "text",
+                outputType: "text",
+                caseSensitive: false,
+                enabled: true,
+                valid: false,
+                errors: ["Rule is not a valid object."],
+                sourceGroupIndex: groupIndex,
+                sourceRuleIndex: ruleIndex
+            };
+        }
+        const input = typeof sourceRule.input === "string" ? sourceRule.input : "";
+        const output = typeof sourceRule.output === "string" ? sourceRule.output : "";
+        const inputType = typeof sourceRule.inputType === "string" ? sourceRule.inputType : "text";
+        const outputType = typeof sourceRule.outputType === "string" ? sourceRule.outputType : "text";
+        const errors = [];
+        if (!input.trim()) {
+            errors.push("Search input is empty.");
+        }
+        if (!["text", "regexp", "wholewords"].includes(inputType)) {
+            errors.push(`Unsupported input type: ${inputType}`);
+        }
+        return {
+            original: sourceRule,
+            input,
+            output,
+            inputType,
+            outputType,
+            caseSensitive: sourceRule.caseSensitive === true,
+            enabled: sourceRule.enabled !== false,
+            valid: errors.length === 0,
+            errors,
+            sourceGroupIndex: groupIndex,
+            sourceRuleIndex: ruleIndex
+        };
+    }
+    function normalizeImportedGroup(sourceGroup, groupIndex) {
+        if (!sourceGroup || typeof sourceGroup !== "object" || Array.isArray(sourceGroup)) {
+            throw new Error(`Group ${groupIndex + 1} is not a valid object.`);
+        }
+        if (!Array.isArray(sourceGroup.substitutions)) {
+            throw new Error(`Group ${groupIndex + 1} does not contain a substitutions array.`);
+        }
+        const rules = sourceGroup.substitutions.map((rule, ruleIndex) =>
+            normalizeImportedRule(rule, groupIndex, ruleIndex)
+        );
+        return {
+            original: cloneJSON(sourceGroup),
+            name: getGroupName(sourceGroup, groupIndex),
+            urls: Array.isArray(sourceGroup.urls) ? sourceGroup.urls.slice() : [],
+            enabled: sourceGroup.enabled !== false,
+            // Preserve FoxReplace settings exactly.
+            html: sourceGroup.html ?? "none",
+            mode: sourceGroup.mode ?? "auto&manual",
+            rules,
+            sourceGroupIndex: groupIndex
+        };
+    }
+    function extractRulesFromJSON(parsed) {
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("The JSON root must be an object.");
+        }
+        if (!Array.isArray(parsed.groups)) {
+            throw new Error("This file does not contain a FoxReplace groups array.");
+        }
+        if (parsed.groups.length === 0) {
+            throw new Error("The FoxReplace file contains no groups.");
+        }
+        return {
+            format: "foxreplace",
+            version: parsed.version ?? null,
+            original: cloneJSON(parsed),
+            groups: parsed.groups.map((group, index) => normalizeImportedGroup(group, index))
+        };
+    }
+    function importFoxReplaceJSON(jsonText) {
+        let parsed;
         try {
-            const regex = new RegExp(
-                rule.regex ? pattern : escapeRegExp(pattern),
-                flags
-            );
-            return regex.test(pageText);
-        } catch (_) {
-            return false;
+            parsed = JSON.parse(jsonText);
+        } catch (error) {
+            throw new Error(`Invalid JSON: ${error.message}`);
         }
+        // Build and validate the new database before replacing the old one.
+        const newDatabase = extractRulesFromJSON(parsed);
+        const totalRules = newDatabase.groups.reduce((total, group) => total + group.rules.length, 0);
+        const invalidRules = newDatabase.groups.reduce(
+            (total, group) => total + group.rules.filter((rule) => !rule.valid).length,
+            0
+        );
+        state.database = newDatabase;
+        state.imported = true;
+        state.matchingRules = [];
+        state.groupMatches = [];
+        state.conflicts = [];
+        state.ruleErrors = [];
+        state.collapsedGroups.clear();
+        saveDatabase();
+        storageSet(STORAGE.lastImport, Date.now());
+        state.status =
+            `Imported ${newDatabase.groups.length} groups and ${totalRules} rules. ` +
+            `${invalidRules} invalid rules retained for inspection.`;
+        return {
+            groups: newDatabase.groups.length,
+            rules: totalRules,
+            invalidRules
+        };
+    }
+    const EXCLUDED_TAGS = new Set([
+        "SCRIPT",
+        "STYLE",
+        "NOSCRIPT",
+        "TEMPLATE",
+        "NAV",
+        "HEADER",
+        "FOOTER",
+        "ASIDE",
+        "FORM",
+        "BUTTON",
+        "INPUT",
+        "SELECT",
+        "TEXTAREA",
+        "IFRAME",
+        "OBJECT",
+        "EMBED",
+        "SVG",
+        "CANVAS"
+    ]);
+    const BLOCK_TAGS = new Set([
+        "ADDRESS",
+        "ARTICLE",
+        "BLOCKQUOTE",
+        "DIV",
+        "DL",
+        "DT",
+        "DD",
+        "FIELDSET",
+        "FIGCAPTION",
+        "FIGURE",
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H6",
+        "HR",
+        "LI",
+        "MAIN",
+        "OL",
+        "P",
+        "PRE",
+        "SECTION",
+        "TABLE",
+        "TBODY",
+        "THEAD",
+        "TR",
+        "TD",
+        "TH",
+        "UL"
+    ]);
+    function isExcludedElement(element) {
+        if (!(element instanceof Element)) return false;
+        if (EXCLUDED_TAGS.has(element.tagName)) return true;
+        if (element.id === "fr-debug-panel" || element.id === "fr-scanner-panel") {
+            return true;
+        }
+        if (element.closest("#fr-debug-panel, #fr-scanner-panel, " + "[data-fr-debug], [data-fr-scanner]")) {
+            return true;
+        }
+        if (
+            element.matches(
+                '[hidden], [aria-hidden="true"], ' + '[role="navigation"], [role="banner"], [role="contentinfo"]'
+            )
+        ) {
+            return true;
+        }
+        const classAndId = `${element.id} ${element.className || ""}`.toLowerCase();
+        if (/\b(advertisement|advert|adsbygoogle|cookie-banner|cookie-consent)\b/.test(classAndId)) {
+            return true;
+        }
+        const style = window.getComputedStyle(element);
+        return (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            style.visibility === "collapse" ||
+            style.contentVisibility === "hidden"
+        );
+    }
+    function extractPageText() {
+        if (!document.body) return "";
+        const chunks = [];
+        function walk(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                chunks.push(node.nodeValue || "");
+                return;
+            }
+            if (node.nodeType !== Node.ELEMENT_NODE) return;
+            const element = node;
+            if (isExcludedElement(element)) return;
+            const isBlock = BLOCK_TAGS.has(element.tagName);
+            if (isBlock) chunks.push("\n");
+            for (const child of element.childNodes) {
+                walk(child);
+            }
+            if (isBlock) chunks.push("\n");
+        }
+        walk(document.body);
+        return chunks
+            .join("")
+            .replace(/\u00a0/g, " ")
+            .replace(/[ \t\f\v]+/g, " ")
+            .replace(/ *\n */g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
     }
     function escapeRegExp(value) {
         return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     }
-    function countRuleMatches(rule, pageText) {
-        if (!rule || rule.enabled === false) return 0;
-        const pattern = String(rule.search ?? rule.find ?? rule.pattern ?? "");
-        if (!pattern) return 0;
-        try {
-            const regex = new RegExp(
-                rule.regex ? pattern : escapeRegExp(pattern),
-                "gi"
-            );
-            let count = 0;
-            let match;
-            while ((match = regex.exec(pageText)) !== null) {
-                count++;
-                if (!match[0].length) regex.lastIndex++;
-                if (count >= 10000) break;
-            }
-            return count;
-        } catch (_) {
-            return 0;
+    function compileRuleRegex(rule) {
+        const input = ruleText(rule);
+        if (!input) {
+            throw new Error("Search input is empty.");
         }
-    }
-    function createElement(tag, attributes = {}, text = "") {
-        const element = document.createElement(tag);
-        for (const [key, value] of Object.entries(attributes)) {
-            if (key === "className") {
-                element.className = value;
-            } else if (key === "style" && typeof value === "object") {
-                Object.assign(element.style, value);
-            } else {
-                element.setAttribute(key, value);
-            }
+        let source;
+        let flags;
+        switch (rule.inputType) {
+            case "regexp":
+                // Preserve FoxReplace regular-expression syntax.
+                source = input;
+                flags = rule.caseSensitive ? "g" : "gi";
+                break;
+            case "wholewords":
+                source = `(?<![\\p{L}\\p{N}\\p{M}_])(?:${escapeRegExp(input)})(?![\\p{L}\\p{N}\\p{M}_])`;
+                flags = rule.caseSensitive ? "gu" : "giu";
+                break;
+            case "text":
+                source = escapeRegExp(input);
+                flags = rule.caseSensitive ? "gu" : "giu";
+                break;
+            default:
+                throw new Error(`Unsupported input type: ${rule.inputType}`);
         }
-        if (text !== "") element.textContent = text;
-        return element;
+        return new RegExp(source, flags);
     }
-    function normalizeImportedRule(rule, groupName = "") {
-        if (!rule || typeof rule !== "object") return null;
-        return {
-            ...rule,
-            name: String(
-                rule.name ||
-                    rule.title ||
-                    rule.search ||
-                    rule.find ||
-                    "(unnamed rule)"
-            ),
-            search: String(rule.search ?? rule.find ?? rule.pattern ?? ""),
-            replacement: String(rule.replace ?? rule.replacement ?? ""),
-            group: String(rule.group || groupName || "Ungrouped"),
-            enabled: rule.enabled !== false
-        };
-    }
-    function extractRulesFromJSON(data) {
-        const rules = [];
-        function visit(value, groupName = "") {
-            if (Array.isArray(value)) {
-                for (const item of value) visit(item, groupName);
-                return;
-            }
-            if (!value || typeof value !== "object") return;
-            const isRule =
-                "search" in value || "find" in value || "pattern" in value;
-            if (isRule) {
-                const normalized = normalizeImportedRule(value, groupName);
-                if (normalized) rules.push(normalized);
-                return;
-            }
-            const nextGroup = String(
-                value.name ||
-                    value.title ||
-                    value.group ||
-                    groupName ||
-                    "Ungrouped"
-            );
-            for (const [key, child] of Object.entries(value)) {
-                if (["name", "title", "group"].includes(key)) continue;
-                visit(child, nextGroup);
+    function findRuleMatches(pageText, regex, rule) {
+        const text = String(pageText || "");
+        const matches = [];
+        if (!(regex instanceof RegExp)) {
+            throw new Error("Invalid compiled rule expression.");
+        }
+        regex.lastIndex = 0;
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+            matches.push({
+                index: match.index,
+                length: match[0].length,
+                text: match[0]
+            });
+            if (match[0].length === 0) {
+                // Stop if the empty match occurred at the end of the text.
+                if (regex.lastIndex >= text.length) break;
+                // Advance by one Unicode code point to prevent an infinite loop.
+                const codePoint = text.codePointAt(regex.lastIndex);
+                regex.lastIndex += codePoint > 0xffff ? 2 : 1;
             }
         }
-        visit(data);
-        return rules;
+        regex.lastIndex = 0;
+        return matches;
     }
-    function importFoxReplaceJSON(jsonText) {
-        let data;
-        try {
-            data = JSON.parse(jsonText);
-        } catch (error) {
-            throw new Error(`Invalid JSON: ${error.message}`);
-        }
-        const rules = extractRulesFromJSON(data);
-        if (!rules.length) {
-            throw new Error(
-                "No FoxReplace rules were found in the imported JSON."
-            );
-        }
-        state.database = rules;
-        state.imported = true;
-        storageSet(FR_DEBUG_KEYS.database, state.database);
-        storageSet(FR_DEBUG_KEYS.lastImport, new Date().toISOString());
-        analyzeDebugPage();
-    }
-    function openImportPicker() {
-        const input = createElement("input", {
-            type: "file",
-            accept: ".json,application/json"
+    function matchPageRules(pageText, eligibleGroups) {
+        const matches = [];
+        const errors = [];
+        eligibleGroups.forEach((group, eligibleGroupIndex) => {
+            if (!group || group.enabled === false) return;
+            const groupIndex = Number.isInteger(group.sourceGroupIndex) ? group.sourceGroupIndex : eligibleGroupIndex;
+            const groupName = group.name || `Group ${groupIndex + 1}`;
+            (group.rules || []).forEach((rule, ruleIndex) => {
+                if (!rule || rule.enabled === false) return;
+                const search = ruleText(rule);
+                if (rule.valid === false) {
+                    errors.push({
+                        groupIndex,
+                        ruleIndex,
+                        groupName,
+                        search,
+                        message:
+                            Array.isArray(rule.errors) && rule.errors.length
+                                ? rule.errors.join(" ")
+                                : "Invalid imported rule."
+                    });
+                    return;
+                }
+                try {
+                    const regex = compileRuleRegex(rule);
+                    const ruleMatches = findRuleMatches(pageText, regex, rule);
+                    if (ruleMatches.length) {
+                        matches.push({
+                            groupIndex,
+                            ruleIndex,
+                            groupName,
+                            group,
+                            rule,
+                            search,
+                            replacement: rule.output,
+                            inputType: rule.inputType,
+                            outputType: rule.outputType,
+                            caseSensitive: rule.caseSensitive,
+                            sourceGroupIndex: groupIndex,
+                            sourceRuleIndex: Number.isInteger(rule.sourceRuleIndex) ? rule.sourceRuleIndex : ruleIndex,
+                            matches: ruleMatches,
+                            matchCount: ruleMatches.length
+                        });
+                    }
+                } catch (error) {
+                    errors.push({
+                        groupIndex,
+                        ruleIndex,
+                        groupName,
+                        search,
+                        message: error.message || String(error)
+                    });
+                }
+            });
         });
-        input.style.display = "none";
-        input.addEventListener("change", async () => {
-            const file = input.files?.[0];
-            if (!file) return;
-            try {
-                importFoxReplaceJSON(await file.text());
-            } catch (error) {
-                alert(`FR Debug import failed:\n${error.message}`);
-            } finally {
-                input.remove();
+        return { matches, errors };
+    }
+    function buildGroupMatches(matchedRules) {
+        const groups = new Map();
+        matchedRules.forEach((match) => {
+            const key = match.groupIndex;
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    groupIndex: key,
+                    sourceGroupIndex: match.sourceGroupIndex,
+                    name: match.groupName,
+                    group: match.group,
+                    rules: []
+                });
             }
+            groups.get(key).rules.push(match);
         });
-        document.body.appendChild(input);
-        input.click();
+        return Array.from(groups.values())
+            .sort((a, b) => a.groupIndex - b.groupIndex)
+            .map((group) => ({
+                ...group,
+                rules: group.rules.sort((a, b) => a.ruleIndex - b.ruleIndex)
+            }));
     }
-    function analyzeDebugPage() {
-        const pageText = getPageText();
-        const pageRuleMatches = matchPageRules(pageText, state.database);
-        state.pageText = pageText;
-        state.matchingRules = pageRuleMatches;
-        state.groupMatches = buildGroupMatches(pageRuleMatches);
-        state.conflicts = buildConflictClusters(pageRuleMatches);
-        return {
-            pageText,
-            pageRuleMatches,
-            groupMatches: state.groupMatches,
-            conflicts: state.conflicts
+    function normalizeConflictText(value) {
+        return (
+            String(value || "")
+                .normalize("NFKC")
+                .toLocaleLowerCase()
+                .trim()
+                // Treat common separators as equivalent.
+                .replace(/[\s_\-‐‑‒–—―]+/g, " ")
+                .replace(/\s+/g, " ")
+        );
+    }
+    function rulesConflict(first, second) {
+        const firstCaseSensitive = first.caseSensitive === true;
+        const secondCaseSensitive = second.caseSensitive === true;
+        if (firstCaseSensitive !== secondCaseSensitive) return false;
+        if (first.inputType !== second.inputType) return false;
+        if (first.outputType !== second.outputType) return false;
+        const normalizeSearch = (value) => {
+            const text = String(value || "")
+                .normalize("NFKC")
+                .trim()
+                .replace(/[\s_\-‐‑‒–—―]+/g, " ")
+                .replace(/\s+/g, " ");
+            return firstCaseSensitive ? text : text.toLocaleLowerCase();
         };
+        const firstSearch = normalizeSearch(first.search);
+        const secondSearch = normalizeSearch(second.search);
+        if (!firstSearch || !secondSearch) return false;
+        if (firstSearch !== secondSearch) return false;
+        if (first.replacement === second.replacement) return false;
+        return true;
     }
-    function detectConflicts(rules) {
-        const conflicts = [];
+    function buildConflictClusters(matchedRules) {
+        const rules = matchedRules.slice().sort((a, b) => {
+            if (a.groupIndex !== b.groupIndex) {
+                return a.groupIndex - b.groupIndex;
+            }
+            return a.ruleIndex - b.ruleIndex;
+        });
+        const adjacency = rules.map(() => []);
         for (let i = 0; i < rules.length; i++) {
             for (let j = i + 1; j < rules.length; j++) {
-                const first = rules[i];
-                const second = rules[j];
-                if (
-                    normalizeRule(first.search).toLowerCase() ===
-                    normalizeRule(second.search).toLowerCase()
-                ) {
-                    conflicts.push({
-                        type: "Same search",
-                        first,
-                        second
-                    });
-                    continue;
-                }
-                const firstMatches = state.pageText.includes(first.search);
-                const secondMatches = state.pageText.includes(second.search);
-                if (firstMatches && secondMatches) {
-                    conflicts.push({
-                        type: "Both match page",
-                        first,
-                        second
-                    });
+                if (rulesConflict(rules[i], rules[j])) {
+                    adjacency[i].push(j);
+                    adjacency[j].push(i);
                 }
             }
         }
-        return conflicts;
-    }
-    function renderDebug() {
-        let panel = document.getElementById(FR_DEBUG_UI_ID);
-        if (!panel) {
-            panel = createElement("section", {
-                id: FR_DEBUG_UI_ID
-            });
-            document.body.appendChild(panel);
-        }
-        panel.replaceChildren();
-        const header = createElement(
-            "header",
-            {
-                className: "fr-debug-header"
-            },
-            "FR Debug"
-        );
-        const importButton = createElement("button", {}, "Import JSON");
-        importButton.addEventListener("click", openImportPicker);
-        const refreshButton = createElement("button", {}, "Rescan");
-        refreshButton.addEventListener("click", analyzeDebugPage);
-        header.append(importButton, refreshButton);
-        panel.appendChild(header);
-        panel.appendChild(
-            createElement(
-                "div",
-                { className: "fr-debug-summary" },
-                `Imported rules: ${state.database.length} | Matching rules: ${state.matchingRules.length} | Conflicts: ${state.conflicts.length}`
-            )
-        );
-        const grouped = new Map();
-        for (const rule of state.matchingRules) {
-            if (!grouped.has(rule.group)) grouped.set(rule.group, []);
-            grouped.get(rule.group).push(rule);
-        }
-        const ruleContainer = createElement("div", {
-            className: "fr-debug-rules"
-        });
-        for (const [groupName, rules] of grouped) {
-            ruleContainer.appendChild(
-                createElement(
-                    "div",
-                    { className: "fr-debug-group" },
-                    `${groupName} (${rules.length})`
-                )
-            );
-            for (const rule of rules) {
-                const row = createElement("div", {
-                    className: "fr-debug-rule"
+        const visited = new Set();
+        const clusters = [];
+        for (let start = 0; start < rules.length; start++) {
+            if (visited.has(start) || adjacency[start].length === 0) {
+                continue;
+            }
+            const stack = [start];
+            const componentIndexes = new Set();
+            visited.add(start);
+            while (stack.length) {
+                const current = stack.pop();
+                componentIndexes.add(current);
+                for (const neighbor of adjacency[current]) {
+                    if (!visited.has(neighbor)) {
+                        visited.add(neighbor);
+                        stack.push(neighbor);
+                    }
+                }
+            }
+            const component = Array.from(componentIndexes)
+                .map((index) => rules[index])
+                .sort((a, b) => {
+                    if (a.groupIndex !== b.groupIndex) {
+                        return a.groupIndex - b.groupIndex;
+                    }
+                    return a.ruleIndex - b.ruleIndex;
                 });
-                row.appendChild(createElement("strong", {}, rule.name));
-                row.appendChild(
-                    createElement("div", {}, `Search: ${rule.search}`)
-                );
-                row.appendChild(
-                    createElement("div", {}, `Replacement: ${rule.replacement}`)
-                );
-                row.appendChild(
-                    createElement("div", {}, `Matches: ${rule.matchCount}`)
-                );
-                ruleContainer.appendChild(row);
+            if (component.length > 1) {
+                const firstMember = component[0];
+                const normalizedSearch =
+                    firstMember.caseSensitive === true
+                        ? String(firstMember.search || "")
+                              .normalize("NFKC")
+                              .trim()
+                              .replace(/[\s_\-‐‑‒–—―]+/g, " ")
+                              .replace(/\s+/g, " ")
+                        : normalizeConflictText(firstMember.search);
+                clusters.push({
+                    id: `conflict-${clusters.length + 1}`,
+                    search: firstMember.search,
+                    normalizedSearch,
+                    members: component
+                });
             }
         }
-        panel.appendChild(ruleContainer);
-        const conflictContainer = createElement("details");
-        conflictContainer.appendChild(
-            createElement(
-                "summary",
-                {},
-                `Conflicts (${state.conflicts.length})`
-            )
-        );
-        for (const conflict of state.conflicts) {
-            conflictContainer.appendChild(
-                createElement(
-                    "div",
-                    { className: "fr-debug-conflict" },
-                    `${conflict.type}: ${conflict.first.name} ↔ ${conflict.second.name}`
-                )
-            );
+        return clusters;
+    }
+    function urlPatternMatches(pattern, currentUrl) {
+        const value = String(pattern || "").trim();
+        const url = String(currentUrl || "");
+        // Empty patterns match every page.
+        if (!value) return true;
+        // Support regular-expression patterns written as /pattern/flags.
+        if (value.startsWith("/")) {
+            const lastSlash = value.lastIndexOf("/");
+            if (lastSlash > 0) {
+                const source = value.slice(1, lastSlash);
+                const flags = value.slice(lastSlash + 1);
+                try {
+                    return new RegExp(source, flags).test(url);
+                } catch (error) {
+                    console.warn("[FR Debug] Invalid URL regex:", pattern, error);
+                    return false;
+                }
+            }
         }
-        panel.appendChild(conflictContainer);
+        // Support * as a wildcard.
+        if (value.includes("*")) {
+            const escaped = value
+                .split("*")
+                .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+                .join(".*");
+            try {
+                return new RegExp(escaped, "i").test(url);
+            } catch (error) {
+                console.warn("[FR Debug] Invalid URL pattern:", pattern, error);
+                return false;
+            }
+        }
+        // Ordinary patterns match anywhere in the URL.
+        return url.toLowerCase().includes(value.toLowerCase());
+    }
+    function analyzeDebugPage() {
+        if (!state.imported || !state.database.groups.length) {
+            state.status = "Import a FoxReplace JSON file before analyzing.";
+            renderDebug();
+            return;
+        }
+        try {
+            // 1. Extract visible page text.
+            const pageText = extractPageText();
+            // 2. Find groups whose URL patterns match this page.
+            const eligibleGroups = state.database.groups.filter(
+                (group) =>
+                    group.enabled !== false &&
+                    Array.isArray(group.urls) &&
+                    (group.urls.length === 0 || group.urls.some((pattern) => urlPatternMatches(pattern, location.href)))
+            );
+            // 3. Match rules and collect errors.
+            const result = matchPageRules(pageText, eligibleGroups);
+            const matchedRules = result.matches;
+            const ruleErrors = result.errors;
+            // 4. Build matched groups.
+            const groupMatches = buildGroupMatches(matchedRules);
+            // 5. Build conflicts from matched rules.
+            const conflicts = buildConflictClusters(matchedRules);
+            // 6. Save results.
+            state.pageText = pageText;
+            state.matchingRules = matchedRules;
+            state.groupMatches = groupMatches;
+            state.conflicts = conflicts;
+            state.ruleErrors = ruleErrors;
+            state.lastAnalysis = Date.now();
+            const totalOccurrences = matchedRules.reduce((total, rule) => total + (rule.matchCount || 0), 0);
+            state.status =
+                `Analysis complete: ${matchedRules.length} matched rules, ` +
+                `${totalOccurrences} occurrences, ${groupMatches.length} groups, ` +
+                `${conflicts.length} conflict clusters, ` +
+                `${ruleErrors.length} rule errors.`;
+        } catch (error) {
+            state.status = `Analysis failed: ${error.message}`;
+            console.error("[FR Debug] Analysis failed:", error);
+        }
+        renderDebug();
+    }
+    function openImportPicker() {
+        const picker = document.createElement("input");
+        picker.type = "file";
+        picker.accept = ".json,application/json";
+        picker.style.display = "none";
+        picker.addEventListener("change", async () => {
+            const file = picker.files && picker.files[0];
+            if (!file) {
+                picker.remove();
+                return;
+            }
+            try {
+                const text = await file.text();
+                const result = importFoxReplaceJSON(text);
+                state.status =
+                    `Imported ${result.groups} groups and ${result.rules} rules. ` +
+                    `${result.invalidRules} invalid rules retained.`;
+                // Show the imported database results immediately.
+                analyzeDebugPage();
+            } catch (error) {
+                state.status = `Import failed: ${error.message}`;
+                console.error("[FR Debug] Import failed:", error);
+                renderDebug();
+            } finally {
+                picker.remove();
+            }
+        });
+        document.body.appendChild(picker);
+        picker.click();
+    }
+    function buildCopyText() {
+        const lines = [
+            "FR Debug Analysis",
+            `Page: ${location.href}`,
+            `Analyzed: ${state.lastAnalysis ? new Date(state.lastAnalysis).toLocaleString() : "Not analyzed"}`,
+            "",
+            `Matched rules: ${state.matchingRules.length}`,
+            `Matched groups: ${state.groupMatches.length}`,
+            `Conflict clusters: ${state.conflicts.length}`,
+            `Rule errors: ${state.ruleErrors.length}`,
+            ""
+        ];
+        for (const group of state.groupMatches) {
+            lines.push(`GROUP: ${group.name}`);
+            for (const match of group.rules) {
+                lines.push(`  Search: ${match.search}`);
+                lines.push(`  Replacement: ${match.replacement}`);
+                lines.push(`  Input type: ${match.inputType}`);
+                lines.push(`  Output type: ${match.outputType}`);
+                lines.push(`  Case sensitive: ${match.caseSensitive ? "Yes" : "No"}`);
+                lines.push(`  Matches: ${match.matchCount}`);
+                lines.push(`  Source indexes: group ${match.sourceGroupIndex}, rule ${match.sourceRuleIndex}`);
+                lines.push("");
+            }
+        }
+        if (state.conflicts.length) {
+            lines.push("CONFLICTS");
+            state.conflicts.forEach((cluster, index) => {
+                lines.push(`${index + 1}. ${cluster.search}`);
+                cluster.members.forEach((member) => {
+                    lines.push(`   ${member.groupName} — ${member.search} → ${member.replacement}`);
+                });
+            });
+        }
+        if (state.ruleErrors.length) {
+            lines.push("", "RULE ERRORS");
+            state.ruleErrors.forEach((error) => {
+                lines.push(`${error.groupName}, rule ${error.ruleIndex + 1}: ${error.message}`);
+            });
+        }
+        return lines.join("\n");
+    }
+    async function copyGridText(text) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+            const area = document.createElement("textarea");
+            area.value = text;
+            area.style.position = "fixed";
+            area.style.opacity = "0";
+            document.body.appendChild(area);
+            area.select();
+            const copied = document.execCommand("copy");
+            area.remove();
+            return copied;
+        } catch (error) {
+            console.warn("[FR Debug] Grid copy failed:", error);
+            return false;
+        }
+    }
+    async function copyResults() {
+        const text = buildCopyText();
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                const area = document.createElement("textarea");
+                area.value = text;
+                area.style.position = "fixed";
+                area.style.opacity = "0";
+                document.body.appendChild(area);
+                area.select();
+                const copied = document.execCommand("copy");
+                area.remove();
+                if (!copied) throw new Error("Clipboard copy was not available.");
+            }
+            state.status = "Analysis results copied to clipboard.";
+        } catch (error) {
+            state.status = `Copy failed: ${error.message}`;
+        }
+        renderDebug();
+    }
+    function createElement(tag, className, text) {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        if (text !== undefined) element.textContent = String(text);
+        return element;
+    }
+    function createButton(label, callback, className = "") {
+        const button = createElement("button", className, label);
+        button.type = "button";
+        button.addEventListener("click", callback);
+        return button;
+    }
+    function appendField(parent, label, value) {
+        const wrapper = createElement("div", "frd-field");
+        const heading = createElement("strong", "", label);
+        const content = createElement("div", "frd-value", value);
+        wrapper.append(heading, content);
+        parent.appendChild(wrapper);
     }
     function installDebugStyles() {
         if (document.getElementById("fr-debug-styles")) return;
-        const style = createElement("style", {
-            id: "fr-debug-styles"
-        });
+        const style = document.createElement("style");
+        style.id = "fr-debug-styles";
         style.textContent = `
-            #${FR_DEBUG_UI_ID} {
+            #fr-debug-panel {
                 position: fixed;
-                z-index: 2147483645;
-                top: ${state.settings.top}px;
-                left: ${state.settings.left}px;
-                width: ${state.settings.width}px;
-                height: ${state.settings.height}px;
-                min-width: 360px;
-                min-height: 240px;
+                z-index: 2147483646;
                 display: flex;
                 flex-direction: column;
-                overflow: auto;
-                resize: both;
                 box-sizing: border-box;
-                padding: 12px;
-                border: 1px solid #596579;
+                min-width: 420px;
+                min-height: 220px;
+                max-width: 95vw;
+                max-height: 95vh;
+                width: 900px;
+                height: 600px;
+                background: #202124;
+                color: #e8eaed;
+                border: 1px solid #5f6368;
                 border-radius: 8px;
-                background: #171b24;
-                color: #e6eaf0;
+                box-shadow: 0 8px 30px rgba(0,0,0,.45);
                 font: 13px/1.45 Arial, sans-serif;
-                box-shadow: 0 6px 24px #0008;
+                overflow: hidden;
+                resize: both;
             }
-            #${FR_DEBUG_UI_ID} button {
-                padding: 5px 10px;
-                border: 1px solid #596579;
+            #fr-debug-panel * {
+                box-sizing: border-box;
+            }
+            #fr-debug-panel button {
+                border: 1px solid #5f6368;
                 border-radius: 4px;
-                background: #293244;
-                color: inherit;
+                padding: 6px 10px;
+                background: #303134;
+                color: #f1f3f4;
                 cursor: pointer;
+                font: inherit;
             }
-            #${FR_DEBUG_UI_ID} .fr-debug-header {
+            #fr-debug-panel button:hover {
+                background: #45474a;
+            }
+            #fr-debug-panel button:focus-visible {
+                outline: 2px solid #8ab4f8;
+                outline-offset: 2px;
+            }
+            #fr-debug-panel .frd-header {
                 display: flex;
-                justify-content: space-between;
                 align-items: center;
-                gap: 8px;
-                margin-bottom: 10px;
+                justify-content: space-between;
+                gap: 12px;
+                padding: 10px 12px;
+                background: #292a2d;
+                border-bottom: 1px solid #5f6368;
+                cursor: move;
+                user-select: none;
+            }
+            #fr-debug-panel .frd-title {
+                font-size: 15px;
                 font-weight: bold;
             }
-            #${FR_DEBUG_UI_ID} .fr-debug-summary {
-                padding: 8px;
-                margin-bottom: 8px;
-                background: #222a38;
-                border-radius: 4px;
+            #fr-debug-panel .frd-header-actions {
+                display: flex;
+                gap: 6px;
             }
-            #${FR_DEBUG_UI_ID} .fr-debug-group {
-                margin-top: 8px;
-                padding: 5px;
-                background: #293244;
-                font-weight: bold;
+            #fr-debug-panel .frd-toolbar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 7px;
+                padding: 9px 12px;
+                border-bottom: 1px solid #5f6368;
             }
-            #${FR_DEBUG_UI_ID} .fr-debug-rule,
-            #${FR_DEBUG_UI_ID} .fr-debug-conflict {
-                padding: 7px 8px;
-                border-bottom: 1px solid #343d4e;
+            #fr-debug-panel .frd-status {
+                padding: 8px 12px;
+                color: #bdc1c6;
+                border-bottom: 1px solid #45474a;
                 overflow-wrap: anywhere;
             }
-            #${FR_DEBUG_UI_ID} details {
-                margin-top: 10px;
+            #fr-debug-panel .frd-content {
+                flex: 1;
+                min-height: 0;
+                overflow: auto;
+                padding: 12px;
+            }
+            #fr-debug-panel .frd-tabs {
+                display: flex;
+                gap: 6px;
+                margin-bottom: 12px;
+            }
+            #fr-debug-panel .frd-tab-active {
+                background: #174ea6 !important;
+                border-color: #8ab4f8 !important;
+            }
+            #fr-debug-panel .frd-card {
+                margin-bottom: 12px;
+                padding: 11px;
+                border: 1px solid #5f6368;
+                border-radius: 6px;
+                background: #292a2d;
+            }
+            #fr-debug-panel .frd-card-title {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                margin-bottom: 9px;
+                font-weight: bold;
+                overflow-wrap: anywhere;
+            }
+            #fr-debug-panel .frd-rule {
+                margin-top: 9px;
+                padding: 10px;
+                border-left: 3px solid #8ab4f8;
+                background: #202124;
+                overflow-wrap: anywhere;
+            }
+            #fr-debug-panel .frd-field {
+                margin-top: 6px;
+            }
+            #fr-debug-panel .frd-field strong {
+                display: block;
+                color: #9aa0a6;
+                margin-bottom: 2px;
+            }
+            #fr-debug-panel .frd-value {
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+                user-select: text;
+            }
+            #fr-debug-panel .frd-muted {
+                color: #9aa0a6;
+            }
+            #fr-debug-panel .frd-error {
+                border-left: 3px solid #f28b82;
+                padding: 8px 10px;
+                margin: 7px 0;
+                background: #332626;
+                overflow-wrap: anywhere;
+            }
+            #fr-debug-panel .frd-empty {
+                padding: 18px;
+                text-align: center;
+                color: #9aa0a6;
+                border: 1px dashed #5f6368;
+                border-radius: 6px;
+            }
+            #fr-debug-panel .frd-count {
+                color: #9aa0a6;
+                font-weight: normal;
+            }
+            #fr-debug-panel .frd-url {
+                margin-top: 5px;
+                color: #9aa0a6;
+                overflow-wrap: anywhere;
+            }
+                        /* WNC-style spreadsheet */
+            #fr-debug-panel .frd-grid-toolbar {
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 7px;
+                margin-bottom: 8px;
+            }
+            #fr-debug-panel .frd-grid-search {
+                flex: 1;
+                min-width: 180px;
+                padding: 6px 8px;
+                border: 1px solid #555;
+                border-radius: 3px;
+                background: #181818;
+                color: #eee;
+                font: inherit;
+            }
+            #fr-debug-panel .frd-grid-count {
+                color: #aaa;
+                white-space: nowrap;
+            }
+            #fr-debug-panel .frd-grid-wrap {
+                width: 100%;
+                height: 100%;
+                overflow: auto;
+                border: 1px solid #555;
+                background: #202124;
+            }
+            #fr-debug-panel .frd-spreadsheet {
+                width: max-content;
+                min-width: 100%;
+                border-collapse: collapse;
+                table-layout: fixed;
+                font-size: 12px;
+            }
+            #fr-debug-panel .frd-spreadsheet th,
+            #fr-debug-panel .frd-spreadsheet td {
+                position: relative;
+                padding: 3px 5px;
+                border: 1px solid #484848;
+                text-align: left;
+                vertical-align: middle;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                height: 29px;
+            }
+            #fr-debug-panel .frd-spreadsheet thead th {
+                position: sticky;
+                top: 0;
+                z-index: 5;
+                background: #292929;
+                color: #eee;
+                font-weight: bold;
+                user-select: none;
+            }
+            #fr-debug-panel .frd-spreadsheet thead tr.frd-filter-row th {
+                top: 29px;
+                z-index: 4;
+                padding: 2px;
+                background: #242424;
+            }
+            #fr-debug-panel .frd-spreadsheet th.frd-sortable {
+                cursor: pointer;
+            }
+            #fr-debug-panel .frd-spreadsheet th.frd-sortable:hover {
+                background: #3a3a3a;
+            }
+            #fr-debug-panel .frd-spreadsheet .frd-filter {
+                width: 100%;
+                min-width: 55px;
+                padding: 3px 4px;
+                border: 1px solid #555;
+                border-radius: 2px;
+                background: #181818;
+                color: #eee;
+                font: inherit;
+            }
+            #fr-debug-panel .frd-spreadsheet td input,
+            #fr-debug-panel .frd-spreadsheet td select {
+                width: 100%;
+                min-width: 0;
+                padding: 2px 4px;
+                border: 1px solid #555;
+                background: #181818;
+                color: #eee;
+                font: inherit;
+            }
+            #fr-debug-panel .frd-spreadsheet tbody tr:nth-child(even) {
+                background: #252525;
+            }
+            #fr-debug-panel .frd-spreadsheet tbody tr:hover {
+                background: #343a40;
+            }
+            #fr-debug-panel .frd-spreadsheet tbody tr.frd-selected {
+                background: #263b55;
+                outline: 1px solid #8ab4f8;
+            }
+            #fr-debug-panel .frd-spreadsheet tbody tr.frd-conflict {
+                box-shadow: inset 3px 0 #f6c344;
+            }
+            #fr-debug-panel .frd-spreadsheet tbody tr.frd-error-row {
+                box-shadow: inset 3px 0 #f28b82;
+            }
+            #fr-debug-panel .frd-spreadsheet td.frd-conflict-cell {
+                background: #493d20;
+                color: #ffe09a;
+            }
+            #fr-debug-panel .frd-spreadsheet td.frd-error-cell {
+                background: #482b2b;
+                color: #ffb4ab;
+            }
+            #fr-debug-panel .frd-spreadsheet .frd-row-number {
+                width: 42px;
+                text-align: center;
+                color: #aaa;
+            }
+            #fr-debug-panel .frd-column-resizer {
+                position: absolute;
+                top: 0;
+                right: 0;
+                width: 5px;
+                height: 100%;
+                cursor: col-resize;
+                user-select: none;
+            }
+            #fr-debug-panel .frd-column-resizer:hover {
+                background: #8ab4f8;
+            }
+            #fr-debug-panel .frd-grid-empty {
+                padding: 24px;
+                color: #aaa;
+                text-align: center;
+            }
+            #fr-debug-panel .frd-grid-tabs {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 5px;
+                margin-bottom: 8px;
+            }
+            #fr-debug-panel .frd-grid-tabs button.frd-tab-active {
+                background: #174ea6;
+                border-color: #8ab4f8;
+            }
+            #fr-debug-panel .frd-grid-status {
+                margin-bottom: 7px;
+                color: #aaa;
+                font-size: 11px;
             }
         `;
         document.head.appendChild(style);
     }
-    function enablePanelDragging() {
-        const panel = document.getElementById(FR_DEBUG_UI_ID);
-        const header = panel?.querySelector(".fr-debug-header");
-        if (!panel || !header) return;
-        let dragging = false;
-        let offsetX = 0;
-        let offsetY = 0;
-        header.style.cursor = "move";
-        header.addEventListener("mousedown", (event) => {
-            if (event.target.closest("button")) return;
-            dragging = true;
-            const rect = panel.getBoundingClientRect();
-            offsetX = event.clientX - rect.left;
-            offsetY = event.clientY - rect.top;
-            event.preventDefault();
-        });
-        document.addEventListener("mousemove", (event) => {
-            if (!dragging) return;
-            panel.style.left = `${Math.max(0, event.clientX - offsetX)}px`;
-            panel.style.top = `${Math.max(0, event.clientY - offsetY)}px`;
-        });
-        document.addEventListener("mouseup", () => {
-            if (!dragging) return;
-            dragging = false;
-            state.settings.left = panel.offsetLeft;
-            state.settings.top = panel.offsetTop;
-            state.settings.width = panel.offsetWidth;
-            state.settings.height = panel.offsetHeight;
+    function createDebugPanel() {
+        if (state.panel && state.panel.isConnected) return;
+        installDebugStyles();
+        const panel = createElement("section");
+        panel.id = "fr-debug-panel";
+        panel.style.width = `${state.settings.width}px`;
+        panel.style.height = `${state.settings.height}px`;
+        panel.style.left = `${state.settings.left}px`;
+        panel.style.top = `${state.settings.top}px`;
+        const header = createElement("div", "frd-header");
+        const title = createElement("div", "frd-title", "FR Debug");
+        const headerActions = createElement("div", "frd-header-actions");
+        const minimizeButton = createButton("Minimize", () => {
+            state.settings.minimized = !state.settings.minimized;
             saveSettings();
+            renderDebug();
+        });
+        const closeButton = createButton("Close", closeDebugPanel);
+        headerActions.append(minimizeButton, closeButton);
+        header.append(title, headerActions);
+        const toolbar = createElement("div", "frd-toolbar");
+        const importButton = createButton("Import FoxReplace JSON", openImportPicker);
+        const analyzeButton = createButton("Analyze Page", analyzeDebugPage);
+        const copyButton = createButton("Copy Results", copyResults);
+        toolbar.append(importButton, analyzeButton, copyButton);
+        const status = createElement("div", "frd-status");
+        const content = createElement("div", "frd-content");
+        panel.append(header, toolbar, status, content);
+        document.body.appendChild(panel);
+        state.panel = panel;
+        // Correct saved coordinates if the browser window has changed size.
+        const initialRect = panel.getBoundingClientRect();
+        const initialLeft = Math.max(
+            0,
+            Math.min(window.innerWidth - Math.min(initialRect.width, 80), initialRect.left)
+        );
+        const initialTop = Math.max(
+            0,
+            Math.min(window.innerHeight - Math.min(initialRect.height, 40), initialRect.top)
+        );
+        panel.style.left = `${initialLeft}px`;
+        panel.style.top = `${initialTop}px`;
+        state.settings.left = Math.round(initialLeft);
+        state.settings.top = Math.round(initialTop);
+        saveSettings();
+        let drag = null;
+        header.addEventListener("pointerdown", (event) => {
+            if (event.target.closest("button")) return;
+            if (event.button !== 0) return;
+            const rect = panel.getBoundingClientRect();
+            drag = {
+                pointerX: event.clientX,
+                pointerY: event.clientY,
+                left: rect.left,
+                top: rect.top
+            };
+            header.setPointerCapture(event.pointerId);
+        });
+        header.addEventListener("pointermove", (event) => {
+            if (!drag) return;
+            const rect = panel.getBoundingClientRect();
+            const left = Math.max(
+                0,
+                Math.min(window.innerWidth - Math.min(rect.width, 80), drag.left + event.clientX - drag.pointerX)
+            );
+            const top = Math.max(
+                0,
+                Math.min(window.innerHeight - Math.min(rect.height, 40), drag.top + event.clientY - drag.pointerY)
+            );
+            panel.style.left = `${left}px`;
+            panel.style.top = `${top}px`;
+        });
+        function stopDragging() {
+            if (!drag) return;
+            drag = null;
+            const rect = panel.getBoundingClientRect();
+            state.settings.left = Math.round(rect.left);
+            state.settings.top = Math.round(rect.top);
+            saveSettings();
+        }
+        header.addEventListener("pointerup", stopDragging);
+        header.addEventListener("pointercancel", stopDragging);
+        header.addEventListener("lostpointercapture", stopDragging);
+        // Save dimensions only while expanded.
+        if (typeof ResizeObserver === "function") {
+            const observer = new ResizeObserver(() => {
+                if (!panel.isConnected || state.settings.minimized) return;
+                const rect = panel.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    state.settings.width = Math.round(rect.width);
+                    state.settings.height = Math.round(rect.height);
+                    saveSettings();
+                }
+            });
+            observer.observe(panel);
+        }
+        renderDebug();
+    }
+    function closeDebugPanel() {
+        if (state.panel) {
+            state.panel.remove();
+            state.panel = null;
+        }
+    }
+    function toggleDebugPanel() {
+        if (state.panel && state.panel.isConnected) {
+            closeDebugPanel();
+        } else {
+            createDebugPanel();
+        }
+    }
+    const GRID_COLUMNS = [
+        { key: "group", label: "Group", width: 135 },
+        { key: "search", label: "Search / Find", width: 240 },
+        { key: "replacement", label: "Replacement", width: 240 },
+        { key: "inputType", label: "Input Type", width: 95 },
+        { key: "outputType", label: "Output Type", width: 95 },
+        { key: "caseSensitive", label: "Case", width: 65 },
+        { key: "enabled", label: "Enabled", width: 65 },
+        { key: "matches", label: "Matches", width: 65 },
+        { key: "conflict", label: "Conflict", width: 85 },
+        { key: "source", label: "Source Index", width: 115 },
+        { key: "error", label: "Error", width: 220 }
+    ];
+    function gridRowId(groupIndex, ruleIndex) {
+        return `${groupIndex}:${ruleIndex}`;
+    }
+    function getAllGridRows() {
+        const matches = new Map();
+        const errors = new Map();
+        const conflicts = new Map();
+        state.matchingRules.forEach((match) => {
+            matches.set(gridRowId(match.sourceGroupIndex, match.sourceRuleIndex), match);
+        });
+        state.ruleErrors.forEach((error) => {
+            errors.set(gridRowId(error.groupIndex, error.ruleIndex), error.message);
+        });
+        state.conflicts.forEach((cluster) => {
+            cluster.members.forEach((member) => {
+                const id = gridRowId(member.sourceGroupIndex, member.sourceRuleIndex);
+                conflicts.set(id, cluster.id);
+            });
+        });
+        const rows = [];
+        state.database.groups.forEach((group, groupIndex) => {
+            group.rules.forEach((rule, ruleIndex) => {
+                const id = gridRowId(groupIndex, ruleIndex);
+                const match = matches.get(id);
+                const error = errors.get(id) || (Array.isArray(rule.errors) ? rule.errors.join(" ") : "");
+                rows.push({
+                    id,
+                    groupIndex,
+                    ruleIndex,
+                    group: group.name,
+                    search: rule.input,
+                    replacement: rule.output,
+                    inputType: rule.inputType,
+                    outputType: rule.outputType,
+                    caseSensitive: rule.caseSensitive ? "Yes" : "No",
+                    enabled: rule.enabled !== false && group.enabled !== false ? "Yes" : "No",
+                    matches: match ? match.matchCount : 0,
+                    conflict: conflicts.has(id) ? "Conflict" : "",
+                    conflictId: conflicts.get(id) || "",
+                    source: `G${groupIndex + 1} / R${ruleIndex + 1}`,
+                    error: error || "",
+                    matched: Boolean(match),
+                    valid: rule.valid !== false,
+                    groupObject: group,
+                    ruleObject: rule
+                });
+            });
+        });
+        return rows;
+    }
+    function getVisibleGridRows() {
+        let rows = getAllGridRows();
+        if (state.activeTab === "groups") {
+            rows = rows.filter((row) => row.matched);
+        } else if (state.activeTab === "conflicts") {
+            rows = rows.filter((row) => Boolean(row.conflict));
+        } else if (state.activeTab === "errors") {
+            rows = rows.filter((row) => Boolean(row.error));
+        }
+        const globalSearch = state.gridSearch.trim().toLocaleLowerCase();
+        if (globalSearch) {
+            rows = rows.filter((row) =>
+                GRID_COLUMNS.some((column) =>
+                    String(row[column.key] ?? "")
+                        .toLocaleLowerCase()
+                        .includes(globalSearch)
+                )
+            );
+        }
+        Object.entries(state.gridFilters).forEach(([key, value]) => {
+            const filter = String(value || "")
+                .trim()
+                .toLocaleLowerCase();
+            if (!filter) return;
+            rows = rows.filter((row) =>
+                String(row[key] ?? "")
+                    .toLocaleLowerCase()
+                    .includes(filter)
+            );
+        });
+        const sort = state.gridSort;
+        if (sort && sort.column) {
+            const direction = sort.direction === "desc" ? -1 : 1;
+            rows.sort((a, b) => {
+                const first = a[sort.column];
+                const second = b[sort.column];
+                if (typeof first === "number" && typeof second === "number") {
+                    return (first - second) * direction;
+                }
+                return (
+                    String(first ?? "").localeCompare(String(second ?? ""), undefined, {
+                        numeric: true,
+                        sensitivity: "base"
+                    }) * direction
+                );
+            });
+        }
+        return rows;
+    }
+    function setGridSort(column) {
+        if (state.gridSort.column === column) {
+            state.gridSort.direction = state.gridSort.direction === "asc" ? "desc" : "asc";
+        } else {
+            state.gridSort = {
+                column,
+                direction: "asc"
+            };
+        }
+        renderDebug();
+    }
+    function selectGridRow(row, event) {
+        const id = row.dataset.rowId;
+        const visibleRows = getVisibleGridRows();
+        const clickedIndex = visibleRows.findIndex((item) => item.id === id);
+        if (event.shiftKey && state.lastSelectedRow) {
+            const previousIndex = visibleRows.findIndex((item) => item.id === state.lastSelectedRow);
+            if (!event.ctrlKey && !event.metaKey) {
+                state.selectedRows.clear();
+            }
+            if (previousIndex !== -1 && clickedIndex !== -1) {
+                const start = Math.min(previousIndex, clickedIndex);
+                const end = Math.max(previousIndex, clickedIndex);
+                for (let i = start; i <= end; i++) {
+                    state.selectedRows.add(visibleRows[i].id);
+                }
+            }
+        } else if (event.ctrlKey || event.metaKey) {
+            if (state.selectedRows.has(id)) {
+                state.selectedRows.delete(id);
+            } else {
+                state.selectedRows.add(id);
+            }
+            state.lastSelectedRow = id;
+        } else {
+            state.selectedRows.clear();
+            state.selectedRows.add(id);
+            state.lastSelectedRow = id;
+        }
+        renderDebug();
+    }
+    function addGridColumnResizer(th, column) {
+        const resizer = createElement("span", "frd-column-resizer");
+        resizer.title = "Drag to resize column";
+        resizer.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const startX = event.clientX;
+            const startWidth = th.getBoundingClientRect().width;
+            resizer.setPointerCapture(event.pointerId);
+            function move(moveEvent) {
+                const width = Math.max(55, Math.round(startWidth + moveEvent.clientX - startX));
+                state.settings.columnWidths[column.key] = width;
+                th.style.width = `${width}px`;
+                const table = th.closest("table");
+                const index = Array.from(th.parentElement.children).indexOf(th);
+                table.querySelectorAll("tr").forEach((row) => {
+                    const cell = row.children[index];
+                    if (cell) cell.style.width = `${width}px`;
+                });
+            }
+            function stop() {
+                resizer.removeEventListener("pointermove", move);
+                resizer.removeEventListener("pointerup", stop);
+                resizer.removeEventListener("pointercancel", stop);
+                saveSettings();
+            }
+            resizer.addEventListener("pointermove", move);
+            resizer.addEventListener("pointerup", stop);
+            resizer.addEventListener("pointercancel", stop);
+        });
+        th.appendChild(resizer);
+    }
+    function createGridCell(value, className = "") {
+        const cell = createElement("td", className);
+        cell.textContent = value === undefined || value === null ? "" : String(value);
+        cell.title = cell.textContent;
+        return cell;
+    }
+    function renderSpreadsheet(content) {
+        const allRows = getAllGridRows();
+        const rows = getVisibleGridRows();
+        const tabs = createElement("div", "frd-grid-tabs");
+        const views = [
+            ["all", "All Rules"],
+            ["groups", "Matched Rules"],
+            ["conflicts", `Conflicts (${state.conflicts.length})`],
+            ["errors", `Errors (${state.ruleErrors.length})`]
+        ];
+        views.forEach(([key, label]) => {
+            const button = createButton(label, () => {
+                state.activeTab = key;
+                state.selectedRows.clear();
+                renderDebug();
+            });
+            if (state.activeTab === key) {
+                button.classList.add("frd-tab-active");
+            }
+            tabs.appendChild(button);
+        });
+        content.appendChild(tabs);
+        const toolbar = createElement("div", "frd-grid-toolbar");
+        const search = createElement("input", "frd-grid-search");
+        search.type = "search";
+        search.placeholder = "Search all columns...";
+        search.value = state.gridSearch;
+        search.addEventListener("input", () => {
+            state.gridSearch = search.value;
+            renderDebug();
+        });
+        const count = createElement("span", "frd-grid-count", `${rows.length} of ${allRows.length} rules`);
+        const clear = createButton("Clear Filters", () => {
+            state.gridSearch = "";
+            state.gridFilters = {};
+            renderDebug();
+        });
+        const copySelected = createButton("Copy Selected Rows", () => {
+            const selected = getVisibleGridRows().filter((row) => state.selectedRows.has(row.id));
+            if (!selected.length) {
+                state.status = "Select one or more rows first.";
+                renderDebug();
+                return;
+            }
+            const headings = GRID_COLUMNS.map((column) => column.label);
+            const lines = selected.map((row) =>
+                GRID_COLUMNS.map((column) => String(row[column.key] ?? "").replace(/\t/g, " ")).join("\t")
+            );
+            const text = [headings.join("\t"), ...lines].join("\n");
+            copyGridText(text).then((success) => {
+                state.status = success ? `Copied ${selected.length} selected rows.` : "Could not copy selected rows.";
+                renderDebug();
+            });
+        });
+        toolbar.append(search, count, clear, copySelected);
+        content.appendChild(toolbar);
+        const gridStatus = createElement(
+            "div",
+            "frd-grid-status",
+            "Select rows with click. Use Ctrl-click or Shift-click for multiple rows. Click headers to sort; drag header edges to resize."
+        );
+        content.appendChild(gridStatus);
+        const wrapper = createElement("div", "frd-grid-wrap");
+        const table = createElement("table", "frd-spreadsheet");
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        const numberHeader = createElement("th", "frd-row-number", "#");
+        headerRow.appendChild(numberHeader);
+        GRID_COLUMNS.forEach((column) => {
+            const th = createElement(
+                "th",
+                "frd-sortable",
+                column.label +
+                    (state.gridSort.column === column.key ? (state.gridSort.direction === "asc" ? " ▲" : " ▼") : "")
+            );
+            const width = Number(state.settings.columnWidths[column.key]) || column.width;
+            th.style.width = `${width}px`;
+            th.style.minWidth = `${width}px`;
+            th.addEventListener("click", (event) => {
+                if (event.target.classList.contains("frd-column-resizer")) return;
+                setGridSort(column.key);
+            });
+            addGridColumnResizer(th, column);
+            headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        const filterRow = createElement("tr", "frd-filter-row");
+        filterRow.appendChild(createElement("th", "frd-row-number", ""));
+        GRID_COLUMNS.forEach((column) => {
+            const th = document.createElement("th");
+            const input = createElement("input", "frd-filter");
+            input.type = "search";
+            input.placeholder = "Filter";
+            input.value = state.gridFilters[column.key] || "";
+            input.addEventListener("change", () => {
+                state.gridFilters[column.key] = input.value;
+                renderDebug();
+            });
+            th.appendChild(input);
+            filterRow.appendChild(th);
+        });
+        thead.appendChild(filterRow);
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        rows.forEach((rowData, index) => {
+            const row = document.createElement("tr");
+            row.dataset.rowId = rowData.id;
+            if (state.selectedRows.has(rowData.id)) {
+                row.classList.add("frd-selected");
+            }
+            if (rowData.conflict) row.classList.add("frd-conflict");
+            if (rowData.error) row.classList.add("frd-error-row");
+            row.addEventListener("click", (event) => {
+                selectGridRow(row, event);
+            });
+            const numberCell = createGridCell(index + 1, "frd-row-number");
+            row.appendChild(numberCell);
+            GRID_COLUMNS.forEach((column) => {
+                const value = rowData[column.key];
+                const cell = createGridCell(value);
+                if (column.key === "conflict" && value) {
+                    cell.classList.add("frd-conflict-cell");
+                }
+                if (column.key === "error" && value) {
+                    cell.classList.add("frd-error-cell");
+                }
+                row.appendChild(cell);
+            });
+            tbody.appendChild(row);
+        });
+        if (!rows.length) {
+            const emptyRow = document.createElement("tr");
+            const emptyCell = createElement(
+                "td",
+                "frd-grid-empty",
+                state.imported ? "No rules match this view or filter." : "Import a FoxReplace JSON file to begin."
+            );
+            emptyCell.colSpan = GRID_COLUMNS.length + 1;
+            emptyRow.appendChild(emptyCell);
+            tbody.appendChild(emptyRow);
+        }
+        table.appendChild(tbody);
+        wrapper.appendChild(table);
+        content.appendChild(wrapper);
+    }
+    function renderGroupsTab(content) {
+        if (!state.imported) {
+            content.appendChild(
+                createElement(
+                    "div",
+                    "frd-empty",
+                    "No FoxReplace database imported. Use Import FoxReplace JSON to begin."
+                )
+            );
+            return;
+        }
+        if (!state.groupMatches.length) {
+            content.appendChild(
+                createElement("div", "frd-empty", "No enabled, eligible FoxReplace rules matched this page.")
+            );
+            return;
+        }
+        state.groupMatches.forEach((group) => {
+            const card = createElement("div", "frd-card");
+            const heading = createElement("div", "frd-card-title");
+            const title = createElement("span", "", `${group.name} (${group.rules.length} matched rules)`);
+            const collapsed = state.collapsedGroups.has(group.groupIndex);
+            const toggle = createButton(collapsed ? "Expand" : "Collapse", () => {
+                if (collapsed) {
+                    state.collapsedGroups.delete(group.groupIndex);
+                } else {
+                    state.collapsedGroups.add(group.groupIndex);
+                }
+                renderDebug();
+            });
+            heading.append(title, toggle);
+            card.appendChild(heading);
+            const urls = Array.isArray(group.group.urls) ? group.group.urls : [];
+            if (urls.length) {
+                card.appendChild(createElement("div", "frd-url", `URL patterns: ${urls.join(", ")}`));
+            }
+            if (!collapsed) {
+                group.rules.forEach((match) => {
+                    const ruleBox = createElement("div", "frd-rule");
+                    appendField(ruleBox, "Search / original input", match.search);
+                    appendField(ruleBox, "Replacement / original output", match.replacement);
+                    appendField(ruleBox, "Input type", match.inputType);
+                    appendField(ruleBox, "Output type", match.outputType);
+                    appendField(ruleBox, "Case sensitive", match.caseSensitive ? "Yes" : "No");
+                    appendField(ruleBox, "Match count", match.matchCount);
+                    appendField(
+                        ruleBox,
+                        "Source indexes",
+                        `Group ${match.sourceGroupIndex}, rule ${match.sourceRuleIndex}`
+                    );
+                    card.appendChild(ruleBox);
+                });
+            }
+            content.appendChild(card);
+        });
+    }
+    function renderConflictsTab(content) {
+        if (!state.imported) {
+            content.appendChild(
+                createElement("div", "frd-empty", "Import a FoxReplace JSON file before checking conflicts.")
+            );
+            return;
+        }
+        if (!state.conflicts.length) {
+            content.appendChild(
+                createElement("div", "frd-empty", "No conflicts found among the rules that matched this page.")
+            );
+            return;
+        }
+        state.conflicts.forEach((cluster, index) => {
+            const card = createElement("div", "frd-card");
+            card.appendChild(
+                createElement("div", "frd-card-title", `Conflict ${index + 1} — ${cluster.members.length} rules`)
+            );
+            appendField(card, "Normalized search target", cluster.normalizedSearch);
+            cluster.members.forEach((member) => {
+                const ruleBox = createElement("div", "frd-rule");
+                appendField(ruleBox, "Group", member.groupName);
+                appendField(ruleBox, "Search", member.search);
+                appendField(ruleBox, "Replacement", member.replacement);
+                appendField(ruleBox, "Input type", member.inputType);
+                appendField(ruleBox, "Output type", member.outputType);
+                appendField(ruleBox, "Case sensitive", member.caseSensitive ? "Yes" : "No");
+                appendField(ruleBox, "Match count", member.matchCount);
+                appendField(
+                    ruleBox,
+                    "Source indexes",
+                    `Group ${member.sourceGroupIndex}, rule ${member.sourceRuleIndex}`
+                );
+                card.appendChild(ruleBox);
+            });
+            content.appendChild(card);
+        });
+    }
+    function renderRuleErrors(content) {
+        if (!state.ruleErrors.length) return;
+        const card = createElement("div", "frd-card");
+        card.appendChild(createElement("div", "frd-card-title", `Rule errors (${state.ruleErrors.length})`));
+        state.ruleErrors.forEach((error) => {
+            const item = createElement("div", "frd-error");
+            item.textContent =
+                `${error.groupName}, rule ${error.ruleIndex + 1}: ` + `${error.message} Search: ${error.search}`;
+            card.appendChild(item);
+        });
+        content.appendChild(card);
+    }
+    function renderDebug() {
+        if (!state.panel || !state.panel.isConnected) {
+            createDebugPanel();
+            return;
+        }
+        const panel = state.panel;
+        const status = panel.querySelector(".frd-status");
+        const content = panel.querySelector(".frd-content");
+        const minimizeButton = panel.querySelector(".frd-header-actions button");
+        const toolbar = panel.querySelector(".frd-toolbar");
+        if (status) {
+            status.textContent = state.status;
+        }
+        if (minimizeButton) {
+            minimizeButton.textContent = state.settings.minimized ? "Restore" : "Minimize";
+        }
+        if (state.settings.minimized) {
+            panel.style.height = "auto";
+            panel.style.resize = "none";
+            if (content) content.style.display = "none";
+            if (toolbar) toolbar.style.display = "none";
+            return;
+        }
+        panel.style.width = `${state.settings.width}px`;
+        panel.style.height = `${state.settings.height}px`;
+        panel.style.resize = "both";
+        if (toolbar) toolbar.style.display = "flex";
+        if (!content) return;
+        content.style.display = "flex";
+        content.style.flexDirection = "column";
+        content.replaceChildren();
+        renderSpreadsheet(content);
+    }
+    function registerMenuCommands() {
+        if (typeof GM_registerMenuCommand !== "function") return;
+        GM_registerMenuCommand("FR Debug: Open / Close Panel", toggleDebugPanel);
+        GM_registerMenuCommand("FR Debug: Import FoxReplace JSON", () => {
+            if (!state.panel || !state.panel.isConnected) {
+                createDebugPanel();
+            }
+            openImportPicker();
+        });
+        GM_registerMenuCommand("FR Debug: Analyze Current Page", () => {
+            if (!state.panel || !state.panel.isConnected) {
+                createDebugPanel();
+            }
+            analyzeDebugPage();
         });
     }
     function initializeDebug() {
         loadSettings();
-        state.database = storageGet(FR_DEBUG_KEYS.database, []);
-        state.pageText = getPageText();
+        loadDatabase();
         installDebugStyles();
-        analyzeDebugPage();
-        enablePanelDragging();
-        const panel = document.getElementById(FR_DEBUG_UI_ID);
-        if (panel && typeof ResizeObserver !== "undefined") {
-            new ResizeObserver(() => {
-                state.settings.width = panel.offsetWidth;
-                state.settings.height = panel.offsetHeight;
-                saveSettings();
-            }).observe(panel);
+        registerMenuCommands();
+        createDebugPanel();
+        if (state.imported) {
+            state.status =
+                `Restored ${state.database.groups.length} saved FoxReplace groups. ` +
+                "Run Analyze Page to check the current page.";
+            renderDebug();
         }
     }
     if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", initializeDebug, {
-            once: true
-        });
+        document.addEventListener("DOMContentLoaded", initializeDebug, { once: true });
     } else {
         initializeDebug();
     }
-    function createColumnResizer(table, columnKey) {
-        const handle = createElement("span", {
-            className: "fr-debug-resize-handle"
-        });
-        Object.assign(handle.style, {
-            position: "absolute",
-            top: "0",
-            right: "0",
-            width: "6px",
-            height: "100%",
-            cursor: "col-resize",
-            userSelect: "none"
-        });
-        let startX = 0;
-        let startWidth = 180;
-        handle.addEventListener("mousedown", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            startX = event.clientX;
-            startWidth = state.settings.columnWidths[columnKey] || 180;
-            function move(moveEvent) {
-                const width = Math.max(
-                    60,
-                    startWidth + moveEvent.clientX - startX
-                );
-                state.settings.columnWidths[columnKey] = width;
-                table
-                    .querySelectorAll(`[data-column="${columnKey}"]`)
-                    .forEach((cell) => {
-                        cell.style.width = `${width}px`;
-                        cell.style.minWidth = `${width}px`;
-                        cell.style.maxWidth = `${width}px`;
-                    });
-            }
-            function stop() {
-                document.removeEventListener("mousemove", move);
-                document.removeEventListener("mouseup", stop);
-                saveSettings();
-            }
-            document.addEventListener("mousemove", move);
-            document.addEventListener("mouseup", stop);
-        });
-        return handle;
-    }
-    function renderDebugRuleTable(container) {
-        const table = createElement("table", {
-            className: "fr-debug-table"
-        });
-        const columns = [
-            { key: "group", label: "Group" },
-            { key: "name", label: "Rule" },
-            { key: "search", label: "Search" },
-            { key: "replacement", label: "Replacement" },
-            { key: "matchCount", label: "Matches" }
-        ];
-        const head = createElement("thead");
-        const headerRow = createElement("tr");
-        for (const column of columns) {
-            const cell = createElement("th", {
-                "data-column": column.key
-            });
-            cell.style.position = "relative";
-            cell.textContent = column.label;
-            const width = state.settings.columnWidths[column.key];
-            if (width) {
-                cell.style.width = `${width}px`;
-                cell.style.minWidth = `${width}px`;
-                cell.style.maxWidth = `${width}px`;
-            }
-            cell.appendChild(createColumnResizer(table, column.key));
-            headerRow.appendChild(cell);
-        }
-        head.appendChild(headerRow);
-        table.appendChild(head);
-        const body = createElement("tbody");
-        for (const rule of state.matchingRules) {
-            const row = createElement("tr");
-            const values = {
-                group: rule.group,
-                name: rule.name,
-                search: rule.search,
-                replacement: rule.replacement,
-                matchCount: rule.matchCount
-            };
-            for (const column of columns) {
-                const cell = createElement(
-                    "td",
-                    {
-                        "data-column": column.key
-                    },
-                    String(values[column.key] ?? "")
-                );
-                const width = state.settings.columnWidths[column.key];
-                if (width) {
-                    cell.style.width = `${width}px`;
-                    cell.style.minWidth = `${width}px`;
-                    cell.style.maxWidth = `${width}px`;
-                }
-                row.appendChild(cell);
-            }
-            body.appendChild(row);
-        }
-        table.appendChild(body);
-        container.appendChild(table);
-    }
-    function renderDebugConflicts(container) {
-        const section = createElement("section", {
-            className: "fr-debug-conflicts"
-        });
-        section.appendChild(
-            createElement(
-                "h3",
-                {},
-                `Conflict details (${state.conflicts.length})`
-            )
-        );
-        for (const conflict of state.conflicts) {
-            const row = createElement("div", {
-                className: "fr-debug-conflict"
-            });
-            row.appendChild(createElement("strong", {}, conflict.type));
-            row.appendChild(
-                createElement(
-                    "div",
-                    {},
-                    `${conflict.first.group} / ${conflict.first.name}`
-                )
-            );
-            row.appendChild(
-                createElement("div", {}, `Search: ${conflict.first.search}`)
-            );
-            row.appendChild(
-                createElement(
-                    "div",
-                    {},
-                    `Replacement: ${conflict.first.replacement}`
-                )
-            );
-            row.appendChild(
-                createElement(
-                    "div",
-                    {},
-                    `${conflict.second.group} / ${conflict.second.name}`
-                )
-            );
-            row.appendChild(
-                createElement("div", {}, `Search: ${conflict.second.search}`)
-            );
-            row.appendChild(
-                createElement(
-                    "div",
-                    {},
-                    `Replacement: ${conflict.second.replacement}`
-                )
-            );
-            section.appendChild(row);
-        }
-        container.appendChild(section);
-    }
-    const originalRenderDebug = renderDebug;
-    renderDebug = function () {
-        originalRenderDebug();
-        const panel = document.getElementById(FR_DEBUG_UI_ID);
-        if (!panel) return;
-        const ruleTable = createElement("section", {
-            className: "fr-debug-table-container"
-        });
-        ruleTable.appendChild(createElement("h3", {}, "Matching rules"));
-        renderDebugRuleTable(ruleTable);
-        panel.appendChild(ruleTable);
-        renderDebugConflicts(panel);
-        panel.style.width = `${state.settings.width}px`;
-        panel.style.height = `${state.settings.height}px`;
-        enablePanelDragging();
-    };
-    const debugStyle = createElement("style");
-    debugStyle.textContent = `
-        #${FR_DEBUG_UI_ID} .fr-debug-table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-        }
-        #${FR_DEBUG_UI_ID} .fr-debug-table th,
-        #${FR_DEBUG_UI_ID} .fr-debug-table td {
-            position: relative;
-            padding: 6px;
-            border: 1px solid #343d4e;
-            text-align: left;
-            overflow-wrap: anywhere;
-        }
-        #${FR_DEBUG_UI_ID} .fr-debug-table th {
-            background: #293244;
-        }
-        #${FR_DEBUG_UI_ID} .fr-debug-conflict {
-            margin: 6px 0;
-            padding: 8px;
-            border: 1px solid #596579;
-            border-radius: 4px;
-        }
-    `;
-    const RULE_REGEX_CACHE = new WeakMap();
-    function ruleText(rule) {
-        if (!rule || typeof rule !== "object") return "";
-        const values = [
-            rule.input,
-            rule.regex,
-            rule.pattern,
-            rule.find,
-            rule.search,
-            rule.match,
-            rule.from,
-            rule.text,
-            rule.source
-        ];
-        return String(
-            values.find((item) => typeof item === "string" && item.trim()) || ""
-        ).trim();
-    }
-    function ruleReplacement(rule) {
-        if (!rule || typeof rule !== "object") return "";
-        const values = [rule.replace, rule.replacement, rule.to, rule.value];
-        return String(values.find((item) => typeof item === "string") || "");
-    }
-    function escapeRegExp(value) {
-        return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-    function compileRuleRegex(rule) {
-        if (!rule || typeof rule !== "object") return null;
-        if (RULE_REGEX_CACHE.has(rule)) {
-            return RULE_REGEX_CACHE.get(rule);
-        }
-        const source = ruleText(rule);
-        if (!source) {
-            RULE_REGEX_CACHE.set(rule, null);
-            return null;
-        }
-        let expression = null;
-        if (source.startsWith("/") && source.lastIndexOf("/") > 0) {
-            const lastSlash = source.lastIndexOf("/");
-            const body = source.slice(1, lastSlash);
-            const flags = source.slice(lastSlash + 1);
-            try {
-                expression = new RegExp(
-                    body,
-                    flags.includes("g") ? flags : flags + "g"
-                );
-            } catch {
-                expression = null;
-            }
-        }
-        const regexMode =
-            rule.inputType === "regex" ||
-            rule.regex === true ||
-            rule.isRegex === true;
-        if (!expression && regexMode) {
-            try {
-                expression = new RegExp(source, "g");
-            } catch {
-                expression = null;
-            }
-        }
-        if (!expression) {
-            expression = new RegExp(escapeRegExp(source), "g");
-        }
-        RULE_REGEX_CACHE.set(rule, expression);
-        return expression;
-    }
-    function countRuleMatches(rule, pageText) {
-        if (!rule || typeof pageText !== "string" || !pageText) {
-            return 0;
-        }
-        let compiled;
-        try {
-            compiled = compileRuleRegex(rule);
-        } catch {
-            return 0;
-        }
-        if (!(compiled instanceof RegExp)) return 0;
-        const regex = new RegExp(compiled.source, compiled.flags);
-        regex.lastIndex = 0;
-        let count = 0;
-        let match;
-        while ((match = regex.exec(pageText)) !== null) {
-            count++;
-            if (!match[0].length) {
-                if (regex.lastIndex >= pageText.length) break;
-                const codePoint = pageText.codePointAt(regex.lastIndex);
-                regex.lastIndex += codePoint > 0xffff ? 2 : 1;
-            }
-        }
-        return count;
-    }
-    function getGroupName(group, index) {
-        if (typeof group === "string") return group;
-        if (!group || typeof group !== "object") {
-            return `Group ${index + 1}`;
-        }
-        return String(
-            group.name ?? group.title ?? group.label ?? `Group ${index + 1}`
-        );
-    }
-    function getGroupRules(group) {
-        if (Array.isArray(group?.rules)) return group.rules;
-        if (Array.isArray(group?.items)) return group.items;
-        if (Array.isArray(group?.entries)) return group.entries;
-        return [];
-    }
-    function normalizeAdaptedDatabase(database) {
-        if (Array.isArray(database?.groups)) return database;
-        if (Array.isArray(database)) return { groups: database };
-        return { groups: [] };
-    }
-    function matchPageRules(pageText, database) {
-        const adapted = normalizeAdaptedDatabase(database);
-        const matches = [];
-        adapted.groups.forEach((group, groupIndex) => {
-            if (group?.enabled === false) return;
-            const groupName = getGroupName(group, groupIndex);
-            getGroupRules(group).forEach((rule, ruleIndex) => {
-                if (rule?.enabled === false) return;
-                const count = countRuleMatches(rule, pageText);
-                if (count <= 0) return;
-                matches.push({
-                    rule,
-                    ruleIndex,
-                    group,
-                    groupIndex,
-                    groupName,
-                    text: ruleText(rule),
-                    replacement: ruleReplacement(rule),
-                    count
-                });
-            });
-        });
-        return matches;
-    }
-    document.head.appendChild(debugStyle);
-    /*
-     * FR DEBUG NOTES
-     *
-     * FoxReplace:
-     * - Import FoxReplace JSON.
-     * - Match enabled rules against the current page text and URL.
-     * - Group matching rules by FoxReplace group.
-     * - Show each rule's replacement and match count.
-     * - Detect conflicts between rules that match the current page.
-     *
-     * UI:
-     * - FR Debug owns its UI, CSS, panel, resizing, dragging,
-     *   saved dimensions, column widths, and storage keys.
-     * - Do not depend on FR Scanner or shared runtime code.
-     */
 })();
-/**
- * FR DEBUG — PIPELINE SPECIFICATION
- *
- * PURPOSE
- * Import FoxReplace JSON, match its enabled rules against the current
- * page text, organize matching rules by their original FoxReplace groups,
- * and identify conflicts between matched rules.
- *
- * FR Debug is an independent analysis tool. It is NOT FR Scanner.
- *
- * ================================================================
- * 1. INITIALIZATION AND STORAGE
- * ================================================================
- *
- * - Initialize FR Debug's own settings, database, page text, matching
- *   results, Groups, Conflicts, and UI state.
- * - Install FR Debug's own styles, panel, and menu commands.
- * - Support Import FoxReplace JSON and Analyze Page commands.
- * - Save and restore FR Debug's panel dimensions and column widths.
- * - Use FR Debug's independent storage keys.
- * - NEVER read, overwrite, clear, or modify FR Scanner's storage.
- *
- * ================================================================
- * 2. FOXREPLACE JSON IMPORT
- * ================================================================
- *
- * Functions:
- * openImportPicker()
- * importFoxReplaceJSON()
- * extractRulesFromJSON()
- * normalizeImportedRule()
- *
- * - Let the user select a FoxReplace JSON file.
- * - Parse and validate the JSON and its actual FoxReplace schema.
- * - Extract groups and substitution rules without changing their
- *   original group association or source ordering.
- * - Normalize the fields required for analysis:
- *   search text, replacement text, input type, case sensitivity,
- *   enabled state, source group index, and source rule index.
- * - Preserve original rule text separately from comparison values.
- * - Preserve disabled rules in the imported database, but never
- *   include disabled rules in page matching.
- * - Report malformed JSON, unsupported structures, invalid rules,
- *   and import success or failure.
- * - Never silently convert invalid rules into valid-looking rules.
- * - Preserve source indexes so every result can be traced to its
- *   original FoxReplace group and rule.
- * - Store imported data using FR Debug's independent storage key.
- *
- * ================================================================
- * 3. PAGE TEXT EXTRACTION
- * ================================================================
- *
- * Function:
- * getPageText()
- *
- * - Extract visible text recursively from document.body.
- * - Preserve inline text continuity and meaningful block/line breaks.
- * - Exclude hidden content, scripts, navigation, ads, comments,
- *   and UI belonging to FR Debug or FR Scanner.
- * - Normalize whitespace consistently with FR Scanner.
- * - Extract page text once per analysis.
- * - Use the text ONLY for FoxReplace rule matching.
- *
- * IMPORTANT:
- * Do not run FR Scanner's Candidate/Start occurrence scanner.
- *
- * ================================================================
- * 4. DATABASE NORMALIZATION
- * ================================================================
- *
- * Functions:
- * normalizeAdaptedDatabase()
- * getGroupName()
- * getGroupRules()
- *
- * - Validate imported database and group/rule arrays.
- * - Normalize group and rule access without losing source order.
- * - Safely ignore malformed or unusable records.
- * - Preserve original search and replacement text.
- * - Keep disabled rules as imported data, but exclude them from
- *   all matching and downstream analysis.
- *
- * ================================================================
- * 5. MATCH FOXREPLACE RULES AGAINST THE CURRENT PAGE
- * ================================================================
- *
- * Functions:
- * analyzeDebugPage()
- * matchPageRules()
- * groupMatchesCurrentSite()
- * ruleText()
- * ruleReplacement()
- * compileRuleRegex()
- * countRuleMatches()
- *
- * - Extract the current page text once per analysis.
- * - Process FoxReplace groups in original source order.
- * - Apply the correct current-site eligibility test to each group.
- * - Skip disabled rules and rules without usable search text.
- * - Match each eligible rule according to its actual input type:
- *
- *   REGEX:
- *     Compile and apply the configured regular expression.
- *
- *   TEXT:
- *     Match literal text, not an unintended regular expression.
- *
- *   WHOLE WORD:
- *     Apply the established whole-word boundary semantics.
- *
- * - Apply case sensitivity correctly.
- * - Catch invalid regexes per rule so one bad rule cannot abort
- *   the rest of the analysis.
- * - Count occurrences in the ORIGINAL page text.
- * - Never apply replacements to the live page or to the text
- *   being analyzed.
- * - Advance safely after zero-length regex matches to prevent
- *   infinite loops.
- * - Keep only rules with at least one match on the current page.
- * - Record each matched rule's source group index, rule index,
- *   group name, search text, replacement text, identity, and count.
- *
- * CRITICAL INVARIANT:
- * Only enabled, eligible FoxReplace rules that actually match the
- * current page may enter the Groups or Conflicts pipelines.
- *
- * ================================================================
- * 6. BUILD GROUPS
- * ================================================================
- *
- * Function:
- * buildGroupMatches()
- *
- * - Input: page-matched FoxReplace rule records ONLY.
- * - Group results by their original FoxReplace group identity/index.
- * - Preserve original group ordering and rule ordering.
- * - Include each matched rule's search text, replacement, and count.
- * - Omit groups with no matching rules.
- * - Render each group with its heading, matched-rule count,
- *   and independent collapse/expand control.
- *
- * Groups MUST come from the imported FoxReplace structure.
- * NEVER derive groups from Candidate names, Starts, similar-looking
- * text, or FR Scanner results.
- *
- * ================================================================
- * 7. DETECT CONFLICTS
- * ================================================================
- *
- * Functions:
- * normalizeConflictText()
- * rulesConflict()
- * buildConflictClusters()
- *
- * - Input: the SAME page-matched rule records used by Groups.
- * - Compare rule pairs using the established conflict-target
- *   normalization.
- * - Recognize equivalent normalized targets, including supported
- *   separator variations.
- * - Do not classify substring or token containment alone as a
- *   conflict.
- * - Preserve each rule's replacement text for conflict display.
- * - Build connected clusters from pairwise conflict relationships.
- * - Exclude rules without a conflict partner.
- * - Sort cluster members by original group index and rule index.
- * - Display each cluster's participating rules, group names,
- *   search text, replacement text, and page match counts.
- *
- * CRITICAL INVARIANT:
- * Conflicts are calculated directly from page-matched FoxReplace
- * rules. Candidate and Start records are NEVER conflict inputs.
- *
- * ================================================================
- * 8. USER INTERFACE
- * ================================================================
- *
- * Functions:
- * renderDebug()
- * renderGroupsTab()
- * renderConflictsTab()
- * renderGroupRule()
- *
- * - Display matched rules beneath their original FoxReplace groups.
- * - Show search text, replacement text, and match count.
- * - Provide independent group collapse/expand state.
- * - Display conflict clusters separately from Groups.
- * - Show each conflicting rule's group, replacement, and count.
- * - Provide useful empty states when no rules match or no conflicts
- *   are found.
- * - Keep import, analyze/refresh, copy, and close controls working.
- * - Support independent panel dragging and resizing.
- * - Save and restore panel dimensions and column widths.
- * - Keep FR Debug UI and styles independent of FR Scanner.
- *
- * ================================================================
- * 9. ANALYSIS ENTRY POINT AND ERROR HANDLING
- * ================================================================
- *
- * Function:
- * analyzeDebugPage()
- *
- * Pipeline order:
- *
- *   1. Read current page text.
- *   2. Match enabled FoxReplace rules eligible for the current site.
- *   3. Keep only rules with one or more page matches.
- *   4. Build Groups from those matched rules.
- *   5. Build Conflicts from those same matched rules.
- *   6. Save analysis results using FR Debug's own state/storage.
- *   7. Render the updated Debug UI.
- *
- * - Handle errors without destroying the imported database.
- * - Isolate invalid rules so individual failures do not stop
- *   unrelated rules from being analyzed.
- * - Report useful errors instead of silently hiding failures.
- * - Never modify the page or execute FoxReplace substitutions.
- *
- * ================================================================
- * 10. EXPLICITLY OUT OF SCOPE
- * ================================================================
- *
- * FR Debug MUST NOT implement or depend on:
- *
- * - Candidate detection
- * - Start detection
- * - Prefix/Suffix analysis
- * - Candidate clustering
- * - Candidate regex templates
- * - Candidate filtering
- * - FR Scanner occurrence-scanning pipelines
- *
- * ================================================================
- * FINAL OUTPUT
- * ================================================================
- *
- * FR Debug produces:
- *
- * - The imported FoxReplace database.
- * - Enabled, eligible rules matching the current page.
- * - Grouped rule matches in original FoxReplace group order.
- * - Conflict clusters derived from those matched rules.
- * - Original search text and replacement text.
- * - Source group/rule indexes and page match counts.
- *
- * CORE DESIGN RULE:
- * Import FoxReplace JSON -> Extract page text -> Match rules ->
- * Build Groups -> Build Conflicts -> Render UI.
- *
- * Keep the data flow explicit. Groups and Conflicts must consume
- * page-matched FoxReplace rules, never unrelated scanner results.
- */

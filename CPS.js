@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         Capital Phrase Scanner
 // @namespace    CPS
-// @version      1.2.2
+// @version      1.2.3
 // @description  Scan and count capitalized phrases and generate regex templates.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
-// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/refs/heads/main/CPS
-// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/refs/heads/main/CPS
+// @updateURL    https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/refs/heads/main/CPS.js
+// @downloadURL  https://raw.githubusercontent.com/GoroFourArms/Webnovel-Cleaner/refs/heads/main/CPS.js
 // @run-at       document-idle
 // ==/UserScript==
 (function () {
@@ -150,7 +150,6 @@
         "She",
         "Since",
         "Should",
-        "So",
         "Some",
         "Take",
         "That",
@@ -208,9 +207,9 @@
     ]);
     const TEMPLATES = ["Other", "Korean", "Japanese", "Japanese 2"];
     let tokenMatchFilter = null;
+    let candidateSortMode = "count-desc";
+    let candidateFilterMode = "all";
     let settings = loadSettings();
-    let highlightedElements = [];
-    let highlightedNodeRecords = [];
     let currentCandidates = [];
     let highlightedCandidates = new Set();
     let accumulatedOccurrences = [];
@@ -431,7 +430,7 @@
         }));
     }
     function normalizeTokens(tokens, knownTokens) {
-        return tokens.map((record) => {
+        return tokens.map((record, index) => {
             const normalized = normalizeToken(record.original, knownTokens);
             return {
                 ...record,
@@ -461,21 +460,17 @@
         return /^(?:y'all|let's|ma'am|o'clock)$/i.test(token);
     }
     function filterTokens(tokens) {
-        return tokens.map((record) => {
-            const token = record.normalized;
-            // Check the original spelling so normalization does not hide
-            // contractions such as "he's" by turning them into "he".
+        return tokens.map((record, index) => {
             const contractionMatch = isContraction(record.original);
-            // Preserve existing filter behavior.
-            const wordFilterMatch = tokens.length === 1 && WORD_FILTER.has(record.original);
+            const wordFilterMatch = WORD_FILTER.has(record.original) && tokens[index + 1]?.original === "I";
             const allWordsMatch = All_Words.has(record.original);
             let filterReason = null;
             if (contractionMatch) {
                 filterReason = "CONTRACTION";
-            } else if (wordFilterMatch) {
-                filterReason = "WORD_FILTER";
             } else if (allWordsMatch) {
                 filterReason = "All_Words";
+            } else if (wordFilterMatch) {
+                filterReason = "WORD_FILTER";
             }
             return {
                 ...record,
@@ -491,6 +486,26 @@
         const filtered = filterTokens(normalized);
         const kept = filtered.filter((record) => record.filterDecision === "keep" && record.normalized);
         return kept.map((record) => record.normalized);
+    }
+    function candidateSharesToken(first, second) {
+        if (!first || !second) return false;
+        const firstTokens = new Set(first.normalizedTokens || []);
+        return (second.normalizedTokens || []).some((token) => firstTokens.has(token));
+    }
+    function getSharedTokenCount(first, second) {
+        if (!first || !second) return 0;
+        const firstTokens = new Set(first.normalizedTokens || []);
+        const secondTokens = new Set(second.normalizedTokens || []);
+        let shared = 0;
+        for (const token of secondTokens) {
+            if (firstTokens.has(token)) {
+                shared++;
+            }
+        }
+        return shared;
+    }
+    function areLikelyAliases(first, second) {
+        return getSharedTokenCount(first, second) >= 2;
     }
     function mapOccurrenceToSourceSegments(occurrence, run) {
         const occurrenceStart = occurrence.startPos;
@@ -564,13 +579,13 @@
                     distinctTokens: new Set(tokens),
                     sourceOccurrences: [],
                     occurrences: 0,
-                    firstPos: occ.startPos ?? occ.position ?? 0
+                    firstPos: occ.position ?? occ.startPos ?? 0
                 });
             }
             const candidate = phraseMap.get(identityKey);
             candidate.sourceOccurrences.push(occ);
             candidate.occurrences++;
-            candidate.firstPos = Math.min(candidate.firstPos, occ.startPos ?? occ.position ?? 0);
+            candidate.firstPos = Math.min(candidate.firstPos, occ.position ?? occ.startPos ?? 0);
             if (
                 displayPhrase.includes("-") &&
                 (!candidate.phrase.includes("-") || displayPhrase.localeCompare(candidate.phrase) < 0)
@@ -665,266 +680,62 @@
         }
         return `${boundaryStart}${joinTokens()}${boundaryEnd}`;
     }
-    function withScanObserverPaused(callback) {
-        const wasObserving = !!observer;
-        if (wasObserving) observer.disconnect();
-        try {
-            callback();
-        } finally {
-            if (wasObserving && document.body) {
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true,
-                    characterData: true
-                });
-            }
-        }
-    }
     function clearHighlights() {
-        withScanObserverPaused(() => {
-            for (const record of highlightedNodeRecords) {
-                const { originalNode, replacementNodes, parent } = record;
-                if (!parent || !replacementNodes.length) continue;
-                if (!replacementNodes.every((node) => node.parentNode === parent)) continue;
-                parent.replaceChild(originalNode, replacementNodes[0]);
-                for (const node of replacementNodes.slice(1)) {
-                    node.remove();
-                }
-            }
-            highlightedNodeRecords = [];
-            highlightedElements = [];
-        });
+        if (CSS.highlights) {
+            CSS.highlights.delete("fr-highlight-mark");
+        }
     }
     function applyHighlights() {
-        const traceHighlights = true;
-        const trace = (...args) => {
-            if (traceHighlights) console.debug("[FRScanner Highlight]", ...args);
-        };
         clearHighlights();
-        if (highlightedCandidates.size === 0 || currentCandidates.length === 0) {
-            return;
-        }
+        if (!CSS.highlights || highlightedCandidates.size === 0 || currentCandidates.length === 0) return;
         const root = document.body;
         if (!root) return;
-        const selectedCandidates = currentCandidates.filter((cand) => highlightedCandidates.has(cand.identityKey));
-        trace(
-            "Candidates selected for highlighting",
-            selectedCandidates.map((cand) => ({
-                phrase: cand.phrase,
-                identityKey: cand.identityKey,
-                sourceOccurrenceCount: (cand.sourceOccurrences || []).length
-            }))
+        const ranges = [];
+        const candidates = currentCandidates
+            .filter((cand) => highlightedCandidates.has(cand.identityKey))
+            .map((cand) => settings.edits[cand.identityKey] ?? cand.phrase)
+            .filter(Boolean);
+        if (!candidates.length) return;
+        const patterns = candidates.map(
+            (name) =>
+                new RegExp(
+                    name
+                        .trim()
+                        .split(/\s+/)
+                        .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+                        .join("\\s+"),
+                    "gi"
+                )
         );
-        const textNodes = [];
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
                 const parent = node.parentElement;
-                if (!parent || !node.nodeValue.trim()) {
+                if (
+                    !parent ||
+                    !node.nodeValue.trim() ||
+                    parent.closest("#" + PANEL_ID) ||
+                    parent.closest([...EXCLUDED_TAGS].join(","))
+                ) {
                     return NodeFilter.FILTER_REJECT;
-                }
-                if (parent.closest("#" + PANEL_ID)) {
-                    return NodeFilter.FILTER_REJECT;
-                }
-                if (parent.closest([...EXCLUDED_TAGS].map((tag) => tag.toLowerCase()).join(","))) {
-                    return NodeFilter.FILTER_REJECT;
-                }
-                let current = parent;
-                while (current && current !== root) {
-                    if (current.hidden || current.getAttribute("aria-hidden") === "true") {
-                        return NodeFilter.FILTER_REJECT;
-                    }
-                    const style = getComputedStyle(current);
-                    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
-                        return NodeFilter.FILTER_REJECT;
-                    }
-                    current = current.parentElement;
                 }
                 return NodeFilter.FILTER_ACCEPT;
             }
         });
-        while (walker.nextNode()) {
-            textNodes.push(walker.currentNode);
-        }
-        // Match candidates against combined text runs so names can span
-        // adjacent inline elements.
-        const individualMatchesByNode = new Map();
-        const runs = extractVisibleText(root).segments;
-        for (const cand of selectedCandidates) {
-            const displayName = settings.edits[cand.identityKey] ?? cand.phrase;
-            const regexStr = generateRegex(displayName, settings.template);
-            console.debug("[FRScanner Regex Debug]", {
-                phrase: cand.phrase,
-                identityKey: cand.identityKey,
-                displayName,
-                regexStr,
-                template: settings.template
-            });
-            if (!regexStr) continue;
-            let regex;
-            try {
-                regex = new RegExp(regexStr, "g");
-            } catch (error) {
-                console.warn("[FRScanner Highlight] Invalid candidate regex", {
-                    phrase: cand.phrase,
-                    displayName,
-                    regexStr,
-                    error
-                });
-                continue;
-            }
-            for (const run of runs) {
+        let node;
+        while ((node = walker.nextNode())) {
+            const text = node.nodeValue;
+            for (const regex of patterns) {
                 regex.lastIndex = 0;
                 let match;
-                while ((match = regex.exec(run.text)) !== null) {
-                    if (!match[0]) {
-                        regex.lastIndex++;
-                        continue;
-                    }
-                    if (!individualMatchesByNode.has(run)) {
-                        individualMatchesByNode.set(run, []);
-                    }
-                    individualMatchesByNode.get(run).push({
-                        start: match.index,
-                        end: match.index + match[0].length,
-                        text: match[0],
-                        displayName,
-                        identityKey: cand.identityKey
-                    });
+                while ((match = regex.exec(text)) !== null) {
+                    const range = new Range();
+                    range.setStart(node, match.index);
+                    range.setEnd(node, match.index + match[0].length);
+                    ranges.push(range);
                 }
             }
         }
-        // Resolve overlaps across complete matches BEFORE mapping them to nodes.
-        for (const run of runs) {
-            const matches = individualMatchesByNode.get(run);
-            if (!matches?.length) continue;
-            const seen = new Set();
-            const uniqueMatches = matches.filter((match) => {
-                const key = `${match.start}:${match.end}:${match.text}`;
-                if (seen.has(key)) return false;
-                seen.add(key);
-                return true;
-            });
-            uniqueMatches.sort(
-                (a, b) => a.start - b.start || b.end - a.end || a.displayName.localeCompare(b.displayName)
-            );
-            const accepted = [];
-            let lastEnd = 0;
-            for (const match of uniqueMatches) {
-                if (match.start < lastEnd) {
-                    trace("Match skipped: overlaps an earlier complete match", {
-                        skippedMatch: match,
-                        previousMatchEnd: lastEnd,
-                        sourceText: run.text
-                    });
-                    continue;
-                }
-                accepted.push(match);
-                lastEnd = match.end;
-            }
-            const nodeMatches = new Map();
-            for (const match of accepted) {
-                const mapped = mapOccurrenceToSourceSegments(
-                    {
-                        phrase: match.text,
-                        startPos: match.start,
-                        endPos: match.end,
-                        textSnapshot: run.text
-                    },
-                    run
-                );
-                for (const segment of mapped.sourceSegments) {
-                    if (!nodeMatches.has(segment.sourceNode)) {
-                        nodeMatches.set(segment.sourceNode, []);
-                    }
-                    nodeMatches.get(segment.sourceNode).push({
-                        start: segment.startPos,
-                        end: segment.endPos,
-                        text: segment.text,
-                        displayName: match.displayName,
-                        identityKey: match.identityKey,
-                        completeMatchText: match.text
-                    });
-                }
-            }
-            individualMatchesByNode.set(run, nodeMatches);
-        }
-        withScanObserverPaused(() => {
-            for (const node of textNodes) {
-                const originalText = node.nodeValue;
-                const nodeMatches = [];
-                for (const run of runs) {
-                    const matchesForRun = individualMatchesByNode.get(run);
-                    const matchesForNode = matchesForRun?.get(node);
-                    if (matchesForNode) nodeMatches.push(...matchesForNode);
-                }
-                if (nodeMatches.length === 0) continue;
-                // Reject invalid source ranges before attempting overlap resolution.
-                const validMatches = nodeMatches.filter((match) => {
-                    const valid =
-                        Number.isInteger(match.start) &&
-                        Number.isInteger(match.end) &&
-                        match.start >= 0 &&
-                        match.end > match.start &&
-                        match.end <= originalText.length &&
-                        originalText.slice(match.start, match.end) === match.text;
-                    if (!valid) {
-                        trace("Match skipped: invalid source range", {
-                            match,
-                            sourceText: originalText
-                        });
-                    }
-                    return valid;
-                });
-                // Complete matches have already been deduplicated and overlap-resolved
-                // before being mapped to individual text nodes.
-                const nonOverlapping = validMatches;
-                if (nonOverlapping.length === 0) continue;
-                const fragment = document.createDocumentFragment();
-                let lastIndex = 0;
-                for (const match of nonOverlapping) {
-                    if (match.start > lastIndex) {
-                        fragment.appendChild(document.createTextNode(originalText.slice(lastIndex, match.start)));
-                    }
-                    const span = document.createElement("span");
-                    const comparedText = match.completeMatchText ?? match.text;
-                    span.className =
-                        comparedText !== match.displayName &&
-                        comparedText.toLowerCase() === match.displayName.toLowerCase()
-                            ? "fr-highlight-mark fr-highlight-case-mismatch"
-                            : "fr-highlight-mark";
-                    span.textContent = match.text;
-                    fragment.appendChild(span);
-                    highlightedElements.push(span);
-                    trace("Highlight applied", {
-                        text: match.text,
-                        displayName: match.displayName,
-                        identityKey: match.identityKey,
-                        start: match.start,
-                        end: match.end,
-                        className: span.className,
-                        sourceText: originalText
-                    });
-                    lastIndex = match.end;
-                }
-                if (lastIndex < originalText.length) {
-                    fragment.appendChild(document.createTextNode(originalText.slice(lastIndex)));
-                }
-                if (node.parentNode) {
-                    const parent = node.parentNode;
-                    const replacementNodes = Array.from(fragment.childNodes);
-                    highlightedNodeRecords.push({
-                        originalNode: node,
-                        replacementNodes,
-                        parent
-                    });
-                    parent.replaceChild(fragment, node);
-                }
-            }
-            trace("Highlighting pass complete", {
-                examinedTextNodes: textNodes.length,
-                highlightedElements: highlightedElements.length
-            });
-        });
+        CSS.highlights.set("fr-highlight-mark", new Highlight(...ranges));
     }
     function ensureStyle() {
         if (document.getElementById(STYLE_ID)) return;
@@ -945,10 +756,17 @@
                 border: 1px solid #45484e;
                 border-radius: 6px;
                 box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
-                font: 14px/1 Arial, sans-serif;
+                font:
+                    14px/1 Arial,
+                    sans-serif;
                 color-scheme: dark;
                 overflow: hidden;
                 box-sizing: border-box;
+            }
+            ::highlight(fr-highlight-mark) {
+                background-color: rgba(255, 235, 59, 0.4);
+                text-decoration: underline;
+                text-decoration-color: #ffeb3b;
             }
             #${PANEL_ID} .fr-candidate-editor {
                 width: 180px;
@@ -981,10 +799,12 @@
                 color: #ce9178;
                 border: 1px solid #555;
                 border-radius: 3px;
-                font: 11px ui-monospace, monospace;
+                font:
+                    11px ui-monospace,
+                    monospace;
             }
             #${PANEL_ID}.fr-minimized .fr-regex-preview-row {
-                 display: none;
+                display: none;
             }
             #${PANEL_ID}.fr-minimized {
                 width: max-content;
@@ -1070,7 +890,7 @@
             }
             #${PANEL_ID} tbody tr {
                 height: 30px;
-            }           
+            }
             #${PANEL_ID} tbody td {
                 height: 30px;
                 padding: 3px 6px;
@@ -1146,15 +966,86 @@
         if (!editor || !preview) return;
         preview.value = editor.value.trim() ? generateRegex(editor.value.trim(), settings.template) : "";
     }
+    function buildDiscoveryOrder(inputCandidates) {
+        const remaining = [...inputCandidates].sort((a, b) => b.phraseCount - a.phraseCount);
+        const result = [];
+        const removeCandidate = (candidate) => {
+            const index = remaining.indexOf(candidate);
+            if (index !== -1) remaining.splice(index, 1);
+        };
+        const getAliases = (candidate) =>
+            remaining
+                .filter((other) => areLikelyAliases(candidate, other))
+                .sort((a, b) => {
+                    const sharedDifference = getSharedTokenCount(candidate, b) - getSharedTokenCount(candidate, a);
+                    return sharedDifference || b.phraseCount - a.phraseCount;
+                });
+        while (remaining.length) {
+            // Start with the highest-count remaining candidate.
+            const seed = remaining[0];
+            removeCandidate(seed);
+            result.push(seed);
+            // First: aliases of the seed.
+            const aliases = getAliases(seed);
+            for (const alias of aliases) {
+                removeCandidate(alias);
+                result.push(alias);
+            }
+            // Second: possible family members sharing one meaningful token.
+            const familyMembers = remaining
+                .filter((candidate) => getSharedTokenCount(seed, candidate) === 1)
+                .sort((a, b) => b.phraseCount - a.phraseCount);
+            for (const member of familyMembers) {
+                if (!remaining.includes(member)) continue;
+                removeCandidate(member);
+                result.push(member);
+                // Third: aliases of this family member.
+                const memberAliases = getAliases(member);
+                for (const alias of memberAliases) {
+                    removeCandidate(alias);
+                    result.push(alias);
+                }
+            }
+        }
+        return result;
+    }
     function renderRows() {
         const tbody = document.getElementById("fr-rows");
         if (!tbody) return;
-        const candidates = tokenMatchFilter
-            ? currentCandidates.filter((cand) => candidateSharesToken(tokenMatchFilter, cand))
+        let candidates = tokenMatchFilter
+            ? currentCandidates.filter(
+                  (cand) =>
+                      cand.identityKey === tokenMatchFilter ||
+                      candidateSharesToken(
+                          currentCandidates.find((item) => item.identityKey === tokenMatchFilter),
+                          cand
+                      )
+              )
             : [...currentCandidates];
+        if (candidateFilterMode === "count-2-plus") {
+            candidates = candidates.filter((cand) => cand.phraseCount >= 2);
+        }
+        if (candidateSortMode === "discover-related") {
+            candidates = buildDiscoveryOrder(candidates);
+        } else {
+            candidates.sort((a, b) => {
+                switch (candidateSortMode) {
+                    case "count-asc":
+                        return a.phraseCount - b.phraseCount;
+                    case "name-asc": {
+                        const nameA = settings.edits[a.identityKey] ?? a.phrase;
+                        const nameB = settings.edits[b.identityKey] ?? b.phrase;
+                        return nameA.localeCompare(nameB);
+                    }
+                    case "count-desc":
+                    default:
+                        return b.phraseCount - a.phraseCount;
+                }
+            });
+        }
         tbody.innerHTML = "";
         if (candidates.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
             return;
         }
         candidates.forEach((cand) => {
@@ -1169,24 +1060,27 @@
                 editor.value = settings.edits[cand.identityKey] ?? cand.phrase;
                 updateRegexPreview();
             });
-            // Token-match filter column
-            const tdTokenMatch = document.createElement("td");
-            const btnTokenMatch = document.createElement("button");
-            btnTokenMatch.textContent = "🔗";
-            btnTokenMatch.title = "Show candidates sharing at least one token";
-            btnTokenMatch.addEventListener("click", (e) => {
+            // Match filter column
+            const tdMatch = document.createElement("td");
+            const btnMatch = document.createElement("button");
+            btnMatch.textContent = "🔗";
+            btnMatch.title =
+                tokenMatchFilter === cand.identityKey
+                    ? "Clear token-match filter"
+                    : "Show candidates sharing at least one token";
+            btnMatch.addEventListener("click", (e) => {
                 e.stopPropagation();
-                // Clicking the active filter button restores all candidates.
-                tokenMatchFilter = tokenMatchFilter === cand ? null : cand;
+                tokenMatchFilter = tokenMatchFilter === cand.identityKey ? null : cand.identityKey;
                 renderRows();
             });
-            tdTokenMatch.appendChild(btnTokenMatch);
+            tdMatch.appendChild(btnMatch);
             // Highlight column
             const tdHighlight = document.createElement("td");
             const btnHighlight = document.createElement("button");
             btnHighlight.textContent = highlightedCandidates.has(cand.identityKey) ? "🔆" : "🔍";
             btnHighlight.title = "Toggle Highlight for This Candidate";
-            btnHighlight.addEventListener("click", () => {
+            btnHighlight.addEventListener("click", (e) => {
+                e.stopPropagation();
                 if (highlightedCandidates.has(cand.identityKey)) {
                     highlightedCandidates.delete(cand.identityKey);
                 } else {
@@ -1197,7 +1091,7 @@
                 renderRows();
             });
             tdHighlight.appendChild(btnHighlight);
-            // Name column: plain text, not an editing box
+            // Name column
             const tdName = document.createElement("td");
             tdName.textContent = displayName;
             tdName.title = displayName;
@@ -1205,18 +1099,20 @@
             const tdCounts = document.createElement("td");
             tdCounts.className = "fr-counts";
             tdCounts.textContent = String(cand.phraseCount);
+            // Load into editor column
             const tdAction = document.createElement("td");
             const btnLoad = document.createElement("button");
             btnLoad.textContent = "✎";
             btnLoad.title = "Load Name into Regex Editor";
-            btnLoad.addEventListener("click", () => {
+            btnLoad.addEventListener("click", (e) => {
+                e.stopPropagation();
                 const editor = document.getElementById("fr-candidate-editor");
                 if (!editor) return;
                 editor.value = settings.edits[cand.identityKey] ?? cand.phrase;
                 updateRegexPreview();
             });
             tdAction.appendChild(btnLoad);
-            tr.append(tdTokenMatch, tdHighlight, tdName, tdCounts, tdAction);
+            tr.append(tdMatch, tdHighlight, tdName, tdCounts, tdAction);
             tbody.appendChild(tr);
         });
     }
@@ -1229,6 +1125,8 @@
         if (isScanning) return;
         isScanning = true;
         try {
+            // Restore original text nodes before collecting references.
+            clearHighlights();
             const runs = extractVisibleText(document.body).segments;
             accumulatedOccurrences = [];
             nextOccurrencePos = 0;
@@ -1252,122 +1150,128 @@
     }
     function startScanObserver() {
         if (observer) observer.disconnect();
-        // Coalesce rapid DOM updates into one processing pass.
         let pendingMutations = [];
         let flushScheduled = false;
+        const getBlockRoot = (node) => {
+            let element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+            while (element && element !== document.body && !BLOCK_TAGS.has(element.tagName)) {
+                element = element.parentElement;
+            }
+            return element || document.body;
+        };
+        const collectTextNodes = (node, destination) => {
+            if (!node) return;
+            if (node.nodeType === Node.TEXT_NODE) {
+                destination.add(node);
+                return;
+            }
+            if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
+                return;
+            }
+            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+            let textNode;
+            while ((textNode = walker.nextNode())) {
+                destination.add(textNode);
+            }
+        };
+        const findHighlightRecord = (target) => {
+            for (const record of highlightedNodeRecords) {
+                for (const replacement of record.replacementNodes) {
+                    if (
+                        replacement === target ||
+                        (replacement.nodeType === Node.ELEMENT_NODE && replacement.contains(target))
+                    ) {
+                        return record;
+                    }
+                }
+            }
+            return null;
+        };
         const flushMutations = () => {
             flushScheduled = false;
             if (isScanning || pendingMutations.length === 0) return;
             const mutations = pendingMutations;
             pendingMutations = [];
             const affectedNodes = new Set();
-            const affectedElements = new Set();
-            let structureChanged = false;
-            const addNode = (node) => {
-                if (!node) return;
-                affectedNodes.add(node);
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                    affectedElements.add(node);
-                } else if (node.parentElement) {
-                    affectedElements.add(node.parentElement);
-                }
-            };
+            const roots = new Set();
+            const structuralRoots = new Set();
+            const removedNodes = new Set();
+            let highlightedContentChanged = false;
             for (const mutation of mutations) {
                 const target = mutation.target;
                 const targetElement = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
-                // Ignore scanner UI and our own highlight modifications.
-                if (targetElement?.closest(`#${PANEL_ID}`) || targetElement?.closest(".fr-highlight-mark")) {
+                if (targetElement?.closest(`#${PANEL_ID}`)) {
+                    continue;
+                }
+                // Detect webpage edits inside our highlight wrappers.
+                const highlightRecord = findHighlightRecord(target);
+                if (highlightRecord) {
+                    highlightedContentChanged = true;
+                    affectedNodes.add(highlightRecord.originalNode);
+                    roots.add(getBlockRoot(highlightRecord.originalNode));
+                    continue;
+                }
+                // Ignore scanner-generated highlight mutations.
+                if (targetElement?.closest(".fr-highlight-mark")) {
                     continue;
                 }
                 if (mutation.type === "characterData") {
-                    addNode(target);
+                    affectedNodes.add(target);
+                    roots.add(getBlockRoot(target));
                     continue;
                 }
                 if (mutation.type !== "childList") continue;
-                // Ignore mutations consisting entirely of highlight wrappers.
-                const changedChildren = [...mutation.addedNodes, ...mutation.removedNodes].filter((node) => {
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        return !node.parentElement?.closest(".fr-highlight-mark");
-                    }
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        return !node.matches(".fr-highlight-mark") && !node.closest(".fr-highlight-mark");
-                    }
-                    return false;
-                });
-                if (changedChildren.length === 0) continue;
-                addNode(target);
-                structureChanged = true;
-                for (const node of changedChildren) {
-                    addNode(node);
-                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
-                    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-                    let textNode;
-                    while ((textNode = walker.nextNode())) {
-                        addNode(textNode);
-                    }
+                const root = getBlockRoot(target);
+                roots.add(root);
+                structuralRoots.add(root);
+                affectedNodes.add(target);
+                for (const node of mutation.removedNodes) {
+                    collectTextNodes(node, removedNodes);
+                }
+                for (const node of mutation.addedNodes) {
+                    collectTextNodes(node, affectedNodes);
                 }
             }
-            if (affectedNodes.size === 0) return;
-            // Detached nodes can be checked directly; no full-page live-node scan.
-            const removedNodes = new Set();
-            for (const node of affectedNodes) {
-                if (node.nodeType === Node.TEXT_NODE && !node.isConnected) {
-                    removedNodes.add(node);
-                }
+            if (highlightedContentChanged) {
+                // Restore all wrappers while retaining their current text.
+                // This gives the scanner normal text nodes to reconcile.
+                clearHighlights();
             }
-            if (removedNodes.size > 0) {
+            // Remove occurrences belonging to removed or moved text nodes.
+            if (removedNodes.size) {
                 reconcileOccurrencesForNodes(removedNodes);
                 for (const node of removedNodes) {
-                    processedNodeText.delete(node);
+                    if (!node.isConnected) {
+                        processedNodeText.delete(node);
+                    }
                 }
             }
-            // Extract runs once per batch, not once per individual mutation.
-            const runs = extractVisibleText(document.body).segments;
             let changed = false;
-            for (const run of runs) {
-                const runNodes = run.segments.map((segment) => segment.node);
-                // A removal can affect surviving runs even when they are no
-                // longer related to the detached node.
-                const affected =
-                    (structureChanged && removedNodes.size > 0) ||
-                    run.segments.some((segment) => {
-                        const node = segment.node;
-                        const parent = node.parentElement;
-                        if (affectedNodes.has(node) || affectedNodes.has(parent)) {
-                            return true;
-                        }
-                        for (const element of affectedElements) {
-                            if (
-                                element === node ||
-                                element.contains(node) ||
-                                node.contains?.(element) ||
-                                parent?.contains(element)
-                            ) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    });
-                if (!affected) continue;
-                const isChanged = run.segments.some(
-                    (segment) => processedNodeText.get(segment.node) !== segment.textSnapshot
-                );
-                // A structural change can alter run boundaries even if the
-                // surviving text snapshots themselves are unchanged.
-                if (!isChanged && !(structureChanged && removedNodes.size > 0)) {
-                    continue;
+            // Extract text only from affected blocks.
+            for (const root of roots) {
+                if (!root?.isConnected) continue;
+                const runs = extractVisibleText(root).segments;
+                const structuralChange = structuralRoots.has(root);
+                for (const run of runs) {
+                    const runNodes = run.segments.map((segment) => segment.node);
+                    const affected = structuralChange || runNodes.some((node) => affectedNodes.has(node));
+                    if (!affected) continue;
+                    const isChanged = run.segments.some(
+                        (segment) => processedNodeText.get(segment.node) !== segment.textSnapshot
+                    );
+                    if (!isChanged && !structuralChange) continue;
+                    // Remove stale occurrences before adding replacements.
+                    reconcileOccurrencesForNodes(new Set(runNodes));
+                    for (const occurrence of extractRunOccurrences(run)) {
+                        occurrence.sourceNodes = runNodes;
+                        occurrence.position = nextOccurrencePos++;
+                        accumulatedOccurrences.push(occurrence);
+                    }
+                    for (const segment of run.segments) {
+                        processedNodeText.set(segment.node, segment.textSnapshot);
+                    }
+                    changed = true;
                 }
-                // Remove stale occurrences before inserting replacements.
-                reconcileOccurrencesForNodes(new Set(runNodes));
-                for (const occurrence of extractRunOccurrences(run)) {
-                    occurrence.sourceNodes = runNodes;
-                    occurrence.position = nextOccurrencePos++;
-                    accumulatedOccurrences.push(occurrence);
-                }
-                for (const segment of run.segments) {
-                    processedNodeText.set(segment.node, segment.textSnapshot);
-                }
-                changed = true;
             }
             if (changed) {
                 renderAccumulatedScan();
@@ -1378,7 +1282,6 @@
             pendingMutations.push(...mutations);
             if (flushScheduled) return;
             flushScheduled = true;
-            // Let bursts of page updates settle before processing.
             setTimeout(flushMutations, 50);
         });
         observer.observe(document.body, {
@@ -1411,6 +1314,7 @@
                     </select>
                 </label>
                 <button id="fr-scan" title="Scan the page">🔍</button>
+                <button id="fr-sort-filter" title="Change sorting and filters">Sort/Filter</button>
                 <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
                 <button id="fr-minimize" title="Minimize panel">−</button>
                 <button id="fr-close" title="Close Panel">×</button>
@@ -1427,14 +1331,15 @@
             </div>
             <div class="fr-tablewrap" id="fr-tablewrap">
                 <table id="fr-table">
-                    <thead>
-                        <tr>
-                            <th>Hi</th>
-                            <th>Name</th>
-                            <th>Ct</th>
-                            <th>Ed</th>
-                        </tr>
-                    </thead>
+                   <thead>
+    <tr>
+        <th>Match</th>
+        <th>Hi</th>
+        <th>Name</th>
+        <th>Ct</th>
+        <th>Ed</th>
+    </tr>
+</thead>
                     <tbody id="fr-rows"></tbody>
                 </table>
             </div>
@@ -1448,6 +1353,75 @@
             minimizeButton.title = minimized ? "Restore panel" : "Minimize panel";
         });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
+        panel.querySelector("#fr-sort-filter").addEventListener("click", () => {
+            const existingMenu = document.getElementById("fr-sort-filter-menu");
+            if (existingMenu) {
+                existingMenu.remove();
+                return;
+            }
+            const menu = document.createElement("div");
+            menu.id = "fr-sort-filter-menu";
+            menu.style.cssText = `
+        position: absolute;
+        top: 36px;
+        right: 8px;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 10px;
+        background: #292c32;
+        border: 1px solid #555;
+        border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0,0,0,.4);
+    `;
+            menu.innerHTML = `
+        <strong style="font-size:12px;">Sort</strong>
+        <button type="button" data-action="count-desc">Count: High to Low</button>
+        <button type="button" data-action="count-asc">Count: Low to High</button>
+        <button type="button" data-action="name-asc">Name: A to Z</button>
+        <button type="button" data-action="discover-related">Discover Related Names</button>
+        <hr style="width:100%;border:0;border-top:1px solid #555;">
+        <strong style="font-size:12px;">Filters</strong>
+        <button type="button" data-action="count-2-plus">Count: 2+</button>
+        <button type="button" data-action="show-all">Show All Candidates</button>
+        <button type="button" data-action="reset">Reset Sort/Filter</button>
+    `;
+            panel.appendChild(menu);
+            menu.addEventListener("click", (e) => {
+                const button = e.target.closest("button[data-action]");
+                if (!button) return;
+                switch (button.dataset.action) {
+                    case "count-desc":
+                        candidateSortMode = "count-desc";
+                        break;
+                    case "count-asc":
+                        candidateSortMode = "count-asc";
+                        break;
+                    case "name-asc":
+                        candidateSortMode = "name-asc";
+                        break;
+                    case "discover-related":
+                        candidateSortMode = "discover-related";
+                        break;
+                    case "count-2-plus":
+                        candidateFilterMode = "count-2-plus";
+                        tokenMatchFilter = null;
+                        break;
+                    case "show-all":
+                        tokenMatchFilter = null;
+                        candidateFilterMode = "all";
+                        break;
+                    case "reset":
+                        candidateSortMode = "count-desc";
+                        candidateFilterMode = "all";
+                        tokenMatchFilter = null;
+                        break;
+                }
+                menu.remove();
+                renderRows();
+            });
+        });
         panel.querySelector("#fr-empty").addEventListener("click", () => {
             clearHighlights();
             accumulatedOccurrences = [];
