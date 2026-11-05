@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Capital Phrase Scanner
 // @namespace    CPS
-// @version      1.2.3
+// @version      1.2.4
 // @description  Scan and count capitalized phrases and generate regex templates.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -38,7 +38,6 @@
         "ADDRESS",
         "ARTICLE",
         "BLOCKQUOTE",
-        "BR",
         "DD",
         "DIV",
         "DL",
@@ -122,8 +121,6 @@
         "However",
         "If",
         "In",
-        "I'll",
-        "I'm",
         "Into",
         "Involving",
         "Is",
@@ -186,7 +183,6 @@
         "Would",
         "Yes",
         "Yet",
-        "You",
         "Your"
     ]);
     const ABBREVIATIONS = new Set([
@@ -222,15 +218,13 @@
             x: 20,
             y: 20,
             template: "Other",
-            edits: {},
-            highlightedAll: false
+            edits: {}
         };
         try {
             const saved = GM_getValue(STORE_KEY, {});
             return {
                 ...defaults,
                 ...saved,
-                highlightedAll: false,
                 edits: { ...(saved.edits || {}) }
             };
         } catch (_) {
@@ -284,15 +278,6 @@
                 return;
             }
             if (isExcluded(node) || node.matches(NON_CHAPTER_SELECTOR) || node.closest("#" + PANEL_ID)) {
-                console.debug("[FRScanner] Excluded element:", {
-                    tag: node.tagName,
-                    className: typeof node.className === "string" ? node.className : "",
-                    id: node.id,
-                    text: (node.innerText || node.textContent || "").trim().slice(0, 200),
-                    excluded: isExcluded(node),
-                    matchesNonChapter: node.matches(NON_CHAPTER_SELECTOR),
-                    selector: NON_CHAPTER_SELECTOR
-                });
                 finishRun();
                 return;
             }
@@ -327,30 +312,22 @@
             .trim()
             .replace(/[’‘]/g, "'")
             .replace(/\.+$/, "");
-        // Preserve plural possessive endings until plural normalization.
         if (/s'$/i.test(token)) {
             token = token.slice(0, -1);
         }
-        // Remove possessive endings.
         token = token.replace(/'s$/i, "").replace(/'$/, "");
-        // Normalize regular plurals only when the singular is known.
         if (token.length > 2) {
-            // foxes -> fox; churches -> church; boxes -> box
             if (/(?:ches|shes|xes|zes|sses)$/i.test(token)) {
                 const singular = token.slice(0, -2);
                 if (knownTokens.has(singular.toLowerCase())) {
                     token = singular;
                 }
-            }
-            // ladies -> lady; stories -> story
-            else if (/ies$/i.test(token)) {
+            } else if (/ies$/i.test(token)) {
                 const singular = token.slice(0, -3) + "y";
                 if (knownTokens.has(singular.toLowerCase())) {
                     token = singular;
                 }
-            }
-            // boys -> boy; dogs -> dog
-            else if (/s$/i.test(token) && !/ss$/i.test(token)) {
+            } else if (/s$/i.test(token) && !/ss$/i.test(token)) {
                 const singular = token.slice(0, -1);
                 if (knownTokens.has(singular.toLowerCase())) {
                     token = singular;
@@ -364,8 +341,6 @@
         for (const occ of occurrences) {
             for (const rawToken of String(occ.phrase || "").split(/\s+/)) {
                 let token = rawToken.trim().replace(/[’‘]/g, "'").replace(/\.+$/, "");
-                // Remove singular possessive endings, but preserve the s
-                // in plural possessives such as "dogs'".
                 token = token.replace(/'s$/i, "").replace(/'$/, "");
                 if (token) {
                     knownTokens.add(token.toLowerCase());
@@ -425,12 +400,11 @@
             original,
             normalized: null,
             filterDecision: null,
-            filterReason: null,
-            identity: null
+            filterReason: null
         }));
     }
     function normalizeTokens(tokens, knownTokens) {
-        return tokens.map((record, index) => {
+        return tokens.map((record) => {
             const normalized = normalizeToken(record.original, knownTokens);
             return {
                 ...record,
@@ -442,13 +416,9 @@
         const token = String(tokenStr || "")
             .trim()
             .replace(/[’‘]/g, "'");
-        // Common contractions that must be removed as whole tokens.
         if (/^[a-z]+(?:n't|'m|'re|'ve|'ll|'d)$/i.test(token)) {
             return true;
         }
-        // Common contractions ending in 's.
-        // Do not classify every word ending in 's as a contraction,
-        // because names such as "Fred's" must survive possessive normalization.
         if (
             /^(?:he|she|it|that|there|here|what|who|where|when|why|how|let|everyone|everybody|someone|somebody|anyone|anybody|no one|one|whoever|whatever|whichever|nobody|nothing|something|anything|everything)'s$/i.test(
                 token
@@ -456,13 +426,14 @@
         ) {
             return true;
         }
-        // Other common fixed contractions.
         return /^(?:y'all|let's|ma'am|o'clock)$/i.test(token);
     }
     function filterTokens(tokens) {
         return tokens.map((record, index) => {
             const contractionMatch = isContraction(record.original);
-            const wordFilterMatch = WORD_FILTER.has(record.original) && tokens[index + 1]?.original === "I";
+            const wordFilterMatch =
+                WORD_FILTER.has(record.original) &&
+                (index === tokens.length - 1 || tokens[index + 1]?.original === "I");
             const allWordsMatch = All_Words.has(record.original);
             let filterReason = null;
             if (contractionMatch) {
@@ -572,19 +543,15 @@
             const identityKey = normalizeNameIdentity(displayPhrase);
             if (!phraseMap.has(identityKey)) {
                 phraseMap.set(identityKey, {
-                    identity: identityKey,
                     identityKey,
                     phrase: displayPhrase,
                     normalizedTokens: tokens,
-                    distinctTokens: new Set(tokens),
                     sourceOccurrences: [],
-                    occurrences: 0,
                     firstPos: occ.position ?? occ.startPos ?? 0
                 });
             }
             const candidate = phraseMap.get(identityKey);
             candidate.sourceOccurrences.push(occ);
-            candidate.occurrences++;
             candidate.firstPos = Math.min(candidate.firstPos, occ.position ?? occ.startPos ?? 0);
             if (
                 displayPhrase.includes("-") &&
@@ -600,13 +567,7 @@
     function calculateCandidateCounts(candidates) {
         for (const cand of candidates) {
             const phraseCount = cand.sourceOccurrences.length;
-            cand.occurrences = phraseCount;
             cand.phraseCount = phraseCount;
-            // Keep the existing sorting/filtering interface,
-            // but make its score the phrase count.
-            cand.maxTokenCount = phraseCount;
-            cand.sortedTokenCounts = [phraseCount];
-            cand.tokenCountsStr = String(phraseCount);
         }
         return candidates;
     }
@@ -814,7 +775,6 @@
             #${PANEL_ID}.fr-minimized #fr-template,
             #${PANEL_ID}.fr-minimized #fr-scan,
             #${PANEL_ID}.fr-minimized #fr-empty,
-            #${PANEL_ID}.fr-minimized #fr-highlight,
             #${PANEL_ID}.fr-minimized #fr-tablewrap {
                 display: none;
             }
@@ -834,11 +794,6 @@
                 min-height: 34px;
                 overflow: visible;
                 white-space: nowrap;
-            }
-            #${PANEL_ID} .fr-title {
-                font-weight: bold;
-                color: #e8eaf0;
-                margin-right: 4px;
             }
             #${PANEL_ID} button,
             #${PANEL_ID} select {
@@ -908,18 +863,6 @@
                 line-height: 1;
                 vertical-align: middle;
             }
-            #${PANEL_ID} td input {
-                display: block;
-                field-sizing: content;
-                min-width: 200px;
-                max-width: 300px;
-                background: #101216;
-                color: #fff;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 3px 5px;
-                font: inherit;
-            }
             #${PANEL_ID} th,
             #${PANEL_ID} td {
                 width: fit-content;
@@ -935,14 +878,6 @@
                 overflow: hidden;
                 text-overflow: ellipsis;
                 max-width: 600px;
-            }
-            .fr-highlight-mark {
-                background-color: rgba(255, 235, 59, 0.35) !important;
-                border-bottom: 1px dashed #ffeb3b !important;
-            }
-            .fr-highlight-case-mismatch {
-                background-color: rgba(255, 152, 0, 0.4) !important;
-                border-bottom: 1px dashed #ff9800 !important;
             }
         `;
         document.head.appendChild(style);
@@ -981,17 +916,14 @@
                     return sharedDifference || b.phraseCount - a.phraseCount;
                 });
         while (remaining.length) {
-            // Start with the highest-count remaining candidate.
             const seed = remaining[0];
             removeCandidate(seed);
             result.push(seed);
-            // First: aliases of the seed.
             const aliases = getAliases(seed);
             for (const alias of aliases) {
                 removeCandidate(alias);
                 result.push(alias);
             }
-            // Second: possible family members sharing one meaningful token.
             const familyMembers = remaining
                 .filter((candidate) => getSharedTokenCount(seed, candidate) === 1)
                 .sort((a, b) => b.phraseCount - a.phraseCount);
@@ -999,7 +931,6 @@
                 if (!remaining.includes(member)) continue;
                 removeCandidate(member);
                 result.push(member);
-                // Third: aliases of this family member.
                 const memberAliases = getAliases(member);
                 for (const alias of memberAliases) {
                     removeCandidate(alias);
@@ -1023,20 +954,13 @@
               )
             : [...currentCandidates];
         if (candidateFilterMode === "count-2-plus") {
-            candidates = candidates.filter((cand) => cand.phraseCount >= 2);
+            candidates = candidates.filter((cand) => cand.normalizedTokens.length >= 2);
         }
         if (candidateSortMode === "discover-related") {
             candidates = buildDiscoveryOrder(candidates);
         } else {
             candidates.sort((a, b) => {
                 switch (candidateSortMode) {
-                    case "count-asc":
-                        return a.phraseCount - b.phraseCount;
-                    case "name-asc": {
-                        const nameA = settings.edits[a.identityKey] ?? a.phrase;
-                        const nameB = settings.edits[b.identityKey] ?? b.phrase;
-                        return nameA.localeCompare(nameB);
-                    }
                     case "count-desc":
                     default:
                         return b.phraseCount - a.phraseCount;
@@ -1060,7 +984,6 @@
                 editor.value = settings.edits[cand.identityKey] ?? cand.phrase;
                 updateRegexPreview();
             });
-            // Match filter column
             const tdMatch = document.createElement("td");
             const btnMatch = document.createElement("button");
             btnMatch.textContent = "🔗";
@@ -1074,7 +997,6 @@
                 renderRows();
             });
             tdMatch.appendChild(btnMatch);
-            // Highlight column
             const tdHighlight = document.createElement("td");
             const btnHighlight = document.createElement("button");
             btnHighlight.textContent = highlightedCandidates.has(cand.identityKey) ? "🔆" : "🔍";
@@ -1086,20 +1008,16 @@
                 } else {
                     highlightedCandidates.add(cand.identityKey);
                 }
-                saveSettings();
                 applyHighlights();
                 renderRows();
             });
             tdHighlight.appendChild(btnHighlight);
-            // Name column
             const tdName = document.createElement("td");
             tdName.textContent = displayName;
             tdName.title = displayName;
-            // Count column
             const tdCounts = document.createElement("td");
             tdCounts.className = "fr-counts";
             tdCounts.textContent = String(cand.phraseCount);
-            // Load into editor column
             const tdAction = document.createElement("td");
             const btnLoad = document.createElement("button");
             btnLoad.textContent = "✎";
@@ -1123,9 +1041,9 @@
     }
     function runScan() {
         if (isScanning) return;
+        if (observer) observer.disconnect();
         isScanning = true;
         try {
-            // Restore original text nodes before collecting references.
             clearHighlights();
             const runs = extractVisibleText(document.body).segments;
             accumulatedOccurrences = [];
@@ -1143,138 +1061,52 @@
                 }
             }
             renderAccumulatedScan();
-            startScanObserver();
         } finally {
             isScanning = false;
+            startScanObserver();
         }
     }
     function startScanObserver() {
         if (observer) observer.disconnect();
         let pendingMutations = [];
         let flushScheduled = false;
-        const getBlockRoot = (node) => {
-            let element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-            while (element && element !== document.body && !BLOCK_TAGS.has(element.tagName)) {
-                element = element.parentElement;
-            }
-            return element || document.body;
-        };
-        const collectTextNodes = (node, destination) => {
-            if (!node) return;
-            if (node.nodeType === Node.TEXT_NODE) {
-                destination.add(node);
-                return;
-            }
-            if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
-                return;
-            }
-            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-            let textNode;
-            while ((textNode = walker.nextNode())) {
-                destination.add(textNode);
-            }
-        };
-        const findHighlightRecord = (target) => {
-            for (const record of highlightedNodeRecords) {
-                for (const replacement of record.replacementNodes) {
-                    if (
-                        replacement === target ||
-                        (replacement.nodeType === Node.ELEMENT_NODE && replacement.contains(target))
-                    ) {
-                        return record;
-                    }
-                }
-            }
-            return null;
-        };
         const flushMutations = () => {
             flushScheduled = false;
             if (isScanning || pendingMutations.length === 0) return;
             const mutations = pendingMutations;
             pendingMutations = [];
-            const affectedNodes = new Set();
-            const roots = new Set();
-            const structuralRoots = new Set();
-            const removedNodes = new Set();
-            let highlightedContentChanged = false;
+            let needsRescan = false;
             for (const mutation of mutations) {
                 const target = mutation.target;
                 const targetElement = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
-                if (targetElement?.closest(`#${PANEL_ID}`)) {
-                    continue;
-                }
-                // Detect webpage edits inside our highlight wrappers.
-                const highlightRecord = findHighlightRecord(target);
-                if (highlightRecord) {
-                    highlightedContentChanged = true;
-                    affectedNodes.add(highlightRecord.originalNode);
-                    roots.add(getBlockRoot(highlightRecord.originalNode));
-                    continue;
-                }
-                // Ignore scanner-generated highlight mutations.
-                if (targetElement?.closest(".fr-highlight-mark")) {
+                if (targetElement?.closest(`#${PANEL_ID}`)) continue;
+                if (targetElement?.closest(".fr-highlight-mark")) continue;
+                if (targetElement && (isExcluded(targetElement) || targetElement.closest(NON_CHAPTER_SELECTOR))) {
                     continue;
                 }
                 if (mutation.type === "characterData") {
-                    affectedNodes.add(target);
-                    roots.add(getBlockRoot(target));
-                    continue;
+                    needsRescan = true;
+                    break;
                 }
-                if (mutation.type !== "childList") continue;
-                const root = getBlockRoot(target);
-                roots.add(root);
-                structuralRoots.add(root);
-                affectedNodes.add(target);
-                for (const node of mutation.removedNodes) {
-                    collectTextNodes(node, removedNodes);
-                }
-                for (const node of mutation.addedNodes) {
-                    collectTextNodes(node, affectedNodes);
-                }
-            }
-            if (highlightedContentChanged) {
-                // Restore all wrappers while retaining their current text.
-                // This gives the scanner normal text nodes to reconcile.
-                clearHighlights();
-            }
-            // Remove occurrences belonging to removed or moved text nodes.
-            if (removedNodes.size) {
-                reconcileOccurrencesForNodes(removedNodes);
-                for (const node of removedNodes) {
-                    if (!node.isConnected) {
-                        processedNodeText.delete(node);
+                if (mutation.type === "childList") {
+                    const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+                    for (const node of changedNodes) {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.matches(`#${PANEL_ID}, ${NON_CHAPTER_SELECTOR}`)) {
+                                continue;
+                            }
+                            if (isExcluded(node)) continue;
+                        }
+                        if (node.textContent?.trim()) {
+                            needsRescan = true;
+                            break;
+                        }
                     }
+                    if (needsRescan) break;
                 }
             }
-            let changed = false;
-            // Extract text only from affected blocks.
-            for (const root of roots) {
-                if (!root?.isConnected) continue;
-                const runs = extractVisibleText(root).segments;
-                const structuralChange = structuralRoots.has(root);
-                for (const run of runs) {
-                    const runNodes = run.segments.map((segment) => segment.node);
-                    const affected = structuralChange || runNodes.some((node) => affectedNodes.has(node));
-                    if (!affected) continue;
-                    const isChanged = run.segments.some(
-                        (segment) => processedNodeText.get(segment.node) !== segment.textSnapshot
-                    );
-                    if (!isChanged && !structuralChange) continue;
-                    // Remove stale occurrences before adding replacements.
-                    reconcileOccurrencesForNodes(new Set(runNodes));
-                    for (const occurrence of extractRunOccurrences(run)) {
-                        occurrence.sourceNodes = runNodes;
-                        occurrence.position = nextOccurrencePos++;
-                        accumulatedOccurrences.push(occurrence);
-                    }
-                    for (const segment of run.segments) {
-                        processedNodeText.set(segment.node, segment.textSnapshot);
-                    }
-                    changed = true;
-                }
-            }
-            if (changed) {
-                renderAccumulatedScan();
+            if (needsRescan) {
+                runScan();
             }
         };
         observer = new MutationObserver((mutations) => {
@@ -1314,7 +1146,8 @@
                     </select>
                 </label>
                 <button id="fr-scan" title="Scan the page">🔍</button>
-                <button id="fr-sort-filter" title="Change sorting and filters">Sort/Filter</button>
+                <button id="fr-sort" title="Change sorting">Sort</button>
+                <button id="fr-filter" title="Change candidate filters">Filter</button>
                 <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
                 <button id="fr-minimize" title="Minimize panel">−</button>
                 <button id="fr-close" title="Close Panel">×</button>
@@ -1332,35 +1165,35 @@
             <div class="fr-tablewrap" id="fr-tablewrap">
                 <table id="fr-table">
                    <thead>
-    <tr>
-        <th>Match</th>
-        <th>Hi</th>
-        <th>Name</th>
-        <th>Ct</th>
-        <th>Ed</th>
-    </tr>
-</thead>
+                     <tr>
+                       <th>Match</th>
+                       <th>Hi</th>
+                       <th>Name</th>
+                       <th>Ct</th>
+                          <th>Ed</th>
+                     </tr>
+                    </thead>
                     <tbody id="fr-rows"></tbody>
                 </table>
             </div>
         `;
         document.body.appendChild(panel);
         const minimizeButton = panel.querySelector("#fr-minimize");
-        const tableWrap = panel.querySelector("#fr-tablewrap");
         minimizeButton.addEventListener("click", () => {
             const minimized = panel.classList.toggle("fr-minimized");
             minimizeButton.textContent = minimized ? "▢" : "—";
             minimizeButton.title = minimized ? "Restore panel" : "Minimize panel";
         });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
-        panel.querySelector("#fr-sort-filter").addEventListener("click", () => {
-            const existingMenu = document.getElementById("fr-sort-filter-menu");
+        panel.querySelector("#fr-sort").addEventListener("click", () => {
+            const existingMenu = document.getElementById("fr-sort-menu");
             if (existingMenu) {
                 existingMenu.remove();
                 return;
             }
+            document.getElementById("fr-filter-menu")?.remove();
             const menu = document.createElement("div");
-            menu.id = "fr-sort-filter-menu";
+            menu.id = "fr-sort-menu";
             menu.style.cssText = `
         position: absolute;
         top: 36px;
@@ -1378,42 +1211,55 @@
             menu.innerHTML = `
         <strong style="font-size:12px;">Sort</strong>
         <button type="button" data-action="count-desc">Count: High to Low</button>
-        <button type="button" data-action="count-asc">Count: Low to High</button>
-        <button type="button" data-action="name-asc">Name: A to Z</button>
         <button type="button" data-action="discover-related">Discover Related Names</button>
-        <hr style="width:100%;border:0;border-top:1px solid #555;">
+    `;
+            panel.appendChild(menu);
+            menu.addEventListener("click", (e) => {
+                const button = e.target.closest("button[data-action]");
+                if (!button) return;
+                candidateSortMode = button.dataset.action;
+                menu.remove();
+                renderRows();
+            });
+        });
+        panel.querySelector("#fr-filter").addEventListener("click", () => {
+            const existingMenu = document.getElementById("fr-filter-menu");
+            if (existingMenu) {
+                existingMenu.remove();
+                return;
+            }
+            document.getElementById("fr-sort-menu")?.remove();
+            const menu = document.createElement("div");
+            menu.id = "fr-filter-menu";
+            menu.style.cssText = `
+        position: absolute;
+        top: 36px;
+        right: 8px;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 10px;
+        background: #292c32;
+        border: 1px solid #555;
+        border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0,0,0,.4);
+    `;
+            menu.innerHTML = `
         <strong style="font-size:12px;">Filters</strong>
-        <button type="button" data-action="count-2-plus">Count: 2+</button>
+        <button type="button" data-action="count-2-plus">Tokens: 2+</button>
         <button type="button" data-action="show-all">Show All Candidates</button>
-        <button type="button" data-action="reset">Reset Sort/Filter</button>
     `;
             panel.appendChild(menu);
             menu.addEventListener("click", (e) => {
                 const button = e.target.closest("button[data-action]");
                 if (!button) return;
                 switch (button.dataset.action) {
-                    case "count-desc":
-                        candidateSortMode = "count-desc";
-                        break;
-                    case "count-asc":
-                        candidateSortMode = "count-asc";
-                        break;
-                    case "name-asc":
-                        candidateSortMode = "name-asc";
-                        break;
-                    case "discover-related":
-                        candidateSortMode = "discover-related";
-                        break;
                     case "count-2-plus":
                         candidateFilterMode = "count-2-plus";
                         tokenMatchFilter = null;
                         break;
                     case "show-all":
-                        tokenMatchFilter = null;
-                        candidateFilterMode = "all";
-                        break;
-                    case "reset":
-                        candidateSortMode = "count-desc";
                         candidateFilterMode = "all";
                         tokenMatchFilter = null;
                         break;
@@ -1427,8 +1273,12 @@
             accumulatedOccurrences = [];
             nextOccurrencePos = 0;
             processedNodeText = new Map();
+            currentCandidates = [];
             highlightedCandidates.clear();
-            runScan();
+            tokenMatchFilter = null;
+            candidateFilterMode = "all";
+            renderRows();
+            updateRegexPreview();
         });
         panel.querySelector("#fr-template").addEventListener("change", (e) => {
             settings.template = e.target.value;
@@ -1451,10 +1301,11 @@
             }
         });
         panel.querySelector("#fr-close").addEventListener("click", () => {
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
             clearHighlights();
-            highlightedCandidates.clear();
-            settings.highlightedAll = false;
-            saveSettings();
             panel.remove();
         });
         makeDraggable(panel, panel.querySelector(".fr-head"));
