@@ -431,10 +431,9 @@
     function filterTokens(tokens) {
         return tokens.map((record, index) => {
             const contractionMatch = isContraction(record.original);
-            const wordFilterMatch =
-                WORD_FILTER.has(record.original) &&
-                (index === tokens.length - 1 || tokens[index + 1]?.original === "I");
             const allWordsMatch = All_Words.has(record.original);
+            const wordFilterMatch =
+                WORD_FILTER.has(record.original) && (tokens.length === 1 || tokens[index + 1]?.original === "I");
             let filterReason = null;
             if (contractionMatch) {
                 filterReason = "CONTRACTION";

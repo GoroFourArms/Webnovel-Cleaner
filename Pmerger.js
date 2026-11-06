@@ -1,9 +1,11 @@
 // ==UserScript==
-// @name         pMerger
-// @namespace    pMerger
-// @version      2.2.3
-// @description  Clean and merge webnovel chapter text for TTS with advanced element/container consumption, ID preservation, and status diagnostics
-// @match        *://*/*
+// @name         pMerger & Webnovel Cleaner Combined
+// @namespace    Violentmonkey Scripts
+// @version      3.3.0
+// @description  Webnovel text cleaner with TTS period-to-comma smoothing, per-site config, conservative dialogue-aware paragraph merging, undo, and dark UI
+// @match        https://wtr-lab.com/*
+// @match        https://novelspyramid.com/*
+// @match        https://fenrirealm.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -11,112 +13,231 @@
 // ==/UserScript==
 (function () {
     "use strict";
-    const DEFAULT_CONFIG = {
-        sites: {}
-    };
-    const MAX_MERGED_SENTENCES = 5;
-    let originalChapterHTML = new WeakMap();
+    let originalNodeMap = new WeakMap();
     const modifiedContainers = new Set();
-    const processingContainers = new WeakSet();
-    const pendingChapterTimers = new Map();
-    let observer = null;
-    let urlWatcher = null;
-    let lastUrl = location.href;
-    let processingGeneration = 0;
-    let menuCommandsRegistered = false;
-    const MENU_IDS = {
-        apply: null,
-        undo: null,
-        settings: null
-    };
-
+    const currentDomain = location.hostname.replace(/^www\./, "");
+    function getConfigKey() {
+        return `pMergerConfig_${currentDomain}`;
+    }
     function loadConfig() {
-        const saved = GM_getValue("pMergerConfig", null);
-        if (!saved || typeof saved !== "object") {
-            return { sites: {} };
+        const saved = GM_getValue(getConfigKey(), null);
+        return (
+            saved || {
+                maxSentences: 5,
+                customReaderSelector: "",
+                customJunkSelectors: ".c8a3f0aa4229c, .banner-container",
+                customJunkKeywords:
+                    "table of contents, previous chapter, next chapter, bookmark, report error, comments, login, register"
+            }
+        );
+    }
+    let userConfig = loadConfig();
+    function saveConfig() {
+        GM_setValue(getConfigKey(), userConfig);
+    }
+    const patterns = [
+        /\b(?:hearing this|hearing that|hearing the words|hearing this,)\b\s*/gi,
+        /\b(?:nodded in agreement|shook his head|shook her head|smiled and said|said with a smile)\b\s*/gi,
+        /\b(?:definitely|downright|incredibly|obviously|utterly|abruptly|accidentally|aggressively|anxiously|crazily|cynically|daringly|defensively|deliberately)\b\s*/gi,
+        /\b(?:desperately|dreadfully|eagerly|elegantly|emptily|endlessly|faintly|fiercely|flusteredly|foolishly|formally|frantically|frighteningly|furiously|gloomily|gratefully|greedily|grimly|haughtily|helplessly|hesitatingly|hopelessly|horribly|hurriedly|impatiently|inadvertently|indifferently|indignantly|innocently|inquisitively|intently|intimately|ironically|joyfully)\b\s*/gi,
+        /\b(?:knowingly|lazily|loosely|lovingly|mercilessly|miserably|mockingly|mysteriously|nonchalantly|obediently|obliquely|painfully|perilously|persistently|playfully|pleasantly|powerfully|precisely|promptly|proudly|quaintly|queasily|recklessly|reluctantly|remarkably|repeatedly|resignedly)\b\s*/gi,
+        /\b(?:respectfully|rightfully|scarcely|sensibly|severely|shakily|silently|sincerely|sleepily|solemnly|speedily|stealthily|sternly|stiffly|subconsciously|successfully|surprisingly|suspiciously|sympathetically|tensely|terrifyingly|thoughtfully|triumphantly|truthfully|unconsciously|uncontrollably|unexpectedly|captivatingly|crossly|curvaceously|delightedly|disappointingly|formidably|irritably|proactively|relentlessly|resentfully|skeptically|straightforwardly|unhesitatingly|unquestionably|unwillingly|warily)\b\s*/gi,
+        /(?:it had to be said|no sooner said than done|no matter what|once and for all|put simply|simply put|there was no need to|to be safe|to say the least|without a doubt|would be a simple matter|all of a sudden|at that moment|without warning|as if it were the most natural thing|caught off guard|drop out of thin air|in a flash|in an inopportune moment|in the blink of an eye|no sooner had he spoken|out of thin air|paid no attention to|to top it off|under normal circumstances|without another thought|without a trace)\s*/gi
+    ];
+    function cleanTextNode(node) {
+        let val = node.nodeValue;
+        let changed = false;
+        for (let i = 0; i < patterns.length; i++) {
+            if (patterns[i].test(val)) {
+                val = val.replace(patterns[i], "");
+                changed = true;
+            }
         }
-        return {
-            sites: saved.sites && typeof saved.sites === "object" ? saved.sites : {}
+        // Smooth interior sentence-ending periods for TTS.
+        let smoothedVal = val.replace(/\.(?=\s+[A-Z“"‘'„«「『])/g, ",");
+        if (smoothedVal !== val) {
+            val = smoothedVal;
+            changed = true;
+        }
+        if (changed) {
+            val = val.replace(/\s+([,.;?!])/g, "$1").replace(/ {2,}/g, " ");
+            node.nodeValue = val;
+        }
+    }
+    function scanAndCleanText(targetContainer) {
+        const walker = document.createTreeWalker(targetContainer, NodeFilter.SHOW_TEXT, {
+            acceptNode: (node) => {
+                const tag = node.parentNode ? node.parentNode.tagName : "";
+                if (["SCRIPT", "STYLE", "TEXTAREA", "INPUT", "CODE"].includes(tag)) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                return node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+            }
+        });
+        while (walker.nextNode()) {
+            cleanTextNode(walker.currentNode);
+        }
+    }
+    GM_addStyle(`
+    #pmerger-settings-overlay {
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0, 0, 0, 0.75);
+        backdrop-filter: blur(3px);
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #pmerger-settings-panel {
+        background: #18191a;
+        color: #e4e6eb;
+        width: 480px;
+        max-width: 90vw;
+        border-radius: 12px;
+        border: 1px solid #38393b;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+        padding: 24px;
+        box-sizing: border-box;
+    }
+    #pmerger-settings-panel h2 {
+        margin: 0 0 4px 0;
+        font-size: 1.25rem;
+        color: #ffffff;
+    }
+    #pmerger-site-tag {
+        font-size: 0.8rem;
+        color: #2d88ff;
+        margin-bottom: 16px;
+        border-bottom: 1px solid #2f3032;
+        padding-bottom: 10px;
+        display: block;
+    }
+    #pmerger-settings-panel label {
+        display: block;
+        margin-bottom: 14px;
+        font-size: 0.9rem;
+        color: #b0b3b8;
+    }
+    #pmerger-settings-panel input,
+    #pmerger-settings-panel textarea {
+        width: 100%;
+        background: #242526;
+        border: 1px solid #3a3b3c;
+        color: #e4e6eb;
+        padding: 8px 12px;
+        border-radius: 6px;
+        margin-top: 6px;
+        box-sizing: border-box;
+        font-size: 0.9rem;
+        outline: none;
+        transition: border-color 0.2s;
+    }
+    #pmerger-settings-panel input:focus,
+    #pmerger-settings-panel textarea:focus {
+        border-color: #2d88ff;
+    }
+    #pmerger-settings-panel textarea {
+        resize: vertical;
+        height: 60px;
+    }
+    .pmerger-btn-group {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 20px;
+    }
+    .pmerger-btn {
+        background: #2d3035;
+        color: #e4e6eb;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: background 0.2s;
+    }
+    .pmerger-btn:hover { background: #3a3d44; }
+    .pmerger-btn.primary {
+        background: #2d88ff;
+        color: #ffffff;
+    }
+    .pmerger-btn.primary:hover { background: #1a73e8; }
+    #pmerger-toast {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: #2d88ff;
+        color: #ffffff;
+        padding: 10px 18px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        z-index: 999998;
+        font-size: 0.9rem;
+        font-weight: 600;
+        animation: pmergerFadeIn 0.3s ease;
+    }
+    @keyframes pmergerFadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+`);
+    function showToast(message) {
+        let existing = document.getElementById("pmerger-toast");
+        if (existing) existing.remove();
+        const toast = document.createElement("div");
+        toast.id = "pmerger-toast";
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2500);
+    }
+    function showSettingsUI() {
+        if (document.getElementById("pmerger-settings-overlay")) return;
+        const overlay = document.createElement("div");
+        overlay.id = "pmerger-settings-overlay";
+        overlay.innerHTML = `
+        <div id="pmerger-settings-panel">
+            <h2>⚙ pMerger Settings</h2>
+            <span id="pmerger-site-tag">Configuring site: <strong>${currentDomain}</strong></span>
+            <label>
+                Max Merged Sentences (Hard Cap: 5):
+                <input type="number" id="pmerger-max-sentences" value="${Math.min(userConfig.maxSentences, 5)}" min="1" max="5">
+            </label>
+            <label>
+                Custom Reader Selector (CSS Selector, optional):
+                <input type="text" id="pmerger-reader-selector" value="${userConfig.customReaderSelector}" placeholder="e.g. .reading-content or #chapter-content">
+            </label>
+            <label>
+                Custom Junk Selectors (CSS, comma-separated):
+                <input type="text" id="pmerger-junk-selectors" value="${userConfig.customJunkSelectors}">
+            </label>
+            <label>
+                Junk Keywords to Filter Out (comma-separated):
+                <textarea id="pmerger-junk-keywords">${userConfig.customJunkKeywords}</textarea>
+            </label>
+            <div class="pmerger-btn-group">
+                <button class="pmerger-btn" id="pmerger-cancel">Cancel</button>
+                <button class="pmerger-btn primary" id="pmerger-save">Save & Apply</button>
+            </div>
+        </div>
+    `;
+        document.body.appendChild(overlay);
+        document.getElementById("pmerger-cancel").onclick = () => overlay.remove();
+        overlay.onclick = (e) => {
+            if (e.target === overlay) overlay.remove();
         };
-    }
-    function saveConfig(newConfig) {
-        GM_setValue("pMergerConfig", newConfig);
-    }
-    let config = loadConfig();
-    function getCurrentConfig() {
-        return config;
-    }
-    function getDomain() {
-        return location.hostname.replace(/^www\./i, "").toLowerCase();
-    }
-    function getCurrentSite() {
-        const domain = getDomain();
-        if (config.sites && config.sites[domain]) {
-            return config.sites[domain];
-        }
-        return null;
-    }
-    function addDefaultSite(sites, domain, urlPatterns, chapterContainer, junkSelector = "") {
-        if (sites[domain]) {
-            return;
-        }
-        sites[domain] = {
-            enabled: false,
-            urlPatterns: Array.isArray(urlPatterns) ? urlPatterns : [urlPatterns],
-            chapterSelector: chapterContainer,
-            junkSelector
+        document.getElementById("pmerger-save").onclick = () => {
+            let parsedVal = parseInt(document.getElementById("pmerger-max-sentences").value, 10) || 5;
+            userConfig.maxSentences = Math.min(parsedVal, 5);
+            userConfig.customReaderSelector = document.getElementById("pmerger-reader-selector").value.trim();
+            userConfig.customJunkSelectors = document.getElementById("pmerger-junk-selectors").value.trim();
+            userConfig.customJunkKeywords = document.getElementById("pmerger-junk-keywords").value.trim();
+            saveConfig();
+            overlay.remove();
+            processManualReader(true);
         };
-    }
-    function loadDefaultSites() {
-        const sites = config.sites || {};
-        addDefaultSite(sites, "wtr-lab.com", "/en/novel/*/tts*", "div.chapter-container", "");
-        addDefaultSite(sites, "kari-studio.com", "/chapter-*", "article.small.single", "");
-        addDefaultSite(sites, "dreamy-translations.com", "/novel/*/chapter/*", "article.chapter-content", "");
-        config.sites = sites;
-        saveConfig(config);
-    }
-    loadDefaultSites();
-
-    function wildcardToRegExp(pattern) {
-        const escaped = String(pattern)
-            .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-            .replace(/\*/g, ".*");
-        return new RegExp("^" + escaped + "$", "i");
-    }
-    function urlMatchesPattern(pattern) {
-        if (!pattern) return false;
-        const path = location.pathname + location.search;
-        return wildcardToRegExp(pattern).test(path);
-    }
-    function isChapterPage(requireEnabled = true) {
-        const site = getCurrentSite();
-        if (!site) return false;
-        if (requireEnabled && site.enabled !== true) return false;
-        const patterns = Array.isArray(site.urlPatterns) ? site.urlPatterns : [];
-        if (patterns.length === 0) return true;
-        return patterns.some(urlMatchesPattern);
-    }
-    function isElement(node) {
-        return node && node.nodeType === 1;
-    }
-    function isTextNode(node) {
-        return node && node.nodeType === 3;
-    }
-    function safeQuery(root, selector) {
-        if (!root || !selector) return null;
-        try {
-            return root.querySelector(selector);
-        } catch {
-            return null;
-        }
-    }
-    function safeQueryAll(root, selector) {
-        if (!root || !selector) return [];
-        try {
-            return Array.from(root.querySelectorAll(selector));
-        } catch {
-            return [];
-        }
     }
     function normalizeText(text) {
         return String(text || "")
@@ -129,914 +250,208 @@
         return normalizeText(element.textContent || "");
     }
     function isMeaningfulText(text) {
-        return typeof text === "string" && text.trim().length > 0;
-    }
-    function hasDirectText(element) {
-        if (!element) return false;
-        for (const node of element.childNodes) {
-            if (isTextNode(node) && node.nodeValue && node.nodeValue.trim()) {
-                return true;
-            }
-        }
-        return false;
-    }
-    function getElementTag(element) {
-        return element && element.tagName ? element.tagName.toLowerCase() : "";
+        return typeof text === "string" && text.trim().length > 1;
     }
     function countSentences(text) {
         if (!isMeaningfulText(text)) return 0;
-        const normalized = String(text)
-            .replace(/\u00a0/g, " ")
-            .trim();
-        const matches = normalized.match(/[.!?]+(?=(?:["'”’»」』)]*)?(?:\s|$))/g);
-        return matches ? matches.length : 0;
+        const normalized = normalizeText(text);
+        const matches = normalized.match(/[.!?]+(?:["'”’»」』)\]]*)?(?=\s|$)/g);
+        return matches ? matches.length : 1;
     }
-
-    const INLINE_TAGS = new Set([
-        "span",
-        "a",
-        "b",
-        "strong",
-        "i",
-        "em",
-        "u",
-        "s",
-        "small",
-        "mark",
-        "sub",
-        "sup",
-        "code",
-        "abbr",
-        "cite",
-        "q",
-        "label",
-        "ruby",
-        "rt",
-        "rp",
-        "time",
-        "kbd",
-        "samp",
-        "var",
-        "wbr"
-    ]);
-    const BLOCK_TAGS = new Set([
-        "address",
-        "article",
-        "aside",
-        "blockquote",
-        "div",
-        "dl",
-        "dt",
-        "dd",
-        "fieldset",
-        "figcaption",
-        "figure",
-        "footer",
-        "form",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "header",
-        "hr",
-        "li",
-        "main",
-        "nav",
-        "ol",
-        "p",
-        "pre",
-        "section",
-        "table",
-        "ul"
-    ]);
-
-    function isInlineElement(element) {
-        return INLINE_TAGS.has(getElementTag(element));
+    function getBlockType(text) {
+        if (!isMeaningfulText(text)) return "empty";
+        const val = text.trim();
+        // Treat blocks beginning with quotation marks as dialogue.
+        if (/^[“"‘'„«「『]/.test(val)) return "dialogue";
+        // Mixed narration and dialogue are treated as boundaries.
+        if (/[“‘「『][^”’」』]*[”’」』]/.test(val)) return "mixed";
+        return "narration";
     }
-    function isBlockElement(element) {
-        return BLOCK_TAGS.has(getElementTag(element));
+    function isHeaderOrTitle(element, text) {
+        const tag = element.tagName ? element.tagName.toLowerCase() : "";
+        if (["h1", "h2", "h3", "h4"].includes(tag)) return true;
+        const lowerTxt = text.toLowerCase();
+        if (/^chapter\s+\d+/i.test(lowerTxt) || /^volume\s+\d+/i.test(lowerTxt)) return true;
+        if (element.classList && Array.from(element.classList).some((c) => c.includes("title") || c.includes("header")))
+            return true;
+        return false;
     }
-    function isHardBoundary(element) {
-        if (!element) return false;
-        const tag = getElementTag(element);
-        if (tag === "hr" || /^h[1-6]$/.test(tag)) return true;
-        return [
-            "img",
-            "picture",
-            "video",
-            "audio",
-            "table",
-            "ul",
-            "ol",
-            "li",
-            "dl",
-            "dt",
-            "dd",
-            "figure",
-            "blockquote",
-            "pre",
-            "nav",
-            "header",
-            "footer",
-            "aside",
-            "form",
-            "fieldset"
-        ].includes(tag);
-    }
-    function isSceneBreakText(text) {
-        if (!isMeaningfulText(text)) return false;
-        const value = text.trim().replace(/\s+/g, "");
-        if (!value) return false;
-        return (
-            /^~{2,}$/.test(value) ||
-            /^-{3,}$/.test(value) ||
-            /^_{3,}$/.test(value) ||
-            /^\*{2,}$/.test(value) ||
-            /^•{2,}$/.test(value) ||
-            /^·{2,}$/.test(value)
-        );
-    }
-    function isSceneBreakElement(element) {
-        if (!element) return false;
-        if (getElementTag(element) === "hr") return true;
-        return isSceneBreakText(getElementText(element));
-    }
-    function getNavigationReplacement(element) {
-        if (!element) return null;
-        const tag = getElementTag(element);
-        if (tag !== "a" && tag !== "button" && element.getAttribute("role") !== "button") return null;
+    function isJunkElement(element) {
         const text = getElementText(element).toLowerCase();
-        if (!text) return null;
-        if (/^(next|next chapter|next ch\.?|chapter next)\b/.test(text)) return "~~>";
-        if (/^(previous|prev|previous chapter|prev chapter|prev\.? ch\.?|previous ch\.?)\b/.test(text)) return "<~~";
-        if (/\b(table of contents|toc|contents|index|all chapters?)\b/.test(text)) return "~~|~~";
-        return null;
-    }
-    function isNavigationElement(element) {
-        return getNavigationReplacement(element) !== null;
-    }
-    function looksLikeDialogue(text) {
-        if (!isMeaningfulText(text)) return false;
-        const value = text.trim();
-        if (/^[“"‘']/.test(value)) return true;
-        if (/^[—–]\S/.test(value)) return true;
-        return false;
-    }
-    function getOrderValue(element) {
-        if (!element) return null;
-        const explicitAttributes = ["data-order", "data-index", "data-number", "data-sequence", "data-seq"];
-        for (const attribute of explicitAttributes) {
-            const value = element.getAttribute(attribute);
-            if (value !== null && value.trim() !== "") {
-                const number = Number(value);
-                if (Number.isFinite(number)) return number;
-            }
+        const tag = element.tagName ? element.tagName.toLowerCase() : "";
+        if (["script", "style", "nav", "header", "footer", "aside", "form"].includes(tag)) {
+            return true;
         }
-        return null;
+        if (isHeaderOrTitle(element, text)) return true;
+        const keywords = userConfig.customJunkKeywords
+            .split(",")
+            .map((k) => k.trim().toLowerCase())
+            .filter(Boolean);
+        return keywords.some((kw) => text === kw || (text.length < 40 && text.includes(kw)));
     }
-
-    const BLOCK_TYPES = {
-        TEXT: "TEXT",
-        SCENE_BREAK: "SCENE_BREAK",
-        NAVIGATION: "NAVIGATION",
-        JUNK: "JUNK",
-        UNKNOWN: "UNKNOWN"
-    };
-
-    function isTextBlockCandidate(element, chapter) {
-        if (!isElement(element) || !element.isConnected || element === chapter) return false;
-        const text = getElementText(element);
-        if (!isMeaningfulText(text)) return false;
-        if (isNavigationElement(element) || isSceneBreakElement(element) || isHardBoundary(element)) return false;
-        if (isInlineElement(element)) return false;
-        const childBlocks = Array.from(element.children).filter((child) => isBlockElement(child));
-        if (childBlocks.length > 0) return false;
-        if (hasDirectText(element)) return true;
-        const children = Array.from(element.children);
-        if (children.length > 0 && children.every((child) => isInlineElement(child))) return true;
-        return false;
-    }
-    function findTextBlocks(chapter) {
-        if (!chapter || !chapter.isConnected) return [];
-        const allElements = safeQueryAll(chapter, "*");
-        const candidates = [];
-        for (const element of allElements) {
-            if (isTextBlockCandidate(element, chapter)) {
-                candidates.push(element);
-            }
-        }
-        return candidates.filter(
-            (candidate) => !candidates.some((other) => other !== candidate && candidate.contains(other))
-        );
-    }
-    function keepDeepestElements(elements) {
-        const unique = [...new Set(elements)];
-        return unique.filter((element) => !unique.some((other) => other !== element && element.contains(other)));
-    }
-    function findSceneBreaks(chapter) {
-        const elements = safeQueryAll(chapter, "*");
-        return keepDeepestElements(elements.filter(isSceneBreakElement));
-    }
-    function findNavigationElements(chapter) {
-        const elements = safeQueryAll(chapter, 'a, button, [role="button"]');
-        return keepDeepestElements(elements.filter(isNavigationElement));
-    }
-    function createAnalyzedBlock(element, type) {
-        const text = normalizeText(element.textContent || "");
-        return {
-            element,
-            type,
-            text,
-            sentenceCount: type === BLOCK_TYPES.TEXT ? countSentences(text) : 0,
-            dialogue: type === BLOCK_TYPES.TEXT ? looksLikeDialogue(text) : false,
-            order: type === BLOCK_TYPES.TEXT ? getOrderValue(element) : null
-        };
-    }
-    function analyzeChapter(chapter, site) {
-        const blocks = [];
-        const sceneElements = findSceneBreaks(chapter);
-        const navigationElements = findNavigationElements(chapter);
-        for (const element of sceneElements) {
-            blocks.push(createAnalyzedBlock(element, BLOCK_TYPES.SCENE_BREAK));
-        }
-        for (const element of navigationElements) {
-            blocks.push(createAnalyzedBlock(element, BLOCK_TYPES.NAVIGATION));
-        }
-        const textElements = findTextBlocks(chapter);
-        for (const element of textElements) {
-            if (sceneElements.some((scene) => scene === element || scene.contains(element) || element.contains(scene)))
-                continue;
-            if (navigationElements.some((nav) => nav === element || nav.contains(element) || element.contains(nav)))
-                continue;
-            blocks.push(createAnalyzedBlock(element, BLOCK_TYPES.TEXT));
-        }
-        blocks.sort((a, b) => {
-            const position = a.element.compareDocumentPosition(b.element);
-            if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-            if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-            return 0;
-        });
-        return { chapter, site, blocks };
-    }
-    function removeConfiguredJunk(chapter, site) {
-        if (!chapter || !site || !site.junkSelector) return false;
-        let changed = false;
-        let elements = [];
-        try {
-            elements = safeQueryAll(chapter, site.junkSelector);
-        } catch (error) {
-            console.warn("[pMerger] Invalid junk selector:", site.junkSelector, error);
-            return false;
-        }
-        for (const element of elements) {
-            if (element === chapter || !element.isConnected) continue;
-            element.remove();
-            changed = true;
-        }
-        return changed;
-    }
-
-    /*
-     * ---------------------------------------------------------
-     * TEXT CONTAINER NORMALIZATION & CONSUMPTION (ID + Tag Conversion)
-     * ---------------------------------------------------------
-     */
-    function copyAttributes(source, target) {
-        if (!source || !target || source === target) return false;
-        let changed = false;
-
-        if (source.hasAttribute("id") && !target.hasAttribute("id")) {
-            target.setAttribute("id", source.getAttribute("id"));
-            changed = true;
-        }
-
-        for (const attribute of Array.from(source.attributes)) {
-            if (attribute.name === "id") continue;
-            if (attribute.name === "class") {
-                const classes = attribute.value.split(/\s+/).filter(Boolean);
-                for (const className of classes) {
-                    if (!target.classList.contains(className)) {
-                        target.classList.add(className);
-                        changed = true;
-                    }
-                }
-                continue;
-            }
-            if (!target.hasAttribute(attribute.name)) {
-                target.setAttribute(attribute.name, attribute.value);
-                changed = true;
-            }
-        }
-        return changed;
-    }
-
-    function convertToParagraph(element) {
-        if (!element) return null;
-        if (getElementTag(element) === "p") return element;
-
-        const paragraph = document.createElement("p");
-        for (const attribute of Array.from(element.attributes)) {
-            paragraph.setAttribute(attribute.name, attribute.value);
-        }
-        while (element.firstChild) {
-            paragraph.appendChild(element.firstChild);
-        }
-        element.replaceWith(paragraph);
-        return paragraph;
-    }
-
-    function normalizeTextContainers(chapter) {
-        if (!chapter || !chapter.isConnected) return false;
-        let changed = false;
-        let stats = { consumedSingleChild: 0, consumedParent: 0, convertedToP: 0 };
-
-        const allElements = safeQueryAll(chapter, "*");
-
-        for (const el of allElements) {
-            if (!el.isConnected || el === chapter) continue;
-
-            const parent = el.parentElement;
-            const children = Array.from(el.children);
-
-            if (children.length === 1 && !hasDirectText(el)) {
-                const soleChild = children[0];
-                copyAttributes(el, soleChild);
-                el.replaceWith(soleChild);
-                stats.consumedSingleChild++;
-                changed = true;
-                continue;
-            }
-
-            if (parent && parent !== chapter && isMeaningfulText(getElementText(el))) {
-                const sameTagSiblings = Array.from(parent.children).filter(
-                    (sibling) => getElementTag(sibling) === getElementTag(el)
-                );
-                if (sameTagSiblings.length === 1) {
-                    copyAttributes(parent, el);
-                    parent.replaceWith(el);
-                    stats.consumedParent++;
-                    changed = true;
-                }
-            }
-        }
-
-        const candidateBlocks = safeQueryAll(
-            chapter,
-            "div, article div, section div, span.paragraph, article p, section p"
-        );
-        for (const block of candidateBlocks) {
-            if (!block.isConnected || block === chapter) continue;
-            if (isMeaningfulText(getElementText(block)) && getElementTag(block) !== "p") {
-                const hasMajorBlocks = Array.from(block.children).some((c) =>
-                    ["article", "section", "table"].includes(getElementTag(c))
-                );
-                if (!hasMajorBlocks) {
-                    convertToParagraph(block);
-                    stats.convertedToP++;
-                    changed = true;
-                }
-            }
-        }
-
-        console.group("[pMerger Status Check]");
-        console.log("Chapter Container:", chapter);
-        console.log("Normalization Status: Success");
-        console.log("Stats:", stats);
-        console.groupEnd();
-
-        return changed;
-    }
-
-    /*
-     * ---------------------------------------------------------
-     * MERGE & FINALIZE LOGIC
-     * ---------------------------------------------------------
-     */
-    function isStructuralBoundary(block) {
-        if (!block || block.type !== BLOCK_TYPES.TEXT) return true;
-        const element = block.element;
-        if (!element || !element.isConnected) return true;
-        return isHardBoundary(element);
-    }
-    function areAdjacentTextBlocks(first, second) {
-        if (!first || !second || first === second || !first.isConnected || !second.isConnected) return false;
-        const position = first.compareDocumentPosition(second);
-        if (!(position & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
-        const range = document.createRange();
-        try {
-            range.setStartAfter(first);
-            range.setEndBefore(second);
-        } catch {
-            return false;
-        }
-        const fragment = range.cloneContents();
-        if (fragment.textContent.replace(/\s+/g, "").length > 0) return false;
-        let sibling = first.nextElementSibling;
-        while (sibling && sibling !== second) {
-            if (isSceneBreakElement(sibling) || isNavigationElement(sibling) || isHardBoundary(sibling)) return false;
-            if (normalizeText(sibling.textContent || "")) return false;
-            sibling = sibling.nextElementSibling;
-        }
-        return sibling === second;
-    }
-    function canMergeBlocks(previous, current, sentenceCount) {
-        if (!previous || !current || previous.type !== BLOCK_TYPES.TEXT || current.type !== BLOCK_TYPES.TEXT)
-            return false;
-        if (isStructuralBoundary(previous) || isStructuralBoundary(current)) return false;
-        if (!areAdjacentTextBlocks(previous.element, current.element)) return false;
-        if (previous.dialogue && current.dialogue) return false;
-        return sentenceCount + current.sentenceCount <= MAX_MERGED_SENTENCES;
-    }
-    function buildMergeGroups(analysis) {
-        const groups = [];
-        let currentGroup = [];
-        let sentenceCount = 0;
-        for (const block of analysis.blocks) {
-            if (block.type !== BLOCK_TYPES.TEXT) {
-                if (currentGroup.length > 1) groups.push(currentGroup);
-                currentGroup = [];
-                sentenceCount = 0;
-                continue;
-            }
-            if (currentGroup.length === 0) {
-                currentGroup = [block];
-                sentenceCount = block.sentenceCount;
-                continue;
-            }
-            const previous = currentGroup[currentGroup.length - 1];
-            if (canMergeBlocks(previous, block, sentenceCount)) {
-                currentGroup.push(block);
-                sentenceCount += block.sentenceCount;
-            } else {
-                if (currentGroup.length > 1) groups.push(currentGroup);
-                currentGroup = [block];
-                sentenceCount = block.sentenceCount;
-            }
-        }
-        if (currentGroup.length > 1) groups.push(currentGroup);
-        return groups;
-    }
-    function createMergePlan(analysis) {
-        const groups = buildMergeGroups(analysis);
-        const operations = [];
-        for (const group of groups) {
-            if (group.length < 2) continue;
-            operations.push({
-                target: group[0].element,
-                sources: group.slice(1).map((block) => block.element)
-            });
-        }
-        return operations;
-    }
-    function appendBlockContents(target, source) {
-        if (!target || !source || target === source) return;
-        while (source.firstChild) {
-            target.appendChild(source.firstChild);
-        }
-    }
-    function addMergeSeparator(target) {
-        if (!target) return;
-        const lastChild = target.lastChild;
-        if (lastChild && lastChild.nodeType === Node.TEXT_NODE) {
-            if (/\s$/.test(lastChild.nodeValue || "")) return;
-        }
-        target.appendChild(document.createTextNode(" "));
-    }
-    function mergeOperation(operation) {
-        if (!operation || !operation.target || !operation.target.isConnected) return false;
-        const target = operation.target;
-        let changed = false;
-        for (const source of operation.sources || []) {
-            if (!source || source === target || !source.isConnected) continue;
-            addMergeSeparator(target);
-            appendBlockContents(target, source);
-            source.setAttribute("data-pmerger-empty", "true");
-            changed = true;
-        }
-        return changed;
-    }
-    function applyMergePlan(plan) {
-        let changed = false;
-        for (const operation of plan) {
-            if (mergeOperation(operation)) changed = true;
-        }
-        return changed;
-    }
-    function applyNavigationReplacements(analysis) {
-        let changed = false;
-        for (const block of analysis.blocks) {
-            if (block.type !== BLOCK_TYPES.NAVIGATION) continue;
-            const element = block.element;
-            if (!element || !element.isConnected) continue;
-            const text = normalizeText(element.textContent || "").toLowerCase();
-            let replacement = null;
-            if (/^(next|next chapter|next page|forward|continue|older|older chapter)$/.test(text)) replacement = "~~>";
-            else if (/^(previous|prev|previous chapter|previous page|back|backward|newer|newer chapter)$/.test(text))
-                replacement = "<~~";
-            else if (/^(toc|contents|table of contents|index|all chapters|all chapter|chapters)$/.test(text))
-                replacement = "~~|~~";
-            if (!replacement || normalizeText(element.textContent || "") === replacement) continue;
-            element.textContent = replacement;
-            changed = true;
-        }
-        return changed;
-    }
-    function normalizeSceneBreaks(analysis) {
-        let changed = false;
-        for (const block of analysis.blocks) {
-            if (block.type !== BLOCK_TYPES.SCENE_BREAK) continue;
-            const element = block.element;
-            if (!element || !element.isConnected) continue;
-            const text = normalizeText(element.textContent || "");
-            if (element.tagName === "HR") {
-                const replacement = document.createElement("p");
-                for (const attribute of [...element.attributes]) {
-                    replacement.setAttribute(attribute.name, attribute.value);
-                }
-                replacement.textContent = text || "***";
-                element.replaceWith(replacement);
-                changed = true;
-                continue;
-            }
-            if (text !== "***") {
-                element.textContent = "***";
-                changed = true;
-            }
-        }
-        return changed;
-    }
-    function isLikelySequence(value) {
-        if (value === null || value === undefined || value === "") return false;
-        const number = Number(value);
-        return Number.isFinite(number) && number >= 0 && number < 100000;
-    }
-    function formatOrderNumber(value) {
-        const number = Number(value);
-        if (!Number.isFinite(number)) return null;
-        return String(Math.round(number));
-    }
-    function reindexOrderMetadata(chapter) {
-        if (!chapter) return false;
-        const elements = safeQueryAll(
-            chapter,
-            "[data-order], [data-index], [data-number], [data-sequence], [data-seq]"
-        );
-        const entries = [];
-        for (const element of elements) {
-            const value = getOrderValue(element);
-            if (!isLikelySequence(value)) continue;
-            entries.push({ element, value: Number(value) });
-        }
-        entries.sort((a, b) => a.value - b.value);
-        let changed = false;
-        entries.forEach((entry, index) => {
-            const formatted = formatOrderNumber(index);
-            if (formatted === null) return;
-            const element = entry.element;
-            const attributes = ["data-order", "data-index", "data-number", "data-sequence", "data-seq"];
-            for (const attribute of attributes) {
-                if (element.hasAttribute(attribute)) {
-                    if (element.getAttribute(attribute) !== formatted) {
-                        element.setAttribute(attribute, formatted);
-                        changed = true;
-                    }
-                    break;
-                }
-            }
-        });
-        return changed;
-    }
-    function removeEmptyElements(chapter) {
-        if (!chapter) return false;
-        const elements = safeQueryAll(chapter, '[data-pmerger-empty="true"]');
-        let changed = false;
-        for (const element of elements) {
-            if (element === chapter || !element.isConnected) continue;
-            element.remove();
-            changed = true;
-        }
-        return changed;
-    }
-    function cleanupTextNodes(chapter) {
-        if (!chapter) return false;
-        const walker = document.createTreeWalker(chapter, NodeFilter.SHOW_TEXT);
-        const nodes = [];
-        let node;
-        while ((node = walker.nextNode())) {
-            nodes.push(node);
-        }
-        let changed = false;
-        for (const textNode of nodes) {
-            const parent = textNode.parentElement;
-            if (parent && parent.closest("pre, code, textarea")) continue;
-            const original = textNode.nodeValue || "";
-            const cleaned = original.replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ");
-            if (cleaned !== original) {
-                textNode.nodeValue = cleaned;
-                changed = true;
-            }
-        }
-        return changed;
-    }
-    function finalizeChapter(chapter) {
-        if (!chapter || !chapter.isConnected) return false;
-        let changed = false;
-        if (removeEmptyElements(chapter)) changed = true;
-        if (cleanupTextNodes(chapter)) changed = true;
-        if (reindexOrderMetadata(chapter)) changed = true;
-        return changed;
-    }
-    function processChapter(chapter, site) {
-        if (!chapter || !chapter.isConnected || !site) return false;
-        let changed = false;
-        if (removeConfiguredJunk(chapter, site)) changed = true;
-        if (normalizeTextContainers(chapter)) changed = true;
-        let analysis = analyzeChapter(chapter, site);
-        if (applyNavigationReplacements(analysis)) changed = true;
-        if (normalizeSceneBreaks(analysis)) changed = true;
-        if (changed) analysis = analyzeChapter(chapter, site);
-        const plan = createMergePlan(analysis);
-        if (applyMergePlan(plan)) changed = true;
-        return changed;
-    }
-    function processAllChapters(root = document) {
-        const site = getCurrentSite();
-        if (!site || !site.enabled) return;
-        const selector = site.chapterSelector;
-        if (!selector) return;
-        let chapters = [];
-        try {
-            if (root instanceof Element && root.matches(selector)) chapters.push(root);
-            chapters.push(...safeQueryAll(root, selector));
-        } catch (error) {
-            console.warn("[pMerger] Invalid chapter selector:", selector, error);
-            return;
-        }
-        chapters = [...new Set(chapters)];
-        for (const chapter of chapters) {
-            if (!chapter || !chapter.isConnected || processingContainers.has(chapter)) continue;
-            if (!originalChapterHTML.has(chapter)) {
-                originalChapterHTML.set(chapter, chapter.innerHTML);
-            }
-            processingContainers.add(chapter);
+    function findBestReadingRoot() {
+        if (userConfig.customReaderSelector) {
             try {
-                const changed = processChapter(chapter, site);
-                if (changed) {
-                    modifiedContainers.add(chapter);
-                    finalizeChapter(chapter);
-                }
-            } catch (error) {
-                console.error("[pMerger] Chapter processing failed:", error);
-            } finally {
-                processingContainers.delete(chapter);
+                const customEl = document.querySelector(userConfig.customReaderSelector);
+                if (customEl) return customEl;
+            } catch (e) {
+                console.error("[pMerger] Invalid custom reader selector:", e);
             }
         }
-    }
-    function findChapterForNode(node) {
-        if (!node) return null;
-        const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-        if (!element) return null;
-        const site = getCurrentSite();
-        if (!site || !site.chapterSelector) return null;
-        try {
-            return element.closest(site.chapterSelector);
-        } catch {
-            return null;
-        }
-    }
-    function scheduleChapterProcessing(chapter) {
-        if (!chapter || !chapter.isConnected) return;
-        const generation = processingGeneration;
-        const existing = pendingChapterTimers.get(chapter);
-        if (existing) clearTimeout(existing);
-        const timer = setTimeout(() => {
-            pendingChapterTimers.delete(chapter);
-            if (generation !== processingGeneration || !isChapterPage()) return;
-            processAllChapters(chapter.parentElement || document);
-        }, 150);
-        pendingChapterTimers.set(chapter, timer);
-    }
-    function handleAddedNode(node) {
-        if (!node) return;
-        const chapter = findChapterForNode(node);
-        if (chapter) scheduleChapterProcessing(chapter);
-        if (node.nodeType !== Node.ELEMENT_NODE) return;
-        const site = getCurrentSite();
-        if (!site || !site.chapterSelector) return;
-        let chapters = [];
-        try {
-            chapters = safeQueryAll(node, site.chapterSelector);
-            if (node.matches(site.chapterSelector)) chapters.push(node);
-        } catch {
-            return;
-        }
-        for (const newChapter of [...new Set(chapters)]) {
-            scheduleChapterProcessing(newChapter);
-        }
-    }
-    function handleMutations(mutations) {
-        if (!isChapterPage()) return;
-        for (const mutation of mutations) {
-            if (mutation.type !== "childList") continue;
-            for (const node of mutation.addedNodes) handleAddedNode(node);
-            if (mutation.removedNodes.length) {
-                const chapter = findChapterForNode(mutation.target);
-                if (chapter) scheduleChapterProcessing(chapter);
+        const prioritySelectors = [
+            "#reader-area",
+            ".chapter-view",
+            ".reader-area",
+            "div.chapter-container",
+            ".chapter-content",
+            ".reading-content",
+            "article",
+            "main",
+            "[role='main']"
+        ];
+        for (const sel of prioritySelectors) {
+            const el = document.querySelector(sel);
+            if (el && el.querySelectorAll("p, div").length > 3) {
+                return el;
             }
         }
-    }
-    function checkForUrlChange() {
-        const currentUrl = location.href;
-        if (currentUrl === lastUrl) return;
-        lastUrl = currentUrl;
-        processingGeneration++;
-        for (const timer of pendingChapterTimers.values()) clearTimeout(timer);
-        pendingChapterTimers.clear();
-        const generation = processingGeneration;
-        setTimeout(() => {
-            if (generation !== processingGeneration || location.href !== currentUrl) return;
-            if (isChapterPage()) processAllChapters();
-        }, 100);
-    }
-    function startCleaner() {
-        stopCleaner();
-        const site = getCurrentSite();
-        if (!site || !site.enabled) return;
-        processAllChapters();
-        const target = document.body || document.documentElement;
-        if (!target) return;
-        observer = new MutationObserver(handleMutations);
-        observer.observe(target, { childList: true, subtree: true });
-        urlWatcher = setInterval(checkForUrlChange, 500);
-    }
-    function stopCleaner() {
-        processingGeneration++;
-        if (observer) {
-            observer.disconnect();
-            observer = null;
+        const candidates = Array.from(document.querySelectorAll("div"));
+        let bestContainer = document.body;
+        let maxParagraphs = 0;
+        for (const el of candidates) {
+            const paragraphs = el.querySelectorAll("p");
+            if (paragraphs.length > maxParagraphs) {
+                maxParagraphs = paragraphs.length;
+                bestContainer = el;
+            }
         }
-        if (urlWatcher) {
-            clearInterval(urlWatcher);
-            urlWatcher = null;
+        return bestContainer;
+    }
+    function processManualReader(manualTrigger = false) {
+        const root = findBestReadingRoot();
+        if (!root) return false;
+        if (!originalNodeMap.has(root)) {
+            originalNodeMap.set(root, root.cloneNode(true));
         }
-        for (const timer of pendingChapterTimers.values()) clearTimeout(timer);
-        pendingChapterTimers.clear();
-    }
-    function applyCurrentPage() {
-        stopCleaner();
-        if (!isChapterPage(false)) return;
-        processAllChapters();
-        const site = getCurrentSite();
-        if (site && site.enabled) startCleaner();
-    }
-    function undoCurrentPage() {
-        stopCleaner();
-        for (const chapter of modifiedContainers) {
-            if (!chapter.isConnected) continue;
-            const original = originalChapterHTML.get(chapter);
-            if (original === undefined) continue;
-            chapter.innerHTML = original;
-        }
-        originalChapterHTML = new WeakMap();
-        modifiedContainers.clear();
-        const site = getCurrentSite();
-        if (site && site.enabled) startCleaner();
-    }
-
-    let settingsOverlay = null;
-    function closeSettings() {
-        if (settingsOverlay) {
-            settingsOverlay.remove();
-            settingsOverlay = null;
-        }
-    }
-    function openSettings() {
-        closeSettings();
-        const currentDomain = getDomain();
-        const sites = config.sites || {};
-        const existingSite = sites[currentDomain] || {
-            enabled: false,
-            urlPatterns: [],
-            chapterSelector: "",
-            junkSelector: ""
-        };
-        const overlay = document.createElement("div");
-        overlay.id = "pmerger-settings-overlay";
-        overlay.innerHTML = `
-            <div class="pmerger-settings-box">
-                <div class="pmerger-settings-header">
-                    <strong>pMerger Settings</strong>
-                    <button type="button" data-pmerger-close>×</button>
-                </div>
-                <div class="pmerger-site-name">${currentDomain}</div>
-                <div class="pmerger-settings-section">
-                    <label class="pmerger-enabled-row">
-                        <input type="checkbox" data-site-enabled ${existingSite.enabled === true ? "checked" : ""}>
-                        Enabled
-                    </label>
-                    <label>
-                        URL patterns
-                        <textarea data-site-patterns rows="4"></textarea>
-                    </label>
-                    <label>
-                        Chapter selector
-                        <input type="text" data-site-selector>
-                    </label>
-                    <label>
-                        Junk selector
-                        <input type="text" data-site-junk>
-                    </label>
-                </div>
-                <div class="pmerger-settings-actions">
-                    <button type="button" data-pmerger-save>Save</button>
-                    <button type="button" data-pmerger-cancel>Cancel</button>
-                </div>
-            </div>
-        `;
-        GM_addStyle(`
-            #pmerger-settings-overlay {
-                position: fixed; inset: 0; z-index: 2147483647;
-                background: rgba(0, 0, 0, 0.75); display: flex;
-                align-items: center; justify-content: center; padding: 20px;
-                box-sizing: border-box; font-family: Arial, sans-serif;
+        // Remove only empty wrappers.
+        root.querySelectorAll("p, div, span").forEach((el) => {
+            if (!el.textContent.trim() && el.children.length === 0) {
+                el.remove();
             }
-            .pmerger-settings-box {
-                width: min(600px, 100%); max-height: 90vh; overflow-y: auto;
-                background: #181818; color: #eeeeee; border: 1px solid #333333;
-                border-radius: 10px; padding: 20px; box-sizing: border-box;
-                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
-            }
-            .pmerger-settings-header {
-                display: flex; align-items: center; justify-content: space-between;
-                gap: 15px; margin-bottom: 20px; font-size: 20px;
-            }
-            .pmerger-settings-header button {
-                border: 0; background: transparent; color: #eeeeee;
-                font-size: 28px; cursor: pointer; line-height: 1;
-            }
-            .pmerger-site-name {
-                font-size: 18px; font-weight: bold; color: #ffffff; margin-bottom: 20px;
-            }
-            .pmerger-settings-section { margin-bottom: 20px; }
-            .pmerger-settings-section label { display: block; margin-bottom: 15px; }
-            .pmerger-enabled-row { display: flex !important; align-items: center; gap: 8px; font-weight: bold; }
-            .pmerger-settings-section input[type="text"],
-            .pmerger-settings-section textarea {
-                width: 100%; box-sizing: border-box; margin-top: 6px; padding: 9px;
-                background: #222222; color: #eeeeee; border: 1px solid #444444;
-                border-radius: 5px; font: inherit;
-            }
-            .pmerger-settings-section textarea { resize: vertical; }
-            .pmerger-settings-actions { display: flex; gap: 10px; justify-content: flex-end; }
-            .pmerger-settings-actions button {
-                padding: 9px 18px; cursor: pointer; border: 1px solid #444444;
-                border-radius: 5px; background: #292929; color: #eeeeee;
-            }
-            .pmerger-settings-actions button:hover { background: #333333; }
-        `);
-        document.body.appendChild(overlay);
-        settingsOverlay = overlay;
-        overlay.querySelector("[data-site-patterns]").value = Array.isArray(existingSite.urlPatterns)
-            ? existingSite.urlPatterns.join("\n")
-            : "";
-        overlay.querySelector("[data-site-selector]").value = existingSite.chapterSelector || "";
-        overlay.querySelector("[data-site-junk]").value = existingSite.junkSelector || "";
-        overlay.querySelector("[data-pmerger-close]").addEventListener("click", closeSettings);
-        overlay.querySelector("[data-pmerger-cancel]").addEventListener("click", closeSettings);
-        overlay.querySelector("[data-pmerger-save]").addEventListener("click", () => {
-            const enabled = overlay.querySelector("[data-site-enabled]").checked;
-            const patternsText = overlay.querySelector("[data-site-patterns]").value;
-            const chapterSelector = overlay.querySelector("[data-site-selector]").value.trim();
-            const junkSelector = overlay.querySelector("[data-site-junk]").value.trim();
-            const urlPatterns = patternsText
-                .split(/\r?\n/)
-                .map((value) => value.trim())
-                .filter(Boolean);
-            const updatedSites = { ...(config.sites || {}) };
-            updatedSites[currentDomain] = { enabled, urlPatterns, chapterSelector, junkSelector };
-            config = { sites: updatedSites };
-            saveConfig(config);
-            closeSettings();
-            applyCurrentPage();
         });
+        scanAndCleanText(root);
+        if (userConfig.customJunkSelectors) {
+            try {
+                root.querySelectorAll(userConfig.customJunkSelectors).forEach((el) => el.remove());
+            } catch (e) {
+                console.error("[pMerger] Invalid custom junk selector:", e);
+            }
+        }
+        root.querySelectorAll("script, style").forEach((el) => el.remove());
+        // Select paragraph-like elements while avoiding parent containers.
+        const selector = "p, div.reader-paragraph, .chapter-view p, #reader-area p, .reader-area p, div, span";
+        const elements = Array.from(root.querySelectorAll(selector));
+        const blocks = elements.filter((el) => {
+            const text = getElementText(el);
+            if (!isMeaningfulText(text) || text.length < 3 || isJunkElement(el)) {
+                return false;
+            }
+            if (el.closest("script, style, textarea, input, code, nav, header, footer, aside, form")) {
+                return false;
+            }
+            return !Array.from(el.children).some((child) =>
+                /^(P|DIV|ARTICLE|SECTION|BLOCKQUOTE|UL|OL|LI)$/.test(child.tagName)
+            );
+        });
+        // Remove nested duplicates while retaining document order.
+        const uniqueBlocks = blocks.filter((el) => !blocks.some((other) => other !== el && other.contains(el)));
+        if (uniqueBlocks.length < 2) return false;
+        let changed = false;
+        let currentGroup = [];
+        let currentSentenceCount = 0;
+        const sentenceCap = Math.max(1, Math.min(Number(userConfig.maxSentences) || 5, 5));
+        const flushGroup = () => {
+            if (currentGroup.length > 1) {
+                executeMerge(currentGroup);
+                changed = true;
+            }
+            currentGroup = [];
+            currentSentenceCount = 0;
+        };
+        for (const block of uniqueBlocks) {
+            const text = getElementText(block);
+            const type = getBlockType(text);
+            const sentenceCount = Math.max(1, countSentences(text));
+            // Dialogue and mixed blocks are hard boundaries.
+            // Never guess whether consecutive dialogue belongs to the same speaker.
+            if (type !== "narration") {
+                flushGroup();
+                continue;
+            }
+            if (sentenceCount > sentenceCap) {
+                flushGroup();
+                continue;
+            }
+            if (currentGroup.length && currentSentenceCount + sentenceCount > sentenceCap) {
+                flushGroup();
+            }
+            currentGroup.push(block);
+            currentSentenceCount += sentenceCount;
+        }
+        flushGroup();
+        if (changed) {
+            modifiedContainers.add(root);
+            if (manualTrigger) {
+                showToast(`pMerger (${currentDomain}): Paragraphs merged successfully!`);
+            }
+        } else if (manualTrigger) {
+            showToast("pMerger: No safe paragraph merges found.");
+        }
+        return changed;
     }
-
-    function registerMenuCommands() {
-        if (menuCommandsRegistered) return;
-        menuCommandsRegistered = true;
-        GM_registerMenuCommand("pMerger: Apply", applyCurrentPage, MENU_IDS.apply);
-        GM_registerMenuCommand("pMerger: Undo", undoCurrentPage, MENU_IDS.undo);
-        GM_registerMenuCommand("pMerger: Settings", openSettings, MENU_IDS.settings);
-    }
-    function initialize() {
-        lastUrl = location.href;
-        registerMenuCommands();
-        const site = getCurrentSite();
-        if (site && site.enabled) {
-            startCleaner();
+    function executeMerge(group) {
+        const target = group[0];
+        for (let i = 1; i < group.length; i++) {
+            const source = group[i];
+            if (!source.isConnected) continue;
+            const targetText = target.textContent || "";
+            if (targetText.length > 0 && !/\s$/.test(targetText)) {
+                target.appendChild(document.createTextNode(" "));
+            }
+            while (source.firstChild) {
+                target.appendChild(source.firstChild);
+            }
+            source.remove();
         }
     }
-    initialize();
+    GM_registerMenuCommand("▶ Apply pMerger & Cleaner Now", () => {
+        const success = processManualReader(true);
+        if (!success) {
+            showToast("pMerger: No mergeable text blocks found.");
+        }
+    });
+    GM_registerMenuCommand("↺ Undo pMerger Changes", () => {
+        let restoredCount = 0;
+        for (const container of modifiedContainers) {
+            if (originalNodeMap.has(container) && container.isConnected) {
+                const originalClone = originalNodeMap.get(container);
+                container.parentNode.replaceChild(originalClone, container);
+                originalNodeMap.set(originalClone, originalClone.cloneNode(true));
+                restoredCount++;
+            }
+        }
+        modifiedContainers.clear();
+        showToast(`pMerger: Restored ${restoredCount} containers.`);
+    });
+    GM_registerMenuCommand("⚙ Configure Custom Junk & Rules", () => {
+        showSettingsUI();
+    });
+    const observer = new MutationObserver(() => {
+        scanAndCleanText(document.body);
+    });
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+    scanAndCleanText(document.body);
 })();
