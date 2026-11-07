@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FR Debug
 // @namespace    https://github.com/FRDebug
-// @version      2.0.0
-// @description  Independently analyze FoxReplace rules against the current page.
+// @version      2.1.0
+// @description  Independently analyze FoxReplace rules and visible page values against the current page.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -22,6 +22,14 @@
         top: 60,
         columnWidths: {},
         minimized: false
+    };
+    const LIMITS = {
+        groups: 500,
+        rules: 5000,
+        pageTextChars: 2_000_000,
+        regexLength: 1000,
+        matchesPerRule: 5000,
+        columnWidth: 1200
     };
     const EMPTY_DATABASE = {
         format: "foxreplace",
@@ -48,6 +56,7 @@
         lastSelectedRow: null,
         collapsedGroups: new Set(),
         panel: null,
+        resizeObserver: null,
         status: "Import a FoxReplace JSON file to begin.",
         lastAnalysis: null
     };
@@ -85,26 +94,90 @@
         state.settings = {
             ...DEFAULT_SETTINGS,
             ...settings,
-            width: validNumber(settings.width, DEFAULT_SETTINGS.width, 420, 10000),
+            width: validNumber(settings.width, DEFAULT_SETTINGS.width, 320, 10000),
             height: validNumber(settings.height, DEFAULT_SETTINGS.height, 220, 10000),
             left: validNumber(settings.left, DEFAULT_SETTINGS.left, 0, 10000),
             top: validNumber(settings.top, DEFAULT_SETTINGS.top, 0, 10000),
             minimized: settings.minimized === true,
-            columnWidths: {
-                ...DEFAULT_SETTINGS.columnWidths,
-                ...(settings.columnWidths && typeof settings.columnWidths === "object" ? settings.columnWidths : {})
-            }
+            columnWidths: Object.fromEntries(
+                Object.entries(
+                    settings.columnWidths && typeof settings.columnWidths === "object" ? settings.columnWidths : {}
+                )
+                    .filter(([key]) =>
+                        [
+                            "group",
+                            "search",
+                            "replacement",
+                            "inputType",
+                            "outputType",
+                            "caseSensitive",
+                            "enabled",
+                            "matches",
+                            "conflict",
+                            "source",
+                            "error"
+                        ].includes(key)
+                    )
+                    .map(([key, value]) => {
+                        const width = Number(value);
+                        return [key, Number.isFinite(width) ? Math.min(LIMITS.columnWidth, Math.max(55, width)) : 120];
+                    })
+            )
         };
     }
     function saveSettings() {
         storageSet(STORAGE.settings, state.settings);
     }
+    function validateStoredDatabase(saved) {
+        if (!saved || typeof saved !== "object" || !Array.isArray(saved.groups)) {
+            throw new Error("Saved database has an invalid structure.");
+        }
+        if (saved.groups.length > LIMITS.groups) throw new Error(`Saved database exceeds ${LIMITS.groups} groups.`);
+        let totalRules = 0;
+        const groups = saved.groups.map((group, groupIndex) => {
+            if (!group || typeof group !== "object" || Array.isArray(group)) {
+                throw new Error(`Saved group ${groupIndex + 1} is invalid.`);
+            }
+            const source =
+                group.original && Array.isArray(group.original.substitutions)
+                    ? group.original
+                    : {
+                          name: group.name,
+                          urls: group.urls,
+                          enabled: group.enabled,
+                          html: group.html,
+                          mode: group.mode,
+                          substitutions: Array.isArray(group.rules)
+                              ? group.rules.map((rule) => ({
+                                    input: rule && rule.input,
+                                    output: rule && rule.output,
+                                    inputType: rule && rule.inputType,
+                                    outputType: rule && rule.outputType,
+                                    caseSensitive: rule && rule.caseSensitive,
+                                    enabled: rule && rule.enabled
+                                }))
+                              : []
+                      };
+            if (!Array.isArray(source.substitutions))
+                throw new Error(`Saved group ${groupIndex + 1} has no rules array.`);
+            totalRules += source.substitutions.length;
+            if (totalRules > LIMITS.rules) throw new Error(`Saved database exceeds ${LIMITS.rules} rules.`);
+            return normalizeImportedGroup(source, groupIndex);
+        });
+        return { format: "foxreplace", version: saved.version ?? null, original: saved.original || null, groups };
+    }
     function loadDatabase() {
         const saved = storageGet(STORAGE.database, null);
-        if (saved && typeof saved === "object" && Array.isArray(saved.groups)) {
-            state.database = saved;
-            state.imported = true;
-            state.status = `Loaded ${saved.groups.length} saved FoxReplace groups.`;
+        if (!saved) return;
+        try {
+            state.database = validateStoredDatabase(saved);
+            state.imported = state.database.groups.length > 0;
+            state.status = `Loaded and validated ${state.database.groups.length} saved FoxReplace groups.`;
+        } catch (error) {
+            state.database = cloneJSON(EMPTY_DATABASE);
+            state.imported = false;
+            state.status = `Saved database rejected: ${error.message}. Please re-import the JSON file.`;
+            console.warn("[FR Debug] Saved database validation failed:", error);
         }
     }
     function saveDatabase() {
@@ -149,6 +222,10 @@
         if (!["text", "regexp", "wholewords"].includes(inputType)) {
             errors.push(`Unsupported input type: ${inputType}`);
         }
+        if (!["text", "html"].includes(outputType)) {
+            errors.push(`Unsupported output type: ${outputType}`);
+        }
+        if (input.length > LIMITS.regexLength) errors.push(`Search input exceeds ${LIMITS.regexLength} characters.`);
         return {
             original: sourceRule,
             input,
@@ -195,6 +272,12 @@
         if (parsed.groups.length === 0) {
             throw new Error("The FoxReplace file contains no groups.");
         }
+        if (parsed.groups.length > LIMITS.groups) throw new Error(`The file exceeds ${LIMITS.groups} groups.`);
+        const ruleCount = parsed.groups.reduce(
+            (total, group) => total + (group && Array.isArray(group.substitutions) ? group.substitutions.length : 0),
+            0
+        );
+        if (ruleCount > LIMITS.rules) throw new Error(`The file exceeds ${LIMITS.rules} rules.`);
         return {
             format: "foxreplace",
             version: parsed.version ?? null,
@@ -243,11 +326,7 @@
         "HEADER",
         "FOOTER",
         "ASIDE",
-        "FORM",
         "BUTTON",
-        "INPUT",
-        "SELECT",
-        "TEXTAREA",
         "IFRAME",
         "OBJECT",
         "EMBED",
@@ -289,10 +368,7 @@
     function isExcludedElement(element) {
         if (!(element instanceof Element)) return false;
         if (EXCLUDED_TAGS.has(element.tagName)) return true;
-        if (element.id === "fr-debug-panel" || element.id === "fr-scanner-panel") {
-            return true;
-        }
-        if (element.closest("#fr-debug-panel, #fr-scanner-panel, " + "[data-fr-debug], [data-fr-scanner]")) {
+        if (element.id === "fr-debug-panel" || element.closest("#fr-debug-panel, [data-fr-debug]")) {
             return true;
         }
         if (
@@ -311,27 +387,59 @@
             style.display === "none" ||
             style.visibility === "hidden" ||
             style.visibility === "collapse" ||
+            style.opacity === "0" ||
             style.contentVisibility === "hidden"
         );
     }
     function extractPageText() {
         if (!document.body) return "";
         const chunks = [];
-        function walk(node) {
-            if (node.nodeType === Node.TEXT_NODE) {
-                chunks.push(node.nodeValue || "");
-                return;
+        let collectedLength = 0;
+        const add = (value) => {
+            if (collectedLength >= LIMITS.pageTextChars) return false;
+            const text = String(value || "");
+            const remaining = LIMITS.pageTextChars - collectedLength;
+            const part = text.length > remaining ? text.slice(0, remaining) : text;
+            chunks.push(part);
+            collectedLength += part.length;
+            return collectedLength < LIMITS.pageTextChars;
+        };
+        const walk = (root) => {
+            for (const node of root.childNodes) {
+                if (collectedLength >= LIMITS.pageTextChars) return;
+                if (node.nodeType === Node.TEXT_NODE) {
+                    add(node.nodeValue || "");
+                    continue;
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                const element = node;
+                if (isExcludedElement(element)) continue;
+                const tag = element.tagName;
+                const block = BLOCK_TAGS.has(tag);
+                if (block || tag === "BR" || tag === "HR") add("\n");
+                if (tag === "INPUT") {
+                    const type = (element.type || "text").toLowerCase();
+                    if (!["password", "hidden", "file", "submit", "button", "reset", "image"].includes(type)) {
+                        if (["checkbox", "radio"].includes(type)) {
+                            if (element.checked) add(` ${element.value || "checked"} `);
+                        } else if (element.value) add(` ${element.value} `);
+                    }
+                } else if (tag === "TEXTAREA" && element.value) {
+                    add(` ${element.value} `);
+                } else if (tag === "SELECT") {
+                    const selected = Array.from(element.selectedOptions || [])
+                        .map((option) => option.label || option.textContent || option.value)
+                        .filter(Boolean);
+                    if (selected.length) add(` ${selected.join(" ")} `);
+                }
+                if (tag === "TEXTAREA" || tag === "SELECT") continue;
+                if (element.getAttribute("alt")) add(` ${element.getAttribute("alt")} `);
+                if (element.isContentEditable && element.getAttribute("aria-label"))
+                    add(` ${element.getAttribute("aria-label")} `);
+                walk(element);
+                if (block || tag === "BR" || tag === "HR") add("\n");
             }
-            if (node.nodeType !== Node.ELEMENT_NODE) return;
-            const element = node;
-            if (isExcludedElement(element)) return;
-            const isBlock = BLOCK_TAGS.has(element.tagName);
-            if (isBlock) chunks.push("\n");
-            for (const child of element.childNodes) {
-                walk(child);
-            }
-            if (isBlock) chunks.push("\n");
-        }
+        };
         walk(document.body);
         return chunks
             .join("")
@@ -353,7 +461,12 @@
         let flags;
         switch (rule.inputType) {
             case "regexp":
-                // Preserve FoxReplace regular-expression syntax.
+                // Reject common catastrophic-backtracking structures before running on page text.
+                if (input.length > LIMITS.regexLength)
+                    throw new Error(`Regular expression exceeds ${LIMITS.regexLength} characters.`);
+                if (/\([^)]*[+*][^)]*\)[+*{]|\([^)]*\|[^)]*\)[+*{]|(?:\.\*|\.\+){2,}|\[[^\]]+\][+*][+*{]/.test(input)) {
+                    throw new Error("Regular expression rejected: potentially catastrophic nested quantifier.");
+                }
                 source = input;
                 flags = rule.caseSensitive ? "g" : "gi";
                 break;
@@ -379,6 +492,8 @@
         regex.lastIndex = 0;
         let match;
         while ((match = regex.exec(text)) !== null) {
+            if (matches.length >= LIMITS.matchesPerRule)
+                throw new Error(`Match limit (${LIMITS.matchesPerRule}) exceeded for this rule.`);
             matches.push({
                 index: match.index,
                 length: match[0].length,
@@ -475,97 +590,47 @@
             }));
     }
     function normalizeConflictText(value) {
-        return (
-            String(value || "")
-                .normalize("NFKC")
-                .toLocaleLowerCase()
-                .trim()
-                // Treat common separators as equivalent.
-                .replace(/[\s_\-‐‑‒–—―]+/g, " ")
-                .replace(/\s+/g, " ")
-        );
+        return String(value || "")
+            .normalize("NFKC")
+            .trim();
     }
     function rulesConflict(first, second) {
-        const firstCaseSensitive = first.caseSensitive === true;
-        const secondCaseSensitive = second.caseSensitive === true;
-        if (firstCaseSensitive !== secondCaseSensitive) return false;
         if (first.inputType !== second.inputType) return false;
         if (first.outputType !== second.outputType) return false;
-        const normalizeSearch = (value) => {
-            const text = String(value || "")
-                .normalize("NFKC")
-                .trim()
-                .replace(/[\s_\-‐‑‒–—―]+/g, " ")
-                .replace(/\s+/g, " ");
-            return firstCaseSensitive ? text : text.toLocaleLowerCase();
-        };
-        const firstSearch = normalizeSearch(first.search);
-        const secondSearch = normalizeSearch(second.search);
+        if (first.inputType === "regexp") {
+            // Regex equivalence is not safely inferable from textual normalization.
+            return false;
+        }
+        const firstSearch = normalizeConflictText(first.search);
+        const secondSearch = normalizeConflictText(second.search);
         if (!firstSearch || !secondSearch) return false;
-        if (firstSearch !== secondSearch) return false;
-        if (first.replacement === second.replacement) return false;
-        return true;
+        const sameSearch =
+            first.caseSensitive === true && second.caseSensitive === true
+                ? firstSearch === secondSearch
+                : firstSearch.toLocaleLowerCase() === secondSearch.toLocaleLowerCase();
+        return sameSearch && first.replacement !== second.replacement;
     }
     function buildConflictClusters(matchedRules) {
-        const rules = matchedRules.slice().sort((a, b) => {
-            if (a.groupIndex !== b.groupIndex) {
-                return a.groupIndex - b.groupIndex;
-            }
-            return a.ruleIndex - b.ruleIndex;
-        });
-        const adjacency = rules.map(() => []);
-        for (let i = 0; i < rules.length; i++) {
-            for (let j = i + 1; j < rules.length; j++) {
-                if (rulesConflict(rules[i], rules[j])) {
-                    adjacency[i].push(j);
-                    adjacency[j].push(i);
-                }
-            }
+        const buckets = new Map();
+        for (const rule of matchedRules) {
+            if (rule.inputType === "regexp") continue;
+            const normalized = normalizeConflictText(rule.search);
+            const keySearch = rule.caseSensitive ? normalized : normalized.toLocaleLowerCase();
+            const key = `${rule.inputType}\u0000${rule.outputType}\u0000${rule.caseSensitive === true ? "sensitive" : "insensitive"}\u0000${keySearch}`;
+            if (!buckets.has(key)) buckets.set(key, []);
+            buckets.get(key).push(rule);
         }
-        const visited = new Set();
         const clusters = [];
-        for (let start = 0; start < rules.length; start++) {
-            if (visited.has(start) || adjacency[start].length === 0) {
-                continue;
-            }
-            const stack = [start];
-            const componentIndexes = new Set();
-            visited.add(start);
-            while (stack.length) {
-                const current = stack.pop();
-                componentIndexes.add(current);
-                for (const neighbor of adjacency[current]) {
-                    if (!visited.has(neighbor)) {
-                        visited.add(neighbor);
-                        stack.push(neighbor);
-                    }
-                }
-            }
-            const component = Array.from(componentIndexes)
-                .map((index) => rules[index])
-                .sort((a, b) => {
-                    if (a.groupIndex !== b.groupIndex) {
-                        return a.groupIndex - b.groupIndex;
-                    }
-                    return a.ruleIndex - b.ruleIndex;
-                });
-            if (component.length > 1) {
-                const firstMember = component[0];
-                const normalizedSearch =
-                    firstMember.caseSensitive === true
-                        ? String(firstMember.search || "")
-                              .normalize("NFKC")
-                              .trim()
-                              .replace(/[\s_\-‐‑‒–—―]+/g, " ")
-                              .replace(/\s+/g, " ")
-                        : normalizeConflictText(firstMember.search);
-                clusters.push({
-                    id: `conflict-${clusters.length + 1}`,
-                    search: firstMember.search,
-                    normalizedSearch,
-                    members: component
-                });
-            }
+        for (const members of buckets.values()) {
+            const distinctOutputs = new Set(members.map((member) => member.replacement));
+            if (members.length < 2 || distinctOutputs.size < 2) continue;
+            members.sort((a, b) => a.groupIndex - b.groupIndex || a.ruleIndex - b.ruleIndex);
+            clusters.push({
+                id: `conflict-${clusters.length + 1}`,
+                search: members[0].search,
+                normalizedSearch: normalizeConflictText(members[0].search),
+                members
+            });
         }
         return clusters;
     }
@@ -576,10 +641,16 @@
         if (!value) return true;
         // Support regular-expression patterns written as /pattern/flags.
         if (value.startsWith("/")) {
+            if (value.length > LIMITS.regexLength) return false;
             const lastSlash = value.lastIndexOf("/");
             if (lastSlash > 0) {
                 const source = value.slice(1, lastSlash);
                 const flags = value.slice(lastSlash + 1);
+                if (
+                    source.length > LIMITS.regexLength ||
+                    /\([^)]*[+*][^)]*\)[+*{]|\([^)]*\|[^)]*\)[+*{]|(?:\.\*|\.\+){2,}/.test(source)
+                )
+                    return false;
                 try {
                     return new RegExp(source, flags).test(url);
                 } catch (error) {
@@ -791,7 +862,7 @@
                 display: flex;
                 flex-direction: column;
                 box-sizing: border-box;
-                min-width: 420px;
+                min-width: 320px;
                 min-height: 220px;
                 max-width: 95vw;
                 max-height: 95vh;
@@ -1182,10 +1253,15 @@
                 }
             });
             observer.observe(panel);
+            state.resizeObserver = observer;
         }
         renderDebug();
     }
     function closeDebugPanel() {
+        if (state.resizeObserver) {
+            state.resizeObserver.disconnect();
+            state.resizeObserver = null;
+        }
         if (state.panel) {
             state.panel.remove();
             state.panel = null;
@@ -1336,7 +1412,11 @@
                 for (let i = start; i <= end; i++) {
                     state.selectedRows.add(visibleRows[i].id);
                 }
+            } else {
+                state.selectedRows.clear();
+                state.selectedRows.add(id);
             }
+            state.lastSelectedRow = id;
         } else if (event.ctrlKey || event.metaKey) {
             if (state.selectedRows.has(id)) {
                 state.selectedRows.delete(id);
@@ -1483,9 +1563,19 @@
             input.type = "search";
             input.placeholder = "Filter";
             input.value = state.gridFilters[column.key] || "";
-            input.addEventListener("change", () => {
+            input.addEventListener("input", () => {
                 state.gridFilters[column.key] = input.value;
+                const selectionStart = input.selectionStart;
                 renderDebug();
+                const replacement = content.querySelector(
+                    `.frd-filter-row input:nth-of-type(${GRID_COLUMNS.findIndex((item) => item.key === column.key) + 1})`
+                );
+                if (replacement) {
+                    replacement.focus();
+                    try {
+                        replacement.setSelectionRange(selectionStart, selectionStart);
+                    } catch (_) {}
+                }
             });
             th.appendChild(input);
             filterRow.appendChild(th);
