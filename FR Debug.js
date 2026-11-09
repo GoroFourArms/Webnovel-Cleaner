@@ -31,16 +31,80 @@
         matchesPerRule: 5000,
         columnWidth: 1200
     };
+    const EXCLUDED_TAGS = new Set([
+        "SCRIPT",
+        "STYLE",
+        "NOSCRIPT",
+        "TEMPLATE",
+        "NAV",
+        "HEADER",
+        "FOOTER",
+        "ASIDE",
+        "BUTTON",
+        "IFRAME",
+        "OBJECT",
+        "EMBED",
+        "SVG",
+        "CANVAS"
+    ]);
+    const BLOCK_TAGS = new Set([
+        "ADDRESS",
+        "ARTICLE",
+        "BLOCKQUOTE",
+        "DIV",
+        "DL",
+        "DT",
+        "DD",
+        "FIELDSET",
+        "FIGCAPTION",
+        "FIGURE",
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H6",
+        "HR",
+        "LI",
+        "MAIN",
+        "OL",
+        "P",
+        "PRE",
+        "SECTION",
+        "TABLE",
+        "TBODY",
+        "THEAD",
+        "TR",
+        "TD",
+        "TH",
+        "UL"
+    ]);
+    const GRID_COLUMNS = [
+        { key: "group", label: "Group", width: 135 },
+        { key: "search", label: "Search / Find", width: 240 },
+        { key: "replacement", label: "Replacement", width: 240 },
+        { key: "inputType", label: "Input Type", width: 95 },
+        { key: "outputType", label: "Output Type", width: 95 },
+        { key: "caseSensitive", label: "Case", width: 65 },
+        { key: "enabled", label: "Enabled", width: 65 },
+        { key: "matches", label: "Matches", width: 65 },
+        { key: "conflict", label: "Conflict", width: 85 },
+        { key: "source", label: "Source Index", width: 115 },
+        { key: "error", label: "Error", width: 220 }
+    ];
     const EMPTY_DATABASE = {
         format: "foxreplace",
         version: null,
         groups: []
     };
+    let gridRenderTimer = null;
+    let resizeSaveTimer = null;
     const state = {
         settings: { ...DEFAULT_SETTINGS },
         database: cloneJSON(EMPTY_DATABASE),
         pageText: "",
         matchingRules: [],
+        allMatchedRules: [],
         groupMatches: [],
         conflicts: [],
         ruleErrors: [],
@@ -196,7 +260,7 @@
         return typeof rule.input === "string" ? rule.input : "";
     }
     function normalizeImportedRule(sourceRule, groupIndex, ruleIndex) {
-        if (!sourceRule || typeof sourceRule !== "object") {
+        if (!sourceRule || typeof sourceRule !== "object" || Array.isArray(sourceRule)) {
             return {
                 original: sourceRule,
                 input: "",
@@ -225,7 +289,9 @@
         if (!["text", "html"].includes(outputType)) {
             errors.push(`Unsupported output type: ${outputType}`);
         }
-        if (input.length > LIMITS.regexLength) errors.push(`Search input exceeds ${LIMITS.regexLength} characters.`);
+        if (input.length > LIMITS.regexLength) {
+            errors.push(`Search input exceeds ${LIMITS.regexLength} characters.`);
+        }
         return {
             original: sourceRule,
             input,
@@ -301,11 +367,20 @@
         );
         state.database = newDatabase;
         state.imported = true;
+        // Clear results from the previous import.
+        state.pageText = "";
         state.matchingRules = [];
+        state.allMatchedRules = [];
         state.groupMatches = [];
         state.conflicts = [];
         state.ruleErrors = [];
+        // Clear old selections and filters.
+        state.gridSearch = "";
+        state.gridFilters = {};
+        state.selectedRows.clear();
+        state.lastSelectedRow = null;
         state.collapsedGroups.clear();
+        state.lastAnalysis = null;
         saveDatabase();
         storageSet(STORAGE.lastImport, Date.now());
         state.status =
@@ -317,54 +392,6 @@
             invalidRules
         };
     }
-    const EXCLUDED_TAGS = new Set([
-        "SCRIPT",
-        "STYLE",
-        "NOSCRIPT",
-        "TEMPLATE",
-        "NAV",
-        "HEADER",
-        "FOOTER",
-        "ASIDE",
-        "BUTTON",
-        "IFRAME",
-        "OBJECT",
-        "EMBED",
-        "SVG",
-        "CANVAS"
-    ]);
-    const BLOCK_TAGS = new Set([
-        "ADDRESS",
-        "ARTICLE",
-        "BLOCKQUOTE",
-        "DIV",
-        "DL",
-        "DT",
-        "DD",
-        "FIELDSET",
-        "FIGCAPTION",
-        "FIGURE",
-        "H1",
-        "H2",
-        "H3",
-        "H4",
-        "H5",
-        "H6",
-        "HR",
-        "LI",
-        "MAIN",
-        "OL",
-        "P",
-        "PRE",
-        "SECTION",
-        "TABLE",
-        "TBODY",
-        "THEAD",
-        "TR",
-        "TD",
-        "TH",
-        "UL"
-    ]);
     function isExcludedElement(element) {
         if (!(element instanceof Element)) return false;
         if (EXCLUDED_TAGS.has(element.tagName)) return true;
@@ -492,19 +519,20 @@
         regex.lastIndex = 0;
         let match;
         while ((match = regex.exec(text)) !== null) {
-            if (matches.length >= LIMITS.matchesPerRule)
+            if (matches.length >= LIMITS.matchesPerRule) {
                 throw new Error(`Match limit (${LIMITS.matchesPerRule}) exceeded for this rule.`);
+            }
             matches.push({
                 index: match.index,
                 length: match[0].length,
                 text: match[0]
             });
             if (match[0].length === 0) {
-                // Stop if the empty match occurred at the end of the text.
-                if (regex.lastIndex >= text.length) break;
-                // Advance by one Unicode code point to prevent an infinite loop.
+                if (regex.lastIndex >= text.length) {
+                    break;
+                }
                 const codePoint = text.codePointAt(regex.lastIndex);
-                regex.lastIndex += codePoint > 0xffff ? 2 : 1;
+                regex.lastIndex += regex.unicode && codePoint > 0xffff ? 2 : 1;
             }
         }
         regex.lastIndex = 0;
@@ -615,22 +643,43 @@
         for (const rule of matchedRules) {
             if (rule.inputType === "regexp") continue;
             const normalized = normalizeConflictText(rule.search);
-            const keySearch = rule.caseSensitive ? normalized : normalized.toLocaleLowerCase();
-            const key = `${rule.inputType}\u0000${rule.outputType}\u0000${rule.caseSensitive === true ? "sensitive" : "insensitive"}\u0000${keySearch}`;
-            if (!buckets.has(key)) buckets.set(key, []);
+            if (!normalized) continue;
+            const key = [rule.inputType, rule.outputType, normalized.toLocaleLowerCase()].join("\u0000");
+            if (!buckets.has(key)) {
+                buckets.set(key, []);
+            }
             buckets.get(key).push(rule);
         }
         const clusters = [];
         for (const members of buckets.values()) {
-            const distinctOutputs = new Set(members.map((member) => member.replacement));
-            if (members.length < 2 || distinctOutputs.size < 2) continue;
-            members.sort((a, b) => a.groupIndex - b.groupIndex || a.ruleIndex - b.ruleIndex);
-            clusters.push({
-                id: `conflict-${clusters.length + 1}`,
-                search: members[0].search,
-                normalizedSearch: normalizeConflictText(members[0].search),
-                members
-            });
+            if (members.length < 2) continue;
+            const visited = new Set();
+            for (let start = 0; start < members.length; start++) {
+                if (visited.has(start)) continue;
+                const component = [];
+                const queue = [start];
+                visited.add(start);
+                while (queue.length) {
+                    const current = queue.pop();
+                    const first = members[current];
+                    component.push(first);
+                    for (let next = 0; next < members.length; next++) {
+                        if (visited.has(next)) continue;
+                        if (rulesConflict(first, members[next])) {
+                            visited.add(next);
+                            queue.push(next);
+                        }
+                    }
+                }
+                if (component.length < 2) continue;
+                component.sort((a, b) => a.groupIndex - b.groupIndex || a.ruleIndex - b.ruleIndex);
+                clusters.push({
+                    id: `conflict-${clusters.length + 1}`,
+                    search: component[0].search,
+                    normalizedSearch: normalizeConflictText(component[0].search),
+                    members: component
+                });
+            }
         }
         return clusters;
     }
@@ -682,582 +731,59 @@
             return;
         }
         try {
-            // 1. Extract visible page text.
+            // Extract visible page text once.
             const pageText = extractPageText();
-            // 2. Find groups whose URL patterns match this page.
-            const eligibleGroups = state.database.groups.filter(
-                (group) =>
-                    group.enabled !== false &&
-                    Array.isArray(group.urls) &&
-                    (group.urls.length === 0 || group.urls.some((pattern) => urlPatternMatches(pattern, location.href)))
-            );
-            // 3. Match rules and collect errors.
-            const result = matchPageRules(pageText, eligibleGroups);
-            const matchedRules = result.matches;
-            const ruleErrors = result.errors;
-            // 4. Build matched groups.
+            // Find enabled groups whose URL settings match this website.
+            const eligibleGroupIndexes = new Set();
+            state.database.groups.forEach((group, index) => {
+                if (group.enabled === false) return;
+                const urls = Array.isArray(group.urls) ? group.urls : [];
+                if (urls.length === 0 || urls.some((pattern) => urlPatternMatches(pattern, location.href))) {
+                    eligibleGroupIndexes.add(index);
+                }
+            });
+            // Analyze every enabled group only once.
+            const allEnabledGroups = state.database.groups.filter((group) => group.enabled !== false);
+            const result = matchPageRules(pageText, allEnabledGroups);
+            // All text matches, regardless of URL settings.
+            const allMatchedRules = result.matches;
+            // Only matches belonging to URL-eligible groups.
+            const matchedRules = allMatchedRules.filter((match) => eligibleGroupIndexes.has(match.sourceGroupIndex));
+            // Build groups and conflicts using website-eligible matches.
             const groupMatches = buildGroupMatches(matchedRules);
-            // 5. Build conflicts from matched rules.
             const conflicts = buildConflictClusters(matchedRules);
-            // 6. Save results.
+            // Save analysis results.
             state.pageText = pageText;
+            state.allMatchedRules = allMatchedRules;
             state.matchingRules = matchedRules;
             state.groupMatches = groupMatches;
             state.conflicts = conflicts;
-            state.ruleErrors = ruleErrors;
+            state.ruleErrors = result.errors;
             state.lastAnalysis = Date.now();
             const totalOccurrences = matchedRules.reduce((total, rule) => total + (rule.matchCount || 0), 0);
             state.status =
-                `Analysis complete: ${matchedRules.length} matched rules, ` +
-                `${totalOccurrences} occurrences, ${groupMatches.length} groups, ` +
+                `Analysis complete: ${allMatchedRules.length} text-matched rules, ` +
+                `${matchedRules.length} website-eligible rules, ` +
+                `${totalOccurrences} occurrences, ` +
+                `${groupMatches.length} groups, ` +
                 `${conflicts.length} conflict clusters, ` +
-                `${ruleErrors.length} rule errors.`;
+                `${state.ruleErrors.length} rule errors.`;
         } catch (error) {
             state.status = `Analysis failed: ${error.message}`;
             console.error("[FR Debug] Analysis failed:", error);
         }
         renderDebug();
     }
-    function openImportPicker() {
-        const picker = document.createElement("input");
-        picker.type = "file";
-        picker.accept = ".json,application/json";
-        picker.style.display = "none";
-        picker.addEventListener("change", async () => {
-            const file = picker.files && picker.files[0];
-            if (!file) {
-                picker.remove();
-                return;
-            }
-            try {
-                const text = await file.text();
-                const result = importFoxReplaceJSON(text);
-                state.status =
-                    `Imported ${result.groups} groups and ${result.rules} rules. ` +
-                    `${result.invalidRules} invalid rules retained.`;
-                // Show the imported database results immediately.
-                analyzeDebugPage();
-            } catch (error) {
-                state.status = `Import failed: ${error.message}`;
-                console.error("[FR Debug] Import failed:", error);
-                renderDebug();
-            } finally {
-                picker.remove();
-            }
-        });
-        document.body.appendChild(picker);
-        picker.click();
-    }
-    function buildCopyText() {
-        const lines = [
-            "FR Debug Analysis",
-            `Page: ${location.href}`,
-            `Analyzed: ${state.lastAnalysis ? new Date(state.lastAnalysis).toLocaleString() : "Not analyzed"}`,
-            "",
-            `Matched rules: ${state.matchingRules.length}`,
-            `Matched groups: ${state.groupMatches.length}`,
-            `Conflict clusters: ${state.conflicts.length}`,
-            `Rule errors: ${state.ruleErrors.length}`,
-            ""
-        ];
-        for (const group of state.groupMatches) {
-            lines.push(`GROUP: ${group.name}`);
-            for (const match of group.rules) {
-                lines.push(`  Search: ${match.search}`);
-                lines.push(`  Replacement: ${match.replacement}`);
-                lines.push(`  Input type: ${match.inputType}`);
-                lines.push(`  Output type: ${match.outputType}`);
-                lines.push(`  Case sensitive: ${match.caseSensitive ? "Yes" : "No"}`);
-                lines.push(`  Matches: ${match.matchCount}`);
-                lines.push(`  Source indexes: group ${match.sourceGroupIndex}, rule ${match.sourceRuleIndex}`);
-                lines.push("");
-            }
-        }
-        if (state.conflicts.length) {
-            lines.push("CONFLICTS");
-            state.conflicts.forEach((cluster, index) => {
-                lines.push(`${index + 1}. ${cluster.search}`);
-                cluster.members.forEach((member) => {
-                    lines.push(`   ${member.groupName} — ${member.search} → ${member.replacement}`);
-                });
-            });
-        }
-        if (state.ruleErrors.length) {
-            lines.push("", "RULE ERRORS");
-            state.ruleErrors.forEach((error) => {
-                lines.push(`${error.groupName}, rule ${error.ruleIndex + 1}: ${error.message}`);
-            });
-        }
-        return lines.join("\n");
-    }
-    async function copyGridText(text) {
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                await navigator.clipboard.writeText(text);
-                return true;
-            }
-            const area = document.createElement("textarea");
-            area.value = text;
-            area.style.position = "fixed";
-            area.style.opacity = "0";
-            document.body.appendChild(area);
-            area.select();
-            const copied = document.execCommand("copy");
-            area.remove();
-            return copied;
-        } catch (error) {
-            console.warn("[FR Debug] Grid copy failed:", error);
-            return false;
-        }
-    }
-    async function copyResults() {
-        const text = buildCopyText();
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                await navigator.clipboard.writeText(text);
-            } else {
-                const area = document.createElement("textarea");
-                area.value = text;
-                area.style.position = "fixed";
-                area.style.opacity = "0";
-                document.body.appendChild(area);
-                area.select();
-                const copied = document.execCommand("copy");
-                area.remove();
-                if (!copied) throw new Error("Clipboard copy was not available.");
-            }
-            state.status = "Analysis results copied to clipboard.";
-        } catch (error) {
-            state.status = `Copy failed: ${error.message}`;
-        }
-        renderDebug();
-    }
-    function createElement(tag, className, text) {
-        const element = document.createElement(tag);
-        if (className) element.className = className;
-        if (text !== undefined) element.textContent = String(text);
-        return element;
-    }
-    function createButton(label, callback, className = "") {
-        const button = createElement("button", className, label);
-        button.type = "button";
-        button.addEventListener("click", callback);
-        return button;
-    }
-    function appendField(parent, label, value) {
-        const wrapper = createElement("div", "frd-field");
-        const heading = createElement("strong", "", label);
-        const content = createElement("div", "frd-value", value);
-        wrapper.append(heading, content);
-        parent.appendChild(wrapper);
-    }
-    function installDebugStyles() {
-        if (document.getElementById("fr-debug-styles")) return;
-        const style = document.createElement("style");
-        style.id = "fr-debug-styles";
-        style.textContent = `
-            #fr-debug-panel {
-                position: fixed;
-                z-index: 2147483646;
-                display: flex;
-                flex-direction: column;
-                box-sizing: border-box;
-                min-width: 320px;
-                min-height: 220px;
-                max-width: 95vw;
-                max-height: 95vh;
-                width: 900px;
-                height: 600px;
-                background: #202124;
-                color: #e8eaed;
-                border: 1px solid #5f6368;
-                border-radius: 8px;
-                box-shadow: 0 8px 30px rgba(0,0,0,.45);
-                font: 13px/1.45 Arial, sans-serif;
-                overflow: hidden;
-                resize: both;
-            }
-            #fr-debug-panel * {
-                box-sizing: border-box;
-            }
-            #fr-debug-panel button {
-                border: 1px solid #5f6368;
-                border-radius: 4px;
-                padding: 6px 10px;
-                background: #303134;
-                color: #f1f3f4;
-                cursor: pointer;
-                font: inherit;
-            }
-            #fr-debug-panel button:hover {
-                background: #45474a;
-            }
-            #fr-debug-panel button:focus-visible {
-                outline: 2px solid #8ab4f8;
-                outline-offset: 2px;
-            }
-            #fr-debug-panel .frd-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 12px;
-                padding: 10px 12px;
-                background: #292a2d;
-                border-bottom: 1px solid #5f6368;
-                cursor: move;
-                user-select: none;
-            }
-            #fr-debug-panel .frd-title {
-                font-size: 15px;
-                font-weight: bold;
-            }
-            #fr-debug-panel .frd-header-actions {
-                display: flex;
-                gap: 6px;
-            }
-            #fr-debug-panel .frd-toolbar {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 7px;
-                padding: 9px 12px;
-                border-bottom: 1px solid #5f6368;
-            }
-            #fr-debug-panel .frd-status {
-                padding: 8px 12px;
-                color: #bdc1c6;
-                border-bottom: 1px solid #45474a;
-                overflow-wrap: anywhere;
-            }
-            #fr-debug-panel .frd-content {
-                flex: 1;
-                min-height: 0;
-                overflow: auto;
-                padding: 12px;
-            }
-            #fr-debug-panel .frd-tabs {
-                display: flex;
-                gap: 6px;
-                margin-bottom: 12px;
-            }
-            #fr-debug-panel .frd-tab-active {
-                background: #174ea6 !important;
-                border-color: #8ab4f8 !important;
-            }
-            #fr-debug-panel .frd-card {
-                margin-bottom: 12px;
-                padding: 11px;
-                border: 1px solid #5f6368;
-                border-radius: 6px;
-                background: #292a2d;
-            }
-            #fr-debug-panel .frd-card-title {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 10px;
-                margin-bottom: 9px;
-                font-weight: bold;
-                overflow-wrap: anywhere;
-            }
-            #fr-debug-panel .frd-rule {
-                margin-top: 9px;
-                padding: 10px;
-                border-left: 3px solid #8ab4f8;
-                background: #202124;
-                overflow-wrap: anywhere;
-            }
-            #fr-debug-panel .frd-field {
-                margin-top: 6px;
-            }
-            #fr-debug-panel .frd-field strong {
-                display: block;
-                color: #9aa0a6;
-                margin-bottom: 2px;
-            }
-            #fr-debug-panel .frd-value {
-                white-space: pre-wrap;
-                overflow-wrap: anywhere;
-                user-select: text;
-            }
-            #fr-debug-panel .frd-muted {
-                color: #9aa0a6;
-            }
-            #fr-debug-panel .frd-error {
-                border-left: 3px solid #f28b82;
-                padding: 8px 10px;
-                margin: 7px 0;
-                background: #332626;
-                overflow-wrap: anywhere;
-            }
-            #fr-debug-panel .frd-empty {
-                padding: 18px;
-                text-align: center;
-                color: #9aa0a6;
-                border: 1px dashed #5f6368;
-                border-radius: 6px;
-            }
-            #fr-debug-panel .frd-count {
-                color: #9aa0a6;
-                font-weight: normal;
-            }
-            #fr-debug-panel .frd-url {
-                margin-top: 5px;
-                color: #9aa0a6;
-                overflow-wrap: anywhere;
-            }
-                        /* WNC-style spreadsheet */
-            #fr-debug-panel .frd-grid-toolbar {
-                display: flex;
-                align-items: center;
-                flex-wrap: wrap;
-                gap: 7px;
-                margin-bottom: 8px;
-            }
-            #fr-debug-panel .frd-grid-search {
-                flex: 1;
-                min-width: 180px;
-                padding: 6px 8px;
-                border: 1px solid #555;
-                border-radius: 3px;
-                background: #181818;
-                color: #eee;
-                font: inherit;
-            }
-            #fr-debug-panel .frd-grid-count {
-                color: #aaa;
-                white-space: nowrap;
-            }
-            #fr-debug-panel .frd-grid-wrap {
-                width: 100%;
-                height: 100%;
-                overflow: auto;
-                border: 1px solid #555;
-                background: #202124;
-            }
-            #fr-debug-panel .frd-spreadsheet {
-                width: max-content;
-                min-width: 100%;
-                border-collapse: collapse;
-                table-layout: fixed;
-                font-size: 12px;
-            }
-            #fr-debug-panel .frd-spreadsheet th,
-            #fr-debug-panel .frd-spreadsheet td {
-                position: relative;
-                padding: 3px 5px;
-                border: 1px solid #484848;
-                text-align: left;
-                vertical-align: middle;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                height: 29px;
-            }
-            #fr-debug-panel .frd-spreadsheet thead th {
-                position: sticky;
-                top: 0;
-                z-index: 5;
-                background: #292929;
-                color: #eee;
-                font-weight: bold;
-                user-select: none;
-            }
-            #fr-debug-panel .frd-spreadsheet thead tr.frd-filter-row th {
-                top: 29px;
-                z-index: 4;
-                padding: 2px;
-                background: #242424;
-            }
-            #fr-debug-panel .frd-spreadsheet th.frd-sortable {
-                cursor: pointer;
-            }
-            #fr-debug-panel .frd-spreadsheet th.frd-sortable:hover {
-                background: #3a3a3a;
-            }
-            #fr-debug-panel .frd-spreadsheet .frd-filter {
-                width: 100%;
-                min-width: 55px;
-                padding: 3px 4px;
-                border: 1px solid #555;
-                border-radius: 2px;
-                background: #181818;
-                color: #eee;
-                font: inherit;
-            }
-            #fr-debug-panel .frd-spreadsheet td input,
-            #fr-debug-panel .frd-spreadsheet td select {
-                width: 100%;
-                min-width: 0;
-                padding: 2px 4px;
-                border: 1px solid #555;
-                background: #181818;
-                color: #eee;
-                font: inherit;
-            }
-            #fr-debug-panel .frd-spreadsheet tbody tr:nth-child(even) {
-                background: #252525;
-            }
-            #fr-debug-panel .frd-spreadsheet tbody tr:hover {
-                background: #343a40;
-            }
-            #fr-debug-panel .frd-spreadsheet tbody tr.frd-selected {
-                background: #263b55;
-                outline: 1px solid #8ab4f8;
-            }
-            #fr-debug-panel .frd-spreadsheet tbody tr.frd-conflict {
-                box-shadow: inset 3px 0 #f6c344;
-            }
-            #fr-debug-panel .frd-spreadsheet tbody tr.frd-error-row {
-                box-shadow: inset 3px 0 #f28b82;
-            }
-            #fr-debug-panel .frd-spreadsheet td.frd-conflict-cell {
-                background: #493d20;
-                color: #ffe09a;
-            }
-            #fr-debug-panel .frd-spreadsheet td.frd-error-cell {
-                background: #482b2b;
-                color: #ffb4ab;
-            }
-            #fr-debug-panel .frd-spreadsheet .frd-row-number {
-                width: 42px;
-                text-align: center;
-                color: #aaa;
-            }
-            #fr-debug-panel .frd-column-resizer {
-                position: absolute;
-                top: 0;
-                right: 0;
-                width: 5px;
-                height: 100%;
-                cursor: col-resize;
-                user-select: none;
-            }
-            #fr-debug-panel .frd-column-resizer:hover {
-                background: #8ab4f8;
-            }
-            #fr-debug-panel .frd-grid-empty {
-                padding: 24px;
-                color: #aaa;
-                text-align: center;
-            }
-            #fr-debug-panel .frd-grid-tabs {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 5px;
-                margin-bottom: 8px;
-            }
-            #fr-debug-panel .frd-grid-tabs button.frd-tab-active {
-                background: #174ea6;
-                border-color: #8ab4f8;
-            }
-            #fr-debug-panel .frd-grid-status {
-                margin-bottom: 7px;
-                color: #aaa;
-                font-size: 11px;
-            }
-        `;
-        document.head.appendChild(style);
-    }
-    function createDebugPanel() {
-        if (state.panel && state.panel.isConnected) return;
-        installDebugStyles();
-        const panel = createElement("section");
-        panel.id = "fr-debug-panel";
-        panel.style.width = `${state.settings.width}px`;
-        panel.style.height = `${state.settings.height}px`;
-        panel.style.left = `${state.settings.left}px`;
-        panel.style.top = `${state.settings.top}px`;
-        const header = createElement("div", "frd-header");
-        const title = createElement("div", "frd-title", "FR Debug");
-        const headerActions = createElement("div", "frd-header-actions");
-        const minimizeButton = createButton("Minimize", () => {
-            state.settings.minimized = !state.settings.minimized;
-            saveSettings();
-            renderDebug();
-        });
-        const closeButton = createButton("Close", closeDebugPanel);
-        headerActions.append(minimizeButton, closeButton);
-        header.append(title, headerActions);
-        const toolbar = createElement("div", "frd-toolbar");
-        const importButton = createButton("Import FoxReplace JSON", openImportPicker);
-        const analyzeButton = createButton("Analyze Page", analyzeDebugPage);
-        const copyButton = createButton("Copy Results", copyResults);
-        toolbar.append(importButton, analyzeButton, copyButton);
-        const status = createElement("div", "frd-status");
-        const content = createElement("div", "frd-content");
-        panel.append(header, toolbar, status, content);
-        document.body.appendChild(panel);
-        state.panel = panel;
-        // Correct saved coordinates if the browser window has changed size.
-        const initialRect = panel.getBoundingClientRect();
-        const initialLeft = Math.max(
-            0,
-            Math.min(window.innerWidth - Math.min(initialRect.width, 80), initialRect.left)
-        );
-        const initialTop = Math.max(
-            0,
-            Math.min(window.innerHeight - Math.min(initialRect.height, 40), initialRect.top)
-        );
-        panel.style.left = `${initialLeft}px`;
-        panel.style.top = `${initialTop}px`;
-        state.settings.left = Math.round(initialLeft);
-        state.settings.top = Math.round(initialTop);
-        saveSettings();
-        let drag = null;
-        header.addEventListener("pointerdown", (event) => {
-            if (event.target.closest("button")) return;
-            if (event.button !== 0) return;
-            const rect = panel.getBoundingClientRect();
-            drag = {
-                pointerX: event.clientX,
-                pointerY: event.clientY,
-                left: rect.left,
-                top: rect.top
-            };
-            header.setPointerCapture(event.pointerId);
-        });
-        header.addEventListener("pointermove", (event) => {
-            if (!drag) return;
-            const rect = panel.getBoundingClientRect();
-            const left = Math.max(
-                0,
-                Math.min(window.innerWidth - Math.min(rect.width, 80), drag.left + event.clientX - drag.pointerX)
-            );
-            const top = Math.max(
-                0,
-                Math.min(window.innerHeight - Math.min(rect.height, 40), drag.top + event.clientY - drag.pointerY)
-            );
-            panel.style.left = `${left}px`;
-            panel.style.top = `${top}px`;
-        });
-        function stopDragging() {
-            if (!drag) return;
-            drag = null;
-            const rect = panel.getBoundingClientRect();
-            state.settings.left = Math.round(rect.left);
-            state.settings.top = Math.round(rect.top);
-            saveSettings();
-        }
-        header.addEventListener("pointerup", stopDragging);
-        header.addEventListener("pointercancel", stopDragging);
-        header.addEventListener("lostpointercapture", stopDragging);
-        // Save dimensions only while expanded.
-        if (typeof ResizeObserver === "function") {
-            const observer = new ResizeObserver(() => {
-                if (!panel.isConnected || state.settings.minimized) return;
-                const rect = panel.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    state.settings.width = Math.round(rect.width);
-                    state.settings.height = Math.round(rect.height);
-                    saveSettings();
-                }
-            });
-            observer.observe(panel);
-            state.resizeObserver = observer;
-        }
-        renderDebug();
-    }
     function closeDebugPanel() {
+        if (resizeSaveTimer !== null) {
+            clearTimeout(resizeSaveTimer);
+            resizeSaveTimer = null;
+            saveSettings();
+        }
+        if (gridRenderTimer !== null) {
+            clearTimeout(gridRenderTimer);
+            gridRenderTimer = null;
+        }
         if (state.resizeObserver) {
             state.resizeObserver.disconnect();
             state.resizeObserver = null;
@@ -1274,28 +800,19 @@
             createDebugPanel();
         }
     }
-    const GRID_COLUMNS = [
-        { key: "group", label: "Group", width: 135 },
-        { key: "search", label: "Search / Find", width: 240 },
-        { key: "replacement", label: "Replacement", width: 240 },
-        { key: "inputType", label: "Input Type", width: 95 },
-        { key: "outputType", label: "Output Type", width: 95 },
-        { key: "caseSensitive", label: "Case", width: 65 },
-        { key: "enabled", label: "Enabled", width: 65 },
-        { key: "matches", label: "Matches", width: 65 },
-        { key: "conflict", label: "Conflict", width: 85 },
-        { key: "source", label: "Source Index", width: 115 },
-        { key: "error", label: "Error", width: 220 }
-    ];
     function gridRowId(groupIndex, ruleIndex) {
         return `${groupIndex}:${ruleIndex}`;
     }
     function getAllGridRows() {
         const matches = new Map();
+        const allMatches = new Map();
         const errors = new Map();
         const conflicts = new Map();
         state.matchingRules.forEach((match) => {
             matches.set(gridRowId(match.sourceGroupIndex, match.sourceRuleIndex), match);
+        });
+        state.allMatchedRules.forEach((match) => {
+            allMatches.set(gridRowId(match.sourceGroupIndex, match.sourceRuleIndex), match);
         });
         state.ruleErrors.forEach((error) => {
             errors.set(gridRowId(error.groupIndex, error.ruleIndex), error.message);
@@ -1307,11 +824,15 @@
             });
         });
         const rows = [];
+        const useAllMatches = state.activeTab === "all";
         state.database.groups.forEach((group, groupIndex) => {
             group.rules.forEach((rule, ruleIndex) => {
                 const id = gridRowId(groupIndex, ruleIndex);
                 const match = matches.get(id);
+                const allMatch = allMatches.get(id);
                 const error = errors.get(id) || (Array.isArray(rule.errors) ? rule.errors.join(" ") : "");
+                const displayedMatch = useAllMatches ? allMatch : match;
+                const conflictId = conflicts.get(id) || "";
                 rows.push({
                     id,
                     groupIndex,
@@ -1323,12 +844,13 @@
                     outputType: rule.outputType,
                     caseSensitive: rule.caseSensitive ? "Yes" : "No",
                     enabled: rule.enabled !== false && group.enabled !== false ? "Yes" : "No",
-                    matches: match ? match.matchCount : 0,
-                    conflict: conflicts.has(id) ? "Conflict" : "",
-                    conflictId: conflicts.get(id) || "",
+                    matches: displayedMatch ? displayedMatch.matchCount : 0,
+                    conflict: conflictId ? "Conflict" : "",
+                    conflictId,
                     source: `G${groupIndex + 1} / R${ruleIndex + 1}`,
                     error: error || "",
                     matched: Boolean(match),
+                    matchedRegardlessOfSite: Boolean(allMatch),
                     valid: rule.valid !== false,
                     groupObject: group,
                     ruleObject: rule
@@ -1337,35 +859,46 @@
         });
         return rows;
     }
-    function getVisibleGridRows() {
-        let rows = getAllGridRows();
-        if (state.activeTab === "groups") {
-            rows = rows.filter((row) => row.matched);
-        } else if (state.activeTab === "conflicts") {
-            rows = rows.filter((row) => Boolean(row.conflict));
-        } else if (state.activeTab === "errors") {
-            rows = rows.filter((row) => Boolean(row.error));
-        }
+    function getVisibleGridRows(sourceRows = getAllGridRows()) {
+        const activeTab = state.activeTab;
         const globalSearch = state.gridSearch.trim().toLocaleLowerCase();
-        if (globalSearch) {
-            rows = rows.filter((row) =>
-                GRID_COLUMNS.some((column) =>
-                    String(row[column.key] ?? "")
+        const searchableColumns = GRID_COLUMNS.map((column) => column.key);
+        const filters = Object.entries(state.gridFilters)
+            .map(([key, value]) => [
+                key,
+                String(value || "")
+                    .trim()
+                    .toLocaleLowerCase()
+            ])
+            .filter(([, filter]) => filter);
+        const rows = sourceRows.filter((row) => {
+            if (activeTab === "all" && !row.matchedRegardlessOfSite) {
+                return false;
+            }
+            if (activeTab === "groups" && !row.matched) {
+                return false;
+            }
+            if (activeTab === "conflicts" && !row.conflict) {
+                return false;
+            }
+            if (globalSearch) {
+                const found = searchableColumns.some((key) =>
+                    String(row[key] ?? "")
                         .toLocaleLowerCase()
                         .includes(globalSearch)
-                )
-            );
-        }
-        Object.entries(state.gridFilters).forEach(([key, value]) => {
-            const filter = String(value || "")
-                .trim()
-                .toLocaleLowerCase();
-            if (!filter) return;
-            rows = rows.filter((row) =>
-                String(row[key] ?? "")
-                    .toLocaleLowerCase()
-                    .includes(filter)
-            );
+                );
+                if (!found) return false;
+            }
+            for (const [key, filter] of filters) {
+                if (
+                    !String(row[key] ?? "")
+                        .toLocaleLowerCase()
+                        .includes(filter)
+                ) {
+                    return false;
+                }
+            }
+            return true;
         });
         const sort = state.gridSort;
         if (sort && sort.column) {
@@ -1397,16 +930,15 @@
         }
         renderDebug();
     }
-    function selectGridRow(row, event) {
+    function selectGridRow(row, event, visibleRows, visibleRowIndexes) {
         const id = row.dataset.rowId;
-        const visibleRows = getVisibleGridRows();
-        const clickedIndex = visibleRows.findIndex((item) => item.id === id);
+        const clickedIndex = visibleRowIndexes.get(id);
         if (event.shiftKey && state.lastSelectedRow) {
-            const previousIndex = visibleRows.findIndex((item) => item.id === state.lastSelectedRow);
+            const previousIndex = visibleRowIndexes.get(state.lastSelectedRow);
             if (!event.ctrlKey && !event.metaKey) {
                 state.selectedRows.clear();
             }
-            if (previousIndex !== -1 && clickedIndex !== -1) {
+            if (previousIndex !== undefined && clickedIndex !== undefined) {
                 const start = Math.min(previousIndex, clickedIndex);
                 const end = Math.max(previousIndex, clickedIndex);
                 for (let i = start; i <= end; i++) {
@@ -1441,14 +973,21 @@
             const startWidth = th.getBoundingClientRect().width;
             resizer.setPointerCapture(event.pointerId);
             function move(moveEvent) {
-                const width = Math.max(55, Math.round(startWidth + moveEvent.clientX - startX));
+                const width = Math.min(
+                    LIMITS.columnWidth,
+                    Math.max(55, Math.round(startWidth + moveEvent.clientX - startX))
+                );
                 state.settings.columnWidths[column.key] = width;
                 th.style.width = `${width}px`;
+                th.style.minWidth = `${width}px`;
                 const table = th.closest("table");
                 const index = Array.from(th.parentElement.children).indexOf(th);
                 table.querySelectorAll("tr").forEach((row) => {
                     const cell = row.children[index];
-                    if (cell) cell.style.width = `${width}px`;
+                    if (cell) {
+                        cell.style.width = `${width}px`;
+                        cell.style.minWidth = `${width}px`;
+                    }
                 });
             }
             function stop() {
@@ -1469,15 +1008,33 @@
         cell.title = cell.textContent;
         return cell;
     }
+    function scheduleGridRender(selector, selectionStart) {
+        clearTimeout(gridRenderTimer);
+        gridRenderTimer = setTimeout(() => {
+            gridRenderTimer = null;
+            if (!state.panel || !state.panel.isConnected) {
+                return;
+            }
+            renderDebug();
+            if (!selector) return;
+            const input = state.panel.querySelector(selector);
+            if (input) {
+                input.focus();
+                if (typeof selectionStart === "number") {
+                    input.setSelectionRange(selectionStart, selectionStart);
+                }
+            }
+        }, 150);
+    }
     function renderSpreadsheet(content) {
         const allRows = getAllGridRows();
-        const rows = getVisibleGridRows();
+        const rows = getVisibleGridRows(allRows);
+        const visibleRowIndexes = new Map(rows.map((item, index) => [item.id, index]));
         const tabs = createElement("div", "frd-grid-tabs");
         const views = [
-            ["all", "All Rules"],
-            ["groups", "Matched Rules"],
-            ["conflicts", `Conflicts (${state.conflicts.length})`],
-            ["errors", `Errors (${state.ruleErrors.length})`]
+            ["all", "All Rules Matched"],
+            ["groups", "Matched Rules (This Site)"],
+            ["conflicts", `Conflicts (${state.conflicts.length})`]
         ];
         views.forEach(([key, label]) => {
             const button = createButton(label, () => {
@@ -1498,7 +1055,7 @@
         search.value = state.gridSearch;
         search.addEventListener("input", () => {
             state.gridSearch = search.value;
-            renderDebug();
+            scheduleGridRender(".frd-grid-search", search.selectionStart);
         });
         const count = createElement("span", "frd-grid-count", `${rows.length} of ${allRows.length} rules`);
         const clear = createButton("Clear Filters", () => {
@@ -1507,7 +1064,7 @@
             renderDebug();
         });
         const copySelected = createButton("Copy Selected Rows", () => {
-            const selected = getVisibleGridRows().filter((row) => state.selectedRows.has(row.id));
+            const selected = rows.filter((row) => state.selectedRows.has(row.id));
             if (!selected.length) {
                 state.status = "Select one or more rows first.";
                 renderDebug();
@@ -1566,16 +1123,8 @@
             input.addEventListener("input", () => {
                 state.gridFilters[column.key] = input.value;
                 const selectionStart = input.selectionStart;
-                renderDebug();
-                const replacement = content.querySelector(
-                    `.frd-filter-row input:nth-of-type(${GRID_COLUMNS.findIndex((item) => item.key === column.key) + 1})`
-                );
-                if (replacement) {
-                    replacement.focus();
-                    try {
-                        replacement.setSelectionRange(selectionStart, selectionStart);
-                    } catch (_) {}
-                }
+                const filterIndex = GRID_COLUMNS.findIndex((item) => item.key === column.key) + 2;
+                scheduleGridRender(`.frd-filter-row th:nth-child(${filterIndex}) input`, selectionStart);
             });
             th.appendChild(input);
             filterRow.appendChild(th);
@@ -1592,7 +1141,7 @@
             if (rowData.conflict) row.classList.add("frd-conflict");
             if (rowData.error) row.classList.add("frd-error-row");
             row.addEventListener("click", (event) => {
-                selectGridRow(row, event);
+                selectGridRow(row, event, rows, visibleRowIndexes);
             });
             const numberCell = createGridCell(index + 1, "frd-row-number");
             row.appendChild(numberCell);
@@ -1641,11 +1190,12 @@
             );
             return;
         }
+        const fragment = document.createDocumentFragment();
         state.groupMatches.forEach((group) => {
             const card = createElement("div", "frd-card");
             const heading = createElement("div", "frd-card-title");
-            const title = createElement("span", "", `${group.name} (${group.rules.length} matched rules)`);
             const collapsed = state.collapsedGroups.has(group.groupIndex);
+            const title = createElement("span", "", `${group.name} (${group.rules.length} matched rules)`);
             const toggle = createButton(collapsed ? "Expand" : "Collapse", () => {
                 if (collapsed) {
                     state.collapsedGroups.delete(group.groupIndex);
@@ -1677,8 +1227,9 @@
                     card.appendChild(ruleBox);
                 });
             }
-            content.appendChild(card);
+            fragment.appendChild(card);
         });
+        content.appendChild(fragment);
     }
     function renderConflictsTab(content) {
         if (!state.imported) {
@@ -1693,6 +1244,7 @@
             );
             return;
         }
+        const fragment = document.createDocumentFragment();
         state.conflicts.forEach((cluster, index) => {
             const card = createElement("div", "frd-card");
             card.appendChild(
@@ -1715,11 +1267,13 @@
                 );
                 card.appendChild(ruleBox);
             });
-            content.appendChild(card);
+            fragment.appendChild(card);
         });
+        content.appendChild(fragment);
     }
     function renderRuleErrors(content) {
         if (!state.ruleErrors.length) return;
+        const fragment = document.createDocumentFragment();
         const card = createElement("div", "frd-card");
         card.appendChild(createElement("div", "frd-card-title", `Rule errors (${state.ruleErrors.length})`));
         state.ruleErrors.forEach((error) => {
@@ -1728,7 +1282,8 @@
                 `${error.groupName}, rule ${error.ruleIndex + 1}: ` + `${error.message} Search: ${error.search}`;
             card.appendChild(item);
         });
-        content.appendChild(card);
+        fragment.appendChild(card);
+        content.appendChild(fragment);
     }
     function renderDebug() {
         if (!state.panel || !state.panel.isConnected) {
@@ -1762,6 +1317,406 @@
         content.style.flexDirection = "column";
         content.replaceChildren();
         renderSpreadsheet(content);
+    }
+    function createElement(tag, className = "", text = "") {
+        const element = document.createElement(tag);
+        if (className) {
+            element.className = className;
+        }
+        if (text !== undefined && text !== null) {
+            element.textContent = String(text);
+        }
+        return element;
+    }
+    function createButton(label, onClick) {
+        const button = createElement("button", "frd-button", label);
+        button.type = "button";
+        if (typeof onClick === "function") {
+            button.addEventListener("click", onClick);
+        }
+        return button;
+    }
+    function appendField(container, label, value) {
+        const field = createElement("div", "frd-field");
+        const heading = createElement("strong", "frd-field-label", label);
+        const content = createElement("div", "frd-field-value", value);
+        field.append(heading, content);
+        container.appendChild(field);
+        return field;
+    }
+    function copyGridText(text) {
+        const fallback = () => {
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.style.position = "fixed";
+            textarea.style.left = "-9999px";
+            document.body.appendChild(textarea);
+            textarea.select();
+            let success = false;
+            try {
+                success = document.execCommand("copy");
+            } catch (_) {
+                success = false;
+            }
+            textarea.remove();
+            return success;
+        };
+        try {
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+                return navigator.clipboard
+                    .writeText(text)
+                    .then(() => true)
+                    .catch(() => fallback());
+            }
+        } catch (_) {
+            // Fall back if the clipboard API throws immediately.
+        }
+        return Promise.resolve(fallback());
+    }
+    function openImportPicker() {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json,application/json";
+        input.style.display = "none";
+        input.addEventListener("change", () => {
+            const file = input.files && input.files[0];
+            input.remove();
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const result = importFoxReplaceJSON(String(reader.result || ""));
+                    state.status =
+                        `Imported ${result.groups} groups and ${result.rules} rules. ` +
+                        `${result.invalidRules} invalid rules retained for inspection.`;
+                    renderDebug();
+                } catch (error) {
+                    state.status = `Import failed: ${error.message}`;
+                    renderDebug();
+                }
+            };
+            reader.onerror = () => {
+                state.status = "Import failed: Could not read the selected file.";
+                renderDebug();
+            };
+            reader.readAsText(file);
+        });
+        document.body.appendChild(input);
+        input.click();
+    }
+    function installDebugStyles() {
+        if (document.getElementById("fr-debug-styles")) return;
+        const style = document.createElement("style");
+        style.id = "fr-debug-styles";
+        style.textContent = `
+        #fr-debug-panel {
+            position: fixed;
+            z-index: 2147483647;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+            min-width: 320px;
+            min-height: 220px;
+            color: #eeeeee;
+            background: #202124;
+            border: 1px solid #55585c;
+            border-radius: 8px;
+            box-shadow: 0 5px 25px rgba(0,0,0,.45);
+            font: 13px/1.45 Arial, sans-serif;
+            overflow: hidden;
+        }
+        #fr-debug-panel *,
+        #fr-debug-panel *::before,
+        #fr-debug-panel *::after {
+            box-sizing: border-box;
+        }
+        #fr-debug-panel .frd-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 9px 12px;
+            background: #303238;
+            border-bottom: 1px solid #45474a;
+            cursor: move;
+            user-select: none;
+        }
+        #fr-debug-panel .frd-title {
+            font-size: 14px;
+            font-weight: bold;
+        }
+        #fr-debug-panel .frd-header-actions,
+        #fr-debug-panel .frd-toolbar {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        #fr-debug-panel button {
+            padding: 6px 10px;
+            color: #eeeeee;
+            background: #41444a;
+            border: 1px solid #62666d;
+            border-radius: 4px;
+            cursor: pointer;
+            font: inherit;
+        }
+        #fr-debug-panel button:hover {
+            background: #555961;
+        }
+        #fr-debug-panel .frd-status {
+            padding: 7px 12px;
+            color: #c9d4e3;
+            background: #27292e;
+            border-bottom: 1px solid #45474a;
+            overflow-wrap: anywhere;
+        }
+        #fr-debug-panel .frd-toolbar {
+            padding: 8px 12px;
+            border-bottom: 1px solid #45474a;
+        }
+        #fr-debug-panel .frd-content {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            padding: 12px;
+        }
+        #fr-debug-panel .frd-grid-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+        #fr-debug-panel .frd-tab-active {
+            background: #245b91;
+            border-color: #4b8dcc;
+        }
+        #fr-debug-panel .frd-grid-toolbar {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        #fr-debug-panel input {
+            min-width: 0;
+            padding: 6px;
+            color: #eeeeee;
+            background: #292b30;
+            border: 1px solid #55585c;
+            border-radius: 3px;
+        }
+        #fr-debug-panel .frd-grid-search {
+            flex: 1;
+            min-width: 160px;
+        }
+        #fr-debug-panel .frd-grid-count,
+        #fr-debug-panel .frd-grid-status {
+            color: #b9bec7;
+        }
+        #fr-debug-panel .frd-grid-status {
+            margin-bottom: 8px;
+        }
+        #fr-debug-panel .frd-grid-wrap {
+            width: 100%;
+            overflow: auto;
+            border: 1px solid #45474a;
+        }
+        #fr-debug-panel .frd-spreadsheet {
+            width: max-content;
+            min-width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        #fr-debug-panel .frd-spreadsheet th,
+        #fr-debug-panel .frd-spreadsheet td {
+            position: relative;
+            padding: 7px;
+            border-right: 1px solid #45474a;
+            border-bottom: 1px solid #45474a;
+            text-align: left;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+        }
+        #fr-debug-panel .frd-spreadsheet th {
+            background: #303238;
+        }
+        #fr-debug-panel .frd-spreadsheet th.frd-sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+        #fr-debug-panel .frd-spreadsheet td {
+            max-width: 1200px;
+        }
+        #fr-debug-panel .frd-spreadsheet tbody tr {
+            cursor: pointer;
+        }
+        #fr-debug-panel .frd-spreadsheet tbody tr:hover {
+            background: #343840;
+        }
+        #fr-debug-panel .frd-spreadsheet tbody tr.frd-selected {
+            background: #24496c;
+        }
+        #fr-debug-panel .frd-spreadsheet tbody tr.frd-conflict {
+            box-shadow: inset 3px 0 #e0a33a;
+        }
+        #fr-debug-panel .frd-spreadsheet tbody tr.frd-error-row {
+            box-shadow: inset 3px 0 #d65c5c;
+        }
+        #fr-debug-panel .frd-row-number {
+            width: 42px;
+            min-width: 42px;
+            color: #aeb4bd;
+            text-align: center !important;
+        }
+        #fr-debug-panel .frd-filter-row th {
+            padding: 4px;
+            background: #27292e;
+        }
+        #fr-debug-panel .frd-filter {
+            width: 100%;
+        }
+        #fr-debug-panel .frd-column-resizer {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 6px;
+            height: 100%;
+            cursor: col-resize;
+            touch-action: none;
+        }
+        #fr-debug-panel .frd-grid-empty {
+            padding: 20px !important;
+            color: #b9bec7;
+            text-align: center !important;
+        }
+        #fr-debug-panel .frd-conflict-cell {
+            color: #ffc66d;
+        }
+        #fr-debug-panel .frd-error-cell,
+        #fr-debug-panel .frd-error {
+            color: #ff9292;
+        }
+        #fr-debug-panel .frd-card {
+            margin-bottom: 12px;
+            padding: 12px;
+            border: 1px solid #45474a;
+            border-radius: 5px;
+        }
+        #fr-debug-panel .frd-card-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        #fr-debug-panel .frd-rule {
+            margin-top: 8px;
+            padding: 9px;
+            background: #292b30;
+            border-radius: 4px;
+        }
+        #fr-debug-panel .frd-field {
+            margin-bottom: 7px;
+        }
+        #fr-debug-panel .frd-field-label {
+            display: block;
+            color: #aebdce;
+        }
+        #fr-debug-panel .frd-field-value {
+            overflow-wrap: anywhere;
+            white-space: pre-wrap;
+        }
+        #fr-debug-panel .frd-url,
+        #fr-debug-panel .frd-empty {
+            margin: 8px 0;
+            color: #c1c7d0;
+            overflow-wrap: anywhere;
+        }
+    `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+    function createDebugPanel() {
+        if (state.panel && state.panel.isConnected) return;
+        const panel = createElement("div");
+        panel.id = "fr-debug-panel";
+        panel.style.width = `${state.settings.width}px`;
+        panel.style.height = `${state.settings.height}px`;
+        panel.style.left = `${state.settings.left}px`;
+        panel.style.top = `${state.settings.top}px`;
+        const header = createElement("div", "frd-header");
+        const title = createElement("span", "frd-title", "FR Debug");
+        const headerActions = createElement("div", "frd-header-actions");
+        const minimize = createButton(state.settings.minimized ? "Restore" : "Minimize", () => {
+            state.settings.minimized = !state.settings.minimized;
+            saveSettings();
+            renderDebug();
+        });
+        const close = createButton("Close", closeDebugPanel);
+        headerActions.append(minimize, close);
+        header.append(title, headerActions);
+        const status = createElement("div", "frd-status", state.status);
+        const toolbar = createElement("div", "frd-toolbar");
+        toolbar.append(
+            createButton("Analyze Page", analyzeDebugPage),
+            createButton("Import FoxReplace JSON", openImportPicker)
+        );
+        const content = createElement("div", "frd-content");
+        panel.append(header, status, toolbar, content);
+        document.body.appendChild(panel);
+        state.panel = panel;
+        // Allow the panel to be moved by dragging its header.
+        header.addEventListener("pointerdown", (event) => {
+            if (event.button !== 0 || !(event.target instanceof Element) || event.target.closest("button")) {
+                return;
+            }
+            event.preventDefault();
+            const startX = event.clientX;
+            const startY = event.clientY;
+            const startLeft = panel.offsetLeft;
+            const startTop = panel.offsetTop;
+            function move(moveEvent) {
+                const left = Math.max(0, startLeft + moveEvent.clientX - startX);
+                const top = Math.max(0, startTop + moveEvent.clientY - startY);
+                panel.style.left = `${left}px`;
+                panel.style.top = `${top}px`;
+                state.settings.left = left;
+                state.settings.top = top;
+            }
+            function stop() {
+                document.removeEventListener("pointermove", move);
+                document.removeEventListener("pointerup", stop);
+                document.removeEventListener("pointercancel", stop);
+                window.removeEventListener("blur", stop);
+                saveSettings();
+            }
+            window.addEventListener("blur", stop);
+            document.addEventListener("pointermove", move);
+            document.addEventListener("pointerup", stop);
+            document.addEventListener("pointercancel", stop);
+        });
+        if (typeof ResizeObserver === "function") {
+            const resizeObserver = new ResizeObserver(() => {
+                if (state.settings.minimized) return;
+                const rect = panel.getBoundingClientRect();
+                const width = Math.max(320, Math.round(rect.width));
+                const height = Math.max(220, Math.round(rect.height));
+                if (state.settings.width === width && state.settings.height === height) {
+                    return;
+                }
+                state.settings.width = width;
+                state.settings.height = height;
+                clearTimeout(resizeSaveTimer);
+                resizeSaveTimer = setTimeout(() => {
+                    saveSettings();
+                    resizeSaveTimer = null;
+                }, 250);
+            });
+            state.resizeObserver = resizeObserver;
+            resizeObserver.observe(panel);
+        }
+        renderDebug();
     }
     function registerMenuCommands() {
         if (typeof GM_registerMenuCommand !== "function") return;
