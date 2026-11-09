@@ -1177,7 +1177,6 @@
             const extracted = extractVisibleText(document.body);
             const runs = extracted.segments;
             const newOccurrences = [];
-            const newProcessedNodeText = new Map();
             let position = 0;
             for (const run of runs) {
                 const runNodes = run.segments.map((segment) => segment.node);
@@ -1187,13 +1186,8 @@
                     occurrence.position = position++;
                     newOccurrences.push(occurrence);
                 }
-                for (const segment of run.segments) {
-                    newProcessedNodeText.set(segment.node, segment.textSnapshot);
-                }
             }
             accumulatedOccurrences = newOccurrences;
-            nextOccurrencePos = position;
-            processedNodeText = newProcessedNodeText;
             renderAccumulatedScan();
             startScanObserver();
         } finally {
@@ -1367,8 +1361,6 @@
         });
         panel.querySelector("#fr-empty").addEventListener("click", () => {
             accumulatedOccurrences = [];
-            nextOccurrencePos = 0;
-            processedNodeText = new Map();
             currentCandidates = [];
             renderRows();
         });
