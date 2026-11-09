@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.3
+// @version      1.0.4
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -211,11 +211,9 @@
     let settings = loadSettings();
     let currentCandidates = [];
     let accumulatedOccurrences = [];
-    let nextOccurrencePos = 0;
     let observer;
     let observerFlushTimer = null;
     let isScanning = false;
-    let processedNodeText = new Map();
     function loadSettings() {
         const defaults = {
             x: 20,
@@ -225,19 +223,26 @@
         };
         try {
             const saved = GM_getValue(STORE_KEY, {});
+            if (!saved || typeof saved !== "object" || Array.isArray(saved)) {
+                return defaults;
+            }
             return {
-                ...defaults,
-                ...saved,
-                edits: { ...(saved.edits || {}) }
+                x: Number.isFinite(saved.x) ? saved.x : defaults.x,
+                y: Number.isFinite(saved.y) ? saved.y : defaults.y,
+                template: TEMPLATES.includes(saved.template) ? saved.template : defaults.template,
+                edits:
+                    saved.edits && typeof saved.edits === "object" && !Array.isArray(saved.edits)
+                        ? { ...saved.edits }
+                        : {}
             };
-        } catch (_) {
+        } catch {
             return defaults;
         }
     }
     function saveSettings() {
         try {
             GM_setValue(STORE_KEY, settings);
-        } catch (_) {}
+        } catch {}
     }
     function isExcluded(element) {
         if (!element || element.nodeType !== Node.ELEMENT_NODE) {
@@ -331,8 +336,16 @@
             }
         }
         if (root.nodeType === Node.TEXT_NODE) {
-            const parent = root.parentElement;
-            if (!parent || !isExcludedElement(parent)) {
+            let parent = root.parentElement;
+            let excluded = false;
+            while (parent) {
+                if (isExcludedElement(parent)) {
+                    excluded = true;
+                    break;
+                }
+                parent = parent.parentElement;
+            }
+            if (!excluded) {
                 appendTextNode(root);
             }
         } else {
@@ -468,7 +481,6 @@
     }
     function filterTokens(tokens) {
         return tokens.map((record) => {
-            const token = record.normalized;
             const contractionMatch = isContraction(record.original);
             const wordFilterMatch = tokens.length === 1 && WORD_FILTER.has(record.original);
             const allWordsMatch = All_Words.has(record.original);
@@ -518,23 +530,6 @@
             sourceNode: sourceSegments.length === 1 ? sourceSegments[0].sourceNode : null,
             sourceSegments
         };
-    }
-    function getOccurrenceSourceSegments(occurrence) {
-        if (Array.isArray(occurrence.sourceSegments)) {
-            return occurrence.sourceSegments;
-        }
-        if (occurrence.sourceNode) {
-            return [
-                {
-                    sourceNode: occurrence.sourceNode,
-                    startPos: occurrence.startPos,
-                    endPos: occurrence.endPos,
-                    textSnapshot: occurrence.textSnapshot,
-                    text: occurrence.phrase
-                }
-            ];
-        }
-        return [];
     }
     function extractRunOccurrences(run) {
         const runOccurrences = extractOccurrences(run.text, null);
@@ -869,19 +864,6 @@
         `;
         document.head.appendChild(style);
     }
-    function occurrenceUsesAnyNode(occurrence, nodes) {
-        if (nodes.has(occurrence.sourceNode)) return true;
-        if (Array.isArray(occurrence.sourceNodes) && occurrence.sourceNodes.some((node) => nodes.has(node))) {
-            return true;
-        }
-        return getOccurrenceSourceSegments(occurrence).some((segment) => nodes.has(segment.sourceNode));
-    }
-    function reconcileOccurrencesForNodes(nodes) {
-        if (!nodes || nodes.size === 0) return;
-        accumulatedOccurrences = accumulatedOccurrences.filter(
-            (occurrence) => !occurrenceUsesAnyNode(occurrence, nodes)
-        );
-    }
     function updateRegexPreview() {
         const editor = document.getElementById("fr-candidate-editor");
         const preview = document.getElementById("fr-regex-preview");
@@ -894,7 +876,7 @@
         try {
             const saved = GM_getValue(FOXREPLACE_STORE_KEY, null);
             return saved && Array.isArray(saved.groups) ? saved : { groups: [] };
-        } catch (_) {
+        } catch {
             return { groups: [] };
         }
     }
@@ -994,7 +976,7 @@
             if (lastSlash > 0) {
                 try {
                     return new RegExp(value.slice(1, lastSlash), value.slice(lastSlash + 1)).test(url);
-                } catch (_) {
+                } catch {
                     return false;
                 }
             }
@@ -1006,7 +988,7 @@
                 .join(".*");
             try {
                 return new RegExp(escaped, "i").test(url);
-            } catch (_) {
+            } catch {
                 return false;
             }
         }
@@ -1070,7 +1052,7 @@
         if (rule.inputType === "regexp" && value === rule.input) {
             try {
                 return new RegExp(text, sensitive ? "u" : "iu").test(phrase);
-            } catch (_) {
+            } catch {
                 return false;
             }
         }
@@ -1144,7 +1126,7 @@
                                 await navigator.clipboard.writeText(name);
                                 return;
                             }
-                        } catch (_) {}
+                        } catch {}
                         const area = document.createElement("textarea");
                         area.value = name;
                         area.style.position = "fixed";
@@ -1170,7 +1152,6 @@
                 }
                 if (match) {
                     const rule = match.rule;
-                    const group = match.group;
                     const type = rule.inputType === "regexp" ? "Rx" : rule.inputType === "wholewords" ? "Ww" : "Tx";
                     addCell(tr, match.groupName, match.groupName, "fr-rule-text");
                     addCell(tr, rule.input, rule.input, "fr-rule-text");
@@ -1220,130 +1201,32 @@
         }
     }
     function startScanObserver() {
-        if (observer) observer.disconnect();
+        if (observer) {
+            observer.disconnect();
+            observer = null;
+        }
         if (observerFlushTimer !== null) {
             clearTimeout(observerFlushTimer);
             observerFlushTimer = null;
         }
-        let pendingMutations = [];
-        let flushScheduled = false;
-        const flushMutations = () => {
-            flushScheduled = false;
-            observerFlushTimer = null;
-            if (isScanning) {
-                flushScheduled = true;
-                observerFlushTimer = setTimeout(flushMutations, 50);
+        // A full debounced rescan is safer than trying to reconcile partial
+        // runs: removals and visibility/class changes can otherwise leave
+        // stale candidates behind when no replacement text run remains.
+        observer = new MutationObserver((mutations) => {
+            if (!mutations.length) return;
+            const relevantMutations = mutations.filter((mutation) => {
+                const target = mutation.target;
+                const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+                return !element?.closest(`#${PANEL_ID}`);
+            });
+            if (!relevantMutations.length || observerFlushTimer !== null) {
                 return;
             }
-            if (pendingMutations.length === 0) return;
-            const mutations = pendingMutations;
-            pendingMutations = [];
-            const affectedNodes = new Set();
-            const affectedElements = new Set();
-            let structureChanged = false;
-            const addNode = (node) => {
-                if (!node) return;
-                affectedNodes.add(node);
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                    affectedElements.add(node);
-                } else if (node.parentElement) {
-                    affectedElements.add(node.parentElement);
-                }
-            };
-            for (const mutation of mutations) {
-                const target = mutation.target;
-                const targetElement = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
-                if (targetElement?.closest(`#${PANEL_ID}`)) {
-                    continue;
-                }
-                if (mutation.type === "characterData") {
-                    addNode(target);
-                    continue;
-                }
-                if (mutation.type === "attributes") {
-                    addNode(target);
-                    structureChanged = true;
-                    continue;
-                }
-                if (mutation.type !== "childList") continue;
-                const changedChildren = [...mutation.addedNodes, ...mutation.removedNodes];
-                if (changedChildren.length === 0) continue;
-                addNode(target);
-                structureChanged = true;
-                for (const node of changedChildren) {
-                    addNode(node);
-                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
-                    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-                    let textNode;
-                    while ((textNode = walker.nextNode())) {
-                        addNode(textNode);
-                    }
-                }
-            }
-            if (affectedNodes.size === 0) return;
-            const removedNodes = new Set();
-            for (const node of affectedNodes) {
-                if (node.nodeType === Node.TEXT_NODE && !node.isConnected) {
-                    removedNodes.add(node);
-                }
-            }
-            if (removedNodes.size > 0) {
-                reconcileOccurrencesForNodes(removedNodes);
-                for (const node of removedNodes) {
-                    processedNodeText.delete(node);
-                }
-            }
-            const runs = extractVisibleText(document.body).segments;
-            let changed = false;
-            for (const run of runs) {
-                const runNodes = run.segments.map((segment) => segment.node);
-                const affected =
-                    (structureChanged && removedNodes.size > 0) ||
-                    run.segments.some((segment) => {
-                        const node = segment.node;
-                        const parent = node.parentElement;
-                        if (affectedNodes.has(node) || affectedNodes.has(parent)) {
-                            return true;
-                        }
-                        for (const element of affectedElements) {
-                            if (
-                                element === node ||
-                                element.contains(node) ||
-                                node.contains?.(element) ||
-                                parent?.contains(element)
-                            ) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    });
-                if (!affected) continue;
-                const isChanged = run.segments.some(
-                    (segment) => processedNodeText.get(segment.node) !== segment.textSnapshot
-                );
-                if (!isChanged && !structureChanged) {
-                    continue;
-                }
-                reconcileOccurrencesForNodes(new Set(runNodes));
-                for (const occurrence of extractRunOccurrences(run)) {
-                    occurrence.sourceNodes = runNodes;
-                    accumulatedOccurrences.push(occurrence);
-                }
-                for (const segment of run.segments) {
-                    processedNodeText.set(segment.node, segment.textSnapshot);
-                }
-                changed = true;
-            }
-            if (changed) {
+            observerFlushTimer = setTimeout(() => {
+                observerFlushTimer = null;
+                if (!document.getElementById(PANEL_ID) || isScanning) return;
                 runScan();
-            }
-        };
-        observer = new MutationObserver((mutations) => {
-            if (isScanning) return;
-            pendingMutations.push(...mutations);
-            if (flushScheduled) return;
-            flushScheduled = true;
-            observerFlushTimer = setTimeout(flushMutations, 50);
+            }, 100);
         });
         observer.observe(document.body, {
             childList: true,
@@ -1414,7 +1297,6 @@
         `;
         document.body.appendChild(panel);
         const minimizeButton = panel.querySelector("#fr-minimize");
-        const tableWrap = panel.querySelector("#fr-tablewrap");
         minimizeButton.addEventListener("click", () => {
             const minimized = panel.classList.toggle("fr-minimized");
             minimizeButton.textContent = minimized ? "▢" : "—";
@@ -1505,7 +1387,7 @@
                     await navigator.clipboard.writeText(preview.value);
                     return;
                 }
-            } catch (_) {}
+            } catch {}
             preview.focus();
             preview.select();
             try {
