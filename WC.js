@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.5
+// @version      1.0.6
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -421,9 +421,16 @@
             const parts = phrase.split(/\s+/);
             let rejectionReason = null;
             for (let i = 0; i < parts.length - 1; i++) {
-                const token = parts[i];
-                const isDottedInitial = /^(?:[A-Z]\.){1,}[A-Z]?\.?$/.test(token);
-                if (token.endsWith(".") && !ABBREVIATIONS.has(token.slice(0, -1)) && !isDottedInitial) {
+                const previousToken = parts[i];
+                const abbreviation = previousToken.slice(0, -1);
+                const isSingleInitial = /^[A-Z]$/.test(abbreviation);
+                const isDottedInitialism = /^(?:[A-Z]\.){2,}$/.test(previousToken);
+                if (
+                    previousToken.endsWith(".") &&
+                    !ABBREVIATIONS.has(abbreviation) &&
+                    !isSingleInitial &&
+                    !isDottedInitialism
+                ) {
                     rejectionReason = "non-abbreviation-period-before-final-token";
                     break;
                 }
@@ -595,15 +602,12 @@
         return candidates;
     }
     function sortAndFilterCandidates(candidates) {
-        candidates.sort((a, b) => b.phraseCount - a.phraseCount || a.firstPos - b.firstPos);
-        return candidates;
+        return [...candidates].sort((a, b) => b.phraseCount - a.phraseCount || a.firstPos - b.firstPos);
     }
     function generateRegex(phrase, template) {
         const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const boundaryStart = "(?<![a-z])";
         const boundaryEnd = "(?![a-z])";
-        const tokens = phrase.trim().split(/\s+/).filter(Boolean);
-        if (!tokens.length) return "";
         const cleanToken = (token) => token.replace(/[’‘]/g, "'").replace(/(?:'s|s')$/i, "");
         const tokenPattern = (token) => {
             const clean = cleanToken(token);
@@ -616,10 +620,26 @@
             }
             return escapeRegex(base);
         };
-        const joinTokens = () => {
+        const koreanTokenPattern = (token) => escapeRegex(cleanToken(token).replace(/\.+$/, "")).replace(/-/g, "[- ]?");
+        // Split complete Discovery alternatives.
+        // Each branch is processed independently to prevent literal pipes
+        // from being escaped or interpreted as arbitrary regex input.
+        const branches = String(phrase || "")
+            .split("|")
+            .map((part) => part.trim())
+            .filter(Boolean);
+        if (!branches.length) return "";
+        const buildStandardBranch = (branch) => {
+            const tokens = branch.split(/\s+/).filter(Boolean);
+            if (!tokens.length) return "";
             const result = [];
             for (let i = 0; i < tokens.length; i++) {
-                result.push(tokenPattern(tokens[i]));
+                const alternatives = tokens[i].split("|").filter(Boolean);
+                result.push(
+                    alternatives.length > 1
+                        ? `(?:${alternatives.map(tokenPattern).join("|")})`
+                        : tokenPattern(tokens[i])
+                );
                 if (i < tokens.length - 1) {
                     const a = cleanToken(tokens[i]).replace(/\.+$/, "");
                     const b = cleanToken(tokens[i + 1]).replace(/\.+$/, "");
@@ -629,42 +649,59 @@
             }
             return result.join("");
         };
-        if (template === "Korean") {
-            if (!phrase.includes("-")) {
-                return `${boundaryStart}${joinTokens()}${boundaryEnd}`;
-            }
-            const koreanTokens = tokens.map((token) =>
-                escapeRegex(cleanToken(token).replace(/\.+$/, "")).replace(/-/g, "[- ]?")
-            );
+        const buildKoreanBranch = (branch) => {
+            const tokens = branch.split(/\s+/).filter(Boolean);
+            if (!tokens.length) return [];
+            const koreanTokens = tokens.map((token) => {
+                const alternatives = token.split("|").filter(Boolean);
+                return alternatives.length > 1
+                    ? `(?:${alternatives.map(koreanTokenPattern).join("|")})`
+                    : koreanTokenPattern(token);
+            });
             const n = koreanTokens.length;
             if (n === 1) {
-                return `${boundaryStart}${koreanTokens[0]}${boundaryEnd}`;
+                return [koreanTokens[0]];
             }
             if (n === 2) {
-                const alternative = `(?:${koreanTokens[0]} )?${koreanTokens[1]}`;
-                return `${boundaryStart}${alternative}${boundaryEnd}`;
+                return [`(?:${koreanTokens[0]} )?${koreanTokens[1]}`];
             }
             const prefix = koreanTokens.slice(0, n - 2).join(" ");
             const optionalPrefix = prefix ? `(?:${prefix} )?` : "";
             const optionalSecondToLast = `(?:${koreanTokens[n - 2]} )?`;
             const mainPattern = `${optionalPrefix}${optionalSecondToLast}${koreanTokens[n - 1]}`;
-            const isCheolJung = /^(?:Cheol[- ]?jung)$/i.test(cleanToken(tokens[n - 1]));
             const alternatives = [mainPattern];
+            // Preserve the shortened prefix + second-to-last-token form.
+            if (tokens[0].includes("|")) {
+                alternatives.push(`${koreanTokens[0]} ${koreanTokens[n - 2]}`);
+            }
+            const isCheolJung = /^(?:Cheol[- ]?jung)$/i.test(cleanToken(tokens[n - 1]));
             if (isCheolJung && n === 4) {
                 alternatives.push("Team Leader Kim");
             }
-            return `${boundaryStart}(?:${alternatives.join("|")})${boundaryEnd}`;
-        }
-        if ((template === "Japanese" || template === "Japanese 2") && tokens.length === 2) {
-            const first = tokenPattern(tokens[0]);
-            const second = tokenPattern(tokens[1]);
-            const alternatives = [`${first} ${second}`, `${second} ${first}`];
-            if (template === "Japanese 2") {
-                alternatives.push(first);
+            return alternatives;
+        };
+        const generated = [];
+        for (const branch of branches) {
+            if (template === "Korean") {
+                generated.push(...buildKoreanBranch(branch));
+                continue;
             }
-            return `${boundaryStart}(?:${alternatives.join("|")})${boundaryEnd}`;
+            const tokens = branch.split(/\s+/).filter(Boolean);
+            if (!tokens.length) continue;
+            if ((template === "Japanese" || template === "Japanese 2") && tokens.length === 2) {
+                const first = tokenPattern(tokens[0]);
+                const second = tokenPattern(tokens[1]);
+                generated.push(`${first} ${second}`, `${second} ${first}`);
+                if (template === "Japanese 2") {
+                    generated.push(first);
+                }
+                continue;
+            }
+            generated.push(buildStandardBranch(branch));
         }
-        return `${boundaryStart}${joinTokens()}${boundaryEnd}`;
+        const uniquePatterns = [...new Set(generated.filter(Boolean))];
+        if (!uniquePatterns.length) return "";
+        return `${boundaryStart}(?:${uniquePatterns.join("|")})${boundaryEnd}`;
     }
     function ensureStyle() {
         if (document.getElementById(STYLE_ID)) return;
@@ -1062,12 +1099,234 @@
                 candidateMatchesFoxReplaceValue(candidate, rule, rule.output)
         );
     }
+    function getDiscoveryCandidates(originalCandidates) {
+        if (!originalCandidates.length) return [];
+        const candidates = originalCandidates.map((candidate) => ({
+            ...candidate,
+            normalizedTokens: [...candidate.normalizedTokens]
+        }));
+        const getCount = (candidate) => Number(candidate.phraseCount ?? candidate.occurrences ?? 0);
+        const getKey = (candidate) => candidate.identityKey || normalizeNameIdentity(candidate.phrase);
+        const maxCount = Math.max(...candidates.map(getCount));
+        const threshold = maxCount * 0.05;
+        // Only candidates above the 5% threshold are initially displayed.
+        const eligible = candidates.filter((candidate) => getCount(candidate) > threshold);
+        const hidden = candidates.filter((candidate) => getCount(candidate) <= threshold);
+        const makeGroup = (candidate) => {
+            const tokens = [...candidate.normalizedTokens];
+            return {
+                phrase: candidate.phrase,
+                identityKey: getKey(candidate),
+                base: candidate,
+                patterns: [tokens],
+                members: new Map([[getKey(candidate), candidate]]),
+                firstPos: candidate.firstPos ?? 0
+            };
+        };
+        const mergeGroups = (groups, phrase, identityKey, patterns, base) => {
+            const members = new Map();
+            for (const group of groups) {
+                for (const [key, candidate] of group.members) {
+                    if (members.has(key)) return null;
+                    members.set(key, candidate);
+                }
+            }
+            return {
+                phrase,
+                identityKey,
+                base,
+                patterns: patterns.map((tokens) => [...tokens]),
+                members,
+                firstPos: Math.min(...groups.map((group) => group.firstPos))
+            };
+        };
+        const groups = eligible.map(makeGroup);
+        const used = new Set();
+        const sameTokens = (a, b) => a.length === b.length && a.every((token, index) => token === b[index]);
+        const isPrefix = (prefix, whole) =>
+            prefix.length < whole.length && prefix.every((token, index) => token === whole[index]);
+        const isSuffix = (suffix, whole) =>
+            suffix.length < whole.length &&
+            suffix.every((token, index) => token === whole[whole.length - suffix.length + index]);
+        const getOverlap = (prefix, suffix) => {
+            for (let size = Math.min(prefix.length, suffix.length); size >= 1; size--) {
+                if (sameTokens(prefix.slice(-size), suffix.slice(0, size))) {
+                    return size;
+                }
+            }
+            return 0;
+        };
+        // Pass 1: Recover hidden bridge phrases.
+        // Example: Manager Su + Su Kang + Manager Su Kang.
+        const bridges = hidden
+            .filter((candidate) => candidate.normalizedTokens.length >= 3)
+            .sort(
+                (a, b) =>
+                    b.normalizedTokens.length - a.normalizedTokens.length ||
+                    getCount(b) - getCount(a) ||
+                    (a.firstPos ?? 0) - (b.firstPos ?? 0)
+            );
+        for (const bridge of bridges) {
+            const bridgeTokens = bridge.normalizedTokens;
+            const prefixes = eligible.filter((candidate) => {
+                const key = getKey(candidate);
+                return !used.has(key) && isPrefix(candidate.normalizedTokens, bridgeTokens);
+            });
+            const suffixes = eligible.filter((candidate) => {
+                const key = getKey(candidate);
+                return !used.has(key) && isSuffix(candidate.normalizedTokens, bridgeTokens);
+            });
+            const pairs = [];
+            for (const prefix of prefixes) {
+                for (const suffix of suffixes) {
+                    if (getKey(prefix) === getKey(suffix)) continue;
+                    const overlap = getOverlap(prefix.normalizedTokens, suffix.normalizedTokens);
+                    if (!overlap) continue;
+                    pairs.push({
+                        prefix,
+                        suffix,
+                        score: getCount(prefix) + getCount(suffix)
+                    });
+                }
+            }
+            pairs.sort(
+                (a, b) =>
+                    b.score - a.score ||
+                    (a.prefix.firstPos ?? 0) - (b.prefix.firstPos ?? 0) ||
+                    (a.suffix.firstPos ?? 0) - (b.suffix.firstPos ?? 0)
+            );
+            const pair = pairs[0];
+            if (!pair) continue;
+            const bridgeGroup = mergeGroups(
+                [makeGroup(bridge), makeGroup(pair.prefix), makeGroup(pair.suffix)],
+                bridge.phrase,
+                getKey(bridge),
+                [bridgeTokens],
+                bridge
+            );
+            if (!bridgeGroup) continue;
+            used.add(getKey(pair.prefix));
+            used.add(getKey(pair.suffix));
+            groups.push(bridgeGroup);
+        }
+        // Remove candidates already incorporated into recovered bridges.
+        let activeGroups = groups.filter((group) => {
+            if (group.members.size !== 1) return true;
+            const key = group.members.keys().next().value;
+            return !used.has(key);
+        });
+        // Pass 2: Merge phrases sharing their final two tokens.
+        // Example: Boss Fred Smith + Mr. Fred Smith.
+        const suffixGroups = new Map();
+        for (const group of activeGroups) {
+            const tokens = group.patterns[0];
+            if (tokens.length < 3) continue;
+            const suffix = tokens.slice(-2).join(" ");
+            if (!suffixGroups.has(suffix)) {
+                suffixGroups.set(suffix, []);
+            }
+            suffixGroups.get(suffix).push(group);
+        }
+        for (const [suffix, matchingGroups] of suffixGroups) {
+            if (matchingGroups.length < 2) continue;
+            const prefixes = matchingGroups.map((group) => group.patterns[0].slice(0, -2).join(" "));
+            if (new Set(prefixes).size !== prefixes.length) continue;
+            const alternativePhrase = prefixes.join("|") + " " + suffix;
+            const patterns = matchingGroups.flatMap((group) => group.patterns);
+            const merged = mergeGroups(
+                matchingGroups,
+                alternativePhrase,
+                normalizeNameIdentity(alternativePhrase),
+                patterns,
+                matchingGroups[0].base
+            );
+            if (!merged) continue;
+            activeGroups = activeGroups.filter((group) => !matchingGroups.includes(group));
+            activeGroups.push(merged);
+        }
+        // Pass 3: Longer phrases consume shorter suffix phrases.
+        // Each group can have only one parent.
+        const parents = new Map();
+        for (const shorter of activeGroups) {
+            const shorterPatterns = shorter.patterns;
+            const shorterMaxLength = Math.max(...shorterPatterns.map((tokens) => tokens.length));
+            const possibleOwners = activeGroups.filter((longer) => {
+                if (longer === shorter) return false;
+                const longerMinLength = Math.min(...longer.patterns.map((tokens) => tokens.length));
+                if (longerMinLength <= shorterMaxLength) return false;
+                return longer.patterns.every((longerTokens) =>
+                    shorterPatterns.some((shorterTokens) => isSuffix(shorterTokens, longerTokens))
+                );
+            });
+            possibleOwners.sort((a, b) => {
+                const aLength = Math.min(...a.patterns.map((tokens) => tokens.length));
+                const bLength = Math.min(...b.patterns.map((tokens) => tokens.length));
+                return bLength - aLength || getCount(b.base) - getCount(a.base) || a.firstPos - b.firstPos;
+            });
+            if (possibleOwners.length) {
+                parents.set(shorter, possibleOwners[0]);
+            }
+        }
+        const findRoot = (group) => {
+            let current = group;
+            const visited = new Set();
+            while (parents.has(current) && !visited.has(current)) {
+                visited.add(current);
+                current = parents.get(current);
+            }
+            return current;
+        };
+        // Pass 4: Collect every original candidate under its final owner.
+        const rootMembers = new Map();
+        for (const group of activeGroups) {
+            const root = findRoot(group);
+            if (!rootMembers.has(root)) {
+                rootMembers.set(root, new Map());
+            }
+            const members = rootMembers.get(root);
+            for (const [key, candidate] of group.members) {
+                if (!members.has(key)) {
+                    members.set(key, candidate);
+                }
+            }
+        }
+        // Build fresh display candidates without modifying the originals.
+        const results = [];
+        for (const [root, members] of rootMembers) {
+            const memberCandidates = [...members.values()];
+            const count = memberCandidates.reduce((sum, candidate) => sum + getCount(candidate), 0);
+            const sourceOccurrences = memberCandidates.flatMap((candidate) => candidate.sourceOccurrences || []);
+            const tokens = [...root.patterns[0]];
+            const firstPos = Math.min(...memberCandidates.map((candidate) => candidate.firstPos ?? 0));
+            results.push({
+                ...root.base,
+                identity: root.identityKey,
+                identityKey: root.identityKey,
+                phrase: root.phrase,
+                normalizedTokens: tokens,
+                distinctTokens: new Set(tokens),
+                sourceOccurrences,
+                occurrences: count,
+                phraseCount: count,
+                maxTokenCount: count,
+                sortedTokenCounts: [count],
+                tokenCountsStr: String(count),
+                firstPos
+            });
+        }
+        return results.sort(
+            (a, b) => b.phraseCount - a.phraseCount || a.firstPos - b.firstPos || a.phrase.localeCompare(b.phrase)
+        );
+    }
     function renderRows() {
         const tbody = document.getElementById("fr-rows");
         if (!tbody) return;
-        let candidates = [...currentCandidates];
+        let candidates =
+            candidateSortMode === "discovery" ? getDiscoveryCandidates(currentCandidates) : [...currentCandidates];
         if (candidateFilterMode === "count-2-plus") {
-            candidates = candidates.filter((cand) => cand.phraseCount >= 2);
+            candidates = candidates.filter(
+                (cand) => Array.isArray(cand.normalizedTokens) && cand.normalizedTokens.length >= 2
+            );
         }
         candidates.sort((a, b) => {
             switch (candidateSortMode) {
@@ -1235,57 +1494,57 @@
         panel.style.left = `${Math.max(0, settings.x)}px`;
         panel.style.top = `${Math.max(0, settings.y)}px`;
         panel.innerHTML = `
-            <div class="fr-head">
-                <input
-                    id="fr-candidate-editor"
-                    class="fr-candidate-editor"
-                    type="text"
-                    placeholder="Select a candidate..."
-                    title="Edit candidate name for regex generation"
-                />
-                <label style="display:flex; align-items:center; gap:4px; margin-left: auto;" title="Template">
-                    <span style="font-size:11px;">Tm</span>
-                    <select id="fr-template" title="Template">
-                        ${TEMPLATES.map(
-                            (t) =>
-                                `<option value="${t}" ${t === settings.template ? "selected" : ""}>${{ Other: "Ot", Korean: "Kr", Japanese: "Jp", "Japanese 2": "J2" }[t] || t.slice(0, 2)}</option>`
-                        ).join("")}
-                    </select>
-                </label>
-                <button id="fr-scan" title="Scan the page">🔍</button>
-                <button id="fr-sort-filter" title="Sort and filters">So</button>
-                <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
-                <button id="fr-minimize" title="Minimize panel">−</button>
-                <button id="fr-close" title="Close Panel">×</button>
-            </div>
-            <div class="fr-regex-preview-row">
-                <input
-                    id="fr-regex-preview"
-                    type="text"
-                    readonly
-                    placeholder="Generated regex preview"
-                    title="Generated regular expression"
-                />
-                <button id="fr-regex-preview-copy" title="Copy generated regular expression">📋</button>
-            </div>
-            <div class="fr-tablewrap" id="fr-tablewrap">
-                <table id="fr-table">
-                   <thead>
-    <tr>
-        <th>P</th>
-        <th>Ct</th>
-        <th>Name</th>
-        <th>Gr</th>
-        <th>In</th>
-        <th>Re</th>
-        <th>Ty</th>
-        <th>Cs</th>
-    </tr>
-</thead>
-                    <tbody id="fr-rows"></tbody>
-                </table>
-            </div>
-        `;
+        <div class="fr-head">
+            <input
+                id="fr-candidate-editor"
+                class="fr-candidate-editor"
+                type="text"
+                placeholder="Select a candidate..."
+                title="Edit candidate name for regex generation"
+            />
+            <label style="display:flex; align-items:center; gap:4px; margin-left: auto;" title="Template">
+                <span style="font-size:11px;">Tm</span>
+                <select id="fr-template" title="Template">
+                    ${TEMPLATES.map(
+                        (t) =>
+                            `<option value="${t}" ${t === settings.template ? "selected" : ""}>${{ Other: "Ot", Korean: "Kr", Japanese: "Jp", "Japanese 2": "J2" }[t] || t.slice(0, 2)}</option>`
+                    ).join("")}
+                </select>
+            </label>
+            <button id="fr-scan" title="Scan the page">🔍</button>
+            <button id="fr-sort-filter" title="Sort and filters">So</button>
+            <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
+            <button id="fr-minimize" title="Minimize panel">−</button>
+            <button id="fr-close" title="Close Panel">×</button>
+        </div>
+        <div class="fr-regex-preview-row">
+            <input
+                id="fr-regex-preview"
+                type="text"
+                readonly
+                placeholder="Generated regex preview"
+                title="Generated regular expression"
+            />
+            <button id="fr-regex-preview-copy" title="Copy generated regular expression">📋</button>
+        </div>
+        <div class="fr-tablewrap" id="fr-tablewrap">
+            <table id="fr-table">
+                <thead>
+                    <tr>
+                        <th>P</th>
+                        <th>Ct</th>
+                        <th>Name</th>
+                        <th>Gr</th>
+                        <th>In</th>
+                        <th>Re</th>
+                        <th>Ty</th>
+                        <th>Cs</th>
+                    </tr>
+                </thead>
+                <tbody id="fr-rows"></tbody>
+            </table>
+        </div>
+    `;
         document.body.appendChild(panel);
         const minimizeButton = panel.querySelector("#fr-minimize");
         minimizeButton.addEventListener("click", () => {
@@ -1303,30 +1562,30 @@
             const menu = document.createElement("div");
             menu.id = "fr-sort-filter-menu";
             menu.style.cssText = `
-        position: absolute;
-        top: 36px;
-        right: 8px;
-        z-index: 10;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        padding: 10px;
-        background: #292c32;
-        border: 1px solid #555;
-        border-radius: 4px;
-        box-shadow: 0 4px 12px rgba(0,0,0,.4);
-    `;
+            position: absolute;
+            top: 36px;
+            right: 8px;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 10px;
+            background: #292c32;
+            border: 1px solid #555;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.4);
+        `;
             menu.innerHTML = `
-        <strong style="font-size:12px;">Sort</strong>
-        <button type="button" data-action="count-desc">Count: High to Low</button>
-        <button type="button" data-action="count-asc">Count: Low to High</button>
-        <button type="button" data-action="name-asc">Name: A to Z</button>
-        <hr style="width:100%;border:0;border-top:1px solid #555;">
-        <strong style="font-size:12px;">Filters</strong>
-        <button type="button" data-action="count-2-plus">Count: 2+</button>
-        <button type="button" data-action="show-all">Show All Candidates</button>
-        <button type="button" data-action="reset">Reset Sort/Filter</button>
-    `;
+            <strong style="font-size:12px;">Sort</strong>
+            <button type="button" data-action="discovery">Disc</button>
+            <button type="button" data-action="count-desc">Count</button>
+            <button type="button" data-action="name-asc">Name</button>
+            <hr style="width:100%;border:0;border-top:1px solid #555;">
+            <strong style="font-size:12px;">Filters</strong>
+            <button type="button" data-action="token-2-plus">2+</button>
+            <button type="button" data-action="show-all">All</button>
+            <button type="button" data-action="single-token">1</button>
+        `;
             panel.appendChild(menu);
             menu.addEventListener("click", (e) => {
                 const button = e.target.closest("button[data-action]");
@@ -1341,15 +1600,17 @@
                     case "name-asc":
                         candidateSortMode = "name-asc";
                         break;
-                    case "count-2-plus":
-                        candidateFilterMode = "count-2-plus";
+                    case "discovery":
+                        candidateSortMode = "discovery";
+                        break;
+                    case "token-2-plus":
+                        candidateFilterMode = "token-2-plus";
                         break;
                     case "show-all":
                         candidateFilterMode = "all";
                         break;
-                    case "reset":
-                        candidateSortMode = "count-desc";
-                        candidateFilterMode = "all";
+                    case "single-token":
+                        candidateFilterMode = "single-token";
                         break;
                 }
                 menu.remove();
