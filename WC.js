@@ -612,34 +612,67 @@
         const tokenPattern = (token) => {
             const clean = cleanToken(token);
             const base = clean.replace(/\.+$/, "");
-            if (ABBREVIATIONS.has(base)) {
-                return escapeRegex(base) + "\\.?";
-            }
-            if (/^[A-ZĀĒĪŌŪ]$/.test(base)) {
-                return escapeRegex(base) + "\\.?";
-            }
+            if (ABBREVIATIONS.has(base)) return escapeRegex(base) + "\\.?";
+            if (/^[A-ZĀĒĪŌŪ]$/.test(base)) return escapeRegex(base) + "\\.?";
             return escapeRegex(base);
         };
         const koreanTokenPattern = (token) => escapeRegex(cleanToken(token).replace(/\.+$/, "")).replace(/-/g, "[- ]?");
-        // Split complete Discovery alternatives.
-        // Each branch is processed independently to prevent literal pipes
-        // from being escaped or interpreted as arbitrary regex input.
+        const getAlternatives = (token) =>
+            token
+                .split("|")
+                .map((part) => part.trim())
+                .filter(Boolean);
+        const buildToken = (token, patternFunction) => {
+            const alternatives = getAlternatives(token);
+            const patterns = alternatives.map(patternFunction);
+            return patterns.length > 1 ? `(?:${patterns.join("|")})` : patterns[0] || "";
+        };
         const branches = String(phrase || "")
-            .split("|")
+            .split(/\n/)
             .map((part) => part.trim())
             .filter(Boolean);
         if (!branches.length) return "";
-        const buildStandardBranch = (branch) => {
+        const generated = [];
+        for (const branch of branches) {
             const tokens = branch.split(/\s+/).filter(Boolean);
-            if (!tokens.length) return "";
+            if (!tokens.length) continue;
+            if (template === "Korean") {
+                const koreanTokens = tokens.map((token) => buildToken(token, koreanTokenPattern));
+                const n = koreanTokens.length;
+                if (n === 1) {
+                    generated.push(koreanTokens[0]);
+                    continue;
+                }
+                if (n === 2) {
+                    generated.push(`(?:${koreanTokens[0]} )?${koreanTokens[1]}`);
+                    continue;
+                }
+                const prefix = koreanTokens.slice(0, n - 2).join(" ");
+                const optionalPrefix = prefix ? `(?:${prefix} )?` : "";
+                const optionalSecondToLast = `(?:${koreanTokens[n - 2]} )?`;
+                generated.push(`${optionalPrefix}${optionalSecondToLast}${koreanTokens[n - 1]}`);
+                // Keep the shortened prefix + second-to-last-token form
+                // when Discovery has merged alternative prefixes.
+                if (getAlternatives(tokens[0]).length > 1) {
+                    generated.push(`${koreanTokens[0]} ${koreanTokens[n - 2]}`);
+                }
+                if (n === 4 && /^(?:Cheol[- ]?jung)$/i.test(cleanToken(tokens[n - 1]))) {
+                    generated.push("Team Leader Kim");
+                }
+                continue;
+            }
+            if ((template === "Japanese" || template === "Japanese 2") && tokens.length === 2) {
+                const first = buildToken(tokens[0], tokenPattern);
+                const second = buildToken(tokens[1], tokenPattern);
+                generated.push(`${first} ${second}`, `${second} ${first}`);
+                if (template === "Japanese 2") {
+                    generated.push(first);
+                }
+                continue;
+            }
             const result = [];
             for (let i = 0; i < tokens.length; i++) {
-                const alternatives = tokens[i].split("|").filter(Boolean);
-                result.push(
-                    alternatives.length > 1
-                        ? `(?:${alternatives.map(tokenPattern).join("|")})`
-                        : tokenPattern(tokens[i])
-                );
+                result.push(buildToken(tokens[i], tokenPattern));
                 if (i < tokens.length - 1) {
                     const a = cleanToken(tokens[i]).replace(/\.+$/, "");
                     const b = cleanToken(tokens[i + 1]).replace(/\.+$/, "");
@@ -647,57 +680,7 @@
                     result.push(initials ? "(?:\\s*\\.\\s*| )" : " ");
                 }
             }
-            return result.join("");
-        };
-        const buildKoreanBranch = (branch) => {
-            const tokens = branch.split(/\s+/).filter(Boolean);
-            if (!tokens.length) return [];
-            const koreanTokens = tokens.map((token) => {
-                const alternatives = token.split("|").filter(Boolean);
-                return alternatives.length > 1
-                    ? `(?:${alternatives.map(koreanTokenPattern).join("|")})`
-                    : koreanTokenPattern(token);
-            });
-            const n = koreanTokens.length;
-            if (n === 1) {
-                return [koreanTokens[0]];
-            }
-            if (n === 2) {
-                return [`(?:${koreanTokens[0]} )?${koreanTokens[1]}`];
-            }
-            const prefix = koreanTokens.slice(0, n - 2).join(" ");
-            const optionalPrefix = prefix ? `(?:${prefix} )?` : "";
-            const optionalSecondToLast = `(?:${koreanTokens[n - 2]} )?`;
-            const mainPattern = `${optionalPrefix}${optionalSecondToLast}${koreanTokens[n - 1]}`;
-            const alternatives = [mainPattern];
-            // Preserve the shortened prefix + second-to-last-token form.
-            if (tokens[0].includes("|")) {
-                alternatives.push(`${koreanTokens[0]} ${koreanTokens[n - 2]}`);
-            }
-            const isCheolJung = /^(?:Cheol[- ]?jung)$/i.test(cleanToken(tokens[n - 1]));
-            if (isCheolJung && n === 4) {
-                alternatives.push("Team Leader Kim");
-            }
-            return alternatives;
-        };
-        const generated = [];
-        for (const branch of branches) {
-            if (template === "Korean") {
-                generated.push(...buildKoreanBranch(branch));
-                continue;
-            }
-            const tokens = branch.split(/\s+/).filter(Boolean);
-            if (!tokens.length) continue;
-            if ((template === "Japanese" || template === "Japanese 2") && tokens.length === 2) {
-                const first = tokenPattern(tokens[0]);
-                const second = tokenPattern(tokens[1]);
-                generated.push(`${first} ${second}`, `${second} ${first}`);
-                if (template === "Japanese 2") {
-                    generated.push(first);
-                }
-                continue;
-            }
-            generated.push(buildStandardBranch(branch));
+            generated.push(result.join(""));
         }
         const uniquePatterns = [...new Set(generated.filter(Boolean))];
         if (!uniquePatterns.length) return "";
@@ -708,197 +691,161 @@
         const style = document.createElement("style");
         style.id = STYLE_ID;
         style.textContent = `
-        #${PANEL_ID} {
-            position: fixed;
-            z-index: 2147483647;
-            display: flex;
-            flex-direction: column;
-            width: fit-content;
-            max-width: calc(100vw - 24px);
-            height: min(850px, calc(100vh - 24px));
-            max-height: calc(100vh - 24px);
-            overflow: hidden;
-            box-sizing: border-box;
-            background: #1c1e22 !important;
-            color: #e8eaf0 !important;
-            border: 1px solid #45484e;
-            border-radius: 6px;
-            box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
-            font: 14px/1 Arial, sans-serif;
-            color-scheme: dark;
-        }
-        #${PANEL_ID} *,
-        #${PANEL_ID} *::before,
-        #${PANEL_ID} *::after {
-            box-sizing: border-box;
-        }
-        #${PANEL_ID}.fr-minimized {
-            width: max-content;
-            height: auto;
-            max-height: none;
-        }
-        #${PANEL_ID} .fr-head {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 8px;
-            min-height: 34px;
-            flex-shrink: 0;
-            overflow: visible;
-            white-space: nowrap;
-            background: #292c32;
-            border-bottom: 1px solid #45484e;
-            cursor: move;
-            user-select: none;
-        }
-        #${PANEL_ID} .fr-title {
-            margin-right: 4px;
-            color: #e8eaf0;
-            font-weight: bold;
-        }
-        #${PANEL_ID} button,
-        #${PANEL_ID} select {
-            padding: 2px 6px;
-            border: 1px solid #555;
-            border-radius: 3px;
-            background: #101216;
-            color: #fff;
-            font: 11px/1 Arial, sans-serif;
-            cursor: pointer;
-        }
-        #${PANEL_ID} button:hover {
-            background: #363940;
-        }
-        #${PANEL_ID} .fr-regex-preview-row {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            min-width: 0;
-            padding: 4px 8px;
-            flex-shrink: 0;
-            background: #1c1e22;
-            border-bottom: 1px solid #45484e;
-        }
-        #${PANEL_ID} #fr-regex-preview {
-            flex: 1;
-            min-width: 0;
-            width: 100%;
-            padding: 3px 5px;
-            border: 1px solid #555;
-            border-radius: 3px;
-            background: #101216;
-            color: #ce9178;
-            font: 11px ui-monospace, monospace;
-        }
-        #${PANEL_ID}.fr-minimized .fr-regex-preview-row,
-        #${PANEL_ID}.fr-minimized #fr-template,
-        #${PANEL_ID}.fr-minimized #fr-scan,
-        #${PANEL_ID}.fr-minimized #fr-empty,
-        #${PANEL_ID}.fr-minimized #fr-tablewrap {
-            display: none;
-        }
-        #${PANEL_ID} .fr-tablewrap {
-            flex: 1 1 auto;
-            min-width: 0;
-            min-height: 0;
-            overflow: auto;
-            background: #1c1e22;
-            scrollbar-gutter: stable;
-        }
-        #${PANEL_ID} table {
-            width: max-content;
-            min-width: 0;
-            table-layout: auto;
-            border-collapse: collapse;
-            border-spacing: 0;
-            font: 14px/1 Arial, sans-serif;
-        }
-        #${PANEL_ID} th,
-        #${PANEL_ID} td {
-            width: fit-content;
-            max-width: 600px;
-            padding: 0;
-            margin: 0;
-            overflow: hidden;
-            text-align: left;
-            text-overflow: ellipsis;
-            font-size: 14px;
-            line-height: 1;
-        }
-        #${PANEL_ID} th {
-            position: sticky;
-            top: 0;
-            z-index: 1;
-            padding: 4px 6px;
-            border-bottom: 1px solid #363940;
-            background: #25282e;
-            color: #e8eaf0;
-            font-weight: bold;
-            white-space: nowrap;
-        }
-        #${PANEL_ID} td {
-            padding: 3px 6px;
-            border-bottom: 1px solid #363940;
-            vertical-align: middle;
-        }
-        #${PANEL_ID} tbody tr,
-        #${PANEL_ID} tbody td {
-            height: 30px;
-        }
-        #${PANEL_ID} tbody td {
-            white-space: nowrap;
-        }
-        #${PANEL_ID} tbody td.fr-rule-text {
-            width: fit-content;
-            max-width: 300px;
-            height: auto;
-            overflow-wrap: anywhere;
-            white-space: normal;
-            text-overflow: clip;
-            vertical-align: top;
-        }
-        #${PANEL_ID} tbody td button {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            height: 22px;
-            min-height: 22px;
-            padding: 2px 6px;
-            line-height: 1;
-            vertical-align: middle;
-        }
-        #${PANEL_ID} td input {
-            display: block;
-            field-sizing: content;
-            min-width: 200px;
-            max-width: 300px;
-            padding: 3px 5px;
-            border: 1px solid #555;
-            border-radius: 3px;
-            background: #101216;
-            color: #fff;
-            font: inherit;
-        }
-        #${PANEL_ID} .fr-candidate-editor {
-            width: 180px;
-            min-width: 80px;
-            max-width: 300px;
-            padding: 3px 5px;
-            border: 1px solid #555;
-            border-radius: 3px;
-            background: #101216;
-            color: #fff;
-            font: 11px/1 Arial, sans-serif;
-        }
-        #${PANEL_ID} .fr-regex {
-            max-width: 600px;
-            overflow: hidden;
-            color: #ce9178;
-            font: 11px ui-monospace, monospace;
-            white-space: nowrap;
-            text-overflow: ellipsis;
-        }
-    `;
+            #${PANEL_ID} {
+                position: fixed;
+                z-index: 2147483647;
+                display: flex;
+                flex-direction: column;
+                width: fit-content;
+                max-width: calc(100vw - 24px);
+                height: min(850px, calc(100vh - 24px));
+                max-height: calc(100vh - 24px);
+                overflow: hidden;
+                box-sizing: border-box;
+                background: #1c1e22 !important;
+                color: #e8eaf0 !important;
+                border: 1px solid #45484e;
+                border-radius: 6px;
+                box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
+                font:
+                    14px/1 Arial,
+                    sans-serif;
+                color-scheme: dark;
+            }
+            #${PANEL_ID} *,
+            #${PANEL_ID} *::before,
+            #${PANEL_ID} *::after {
+                box-sizing: border-box;
+            }
+            #${PANEL_ID}.fr-minimized {
+                width: max-content;
+                height: auto;
+                max-height: none;
+            }
+            #${PANEL_ID} .fr-head {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 4px 8px;
+                min-height: 34px;
+                flex-shrink: 0;
+                overflow: visible;
+                white-space: nowrap;
+                background: #292c32;
+                border-bottom: 1px solid #45484e;
+                cursor: move;
+                user-select: none;
+            }
+            #${PANEL_ID} .fr-title {
+                margin-right: 4px;
+                color: #e8eaf0;
+                font-weight: bold;
+            }
+            #${PANEL_ID} button,
+            #${PANEL_ID} select {
+                padding: 2px 6px;
+                border: 1px solid #555;
+                border-radius: 3px;
+                background: #101216;
+                color: #fff;
+                font:
+                    11px/1 Arial,
+                    sans-serif;
+                cursor: pointer;
+            }
+            #${PANEL_ID} button:hover {
+                background: #363940;
+            }
+            #${PANEL_ID} .fr-regex-preview-row {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                min-width: 0;
+                padding: 4px 8px;
+                flex-shrink: 0;
+                background: #1c1e22;
+                border-bottom: 1px solid #45484e;
+            }
+            #${PANEL_ID} #fr-regex-preview {
+                flex: 1;
+                min-width: 0;
+                width: 100%;
+                padding: 3px 5px;
+                border: 1px solid #555;
+                border-radius: 3px;
+                background: #101216;
+                color: #ce9178;
+                font:
+                    11px ui-monospace,
+                    monospace;
+            }
+            #${PANEL_ID}.fr-minimized .fr-regex-preview-row,
+            #${PANEL_ID}.fr-minimized #fr-template,
+            #${PANEL_ID}.fr-minimized #fr-scan,
+            #${PANEL_ID}.fr-minimized #fr-empty,
+            #${PANEL_ID}.fr-minimized #fr-tablewrap {
+                display: none;
+            }
+            #${PANEL_ID} .fr-tablewrap {
+                flex: 1 1 auto;
+                min-width: 0;
+                min-height: 0;
+                overflow: auto;
+                background: #1c1e22;
+                scrollbar-gutter: stable;
+            }
+            #${PANEL_ID} table {
+                width: max-content;
+                min-width: 0;
+                table-layout: auto;
+                border-collapse: collapse;
+                border-spacing: 0;
+                font:
+                    14px/1 Arial,
+                    sans-serif;
+            }
+            #${PANEL_ID} th,
+            #${PANEL_ID} td {
+                width: fit-content;
+                max-width: 600px;
+                padding: 0;
+                margin: 0;
+                overflow: hidden;
+                text-align: left;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 14px;
+                line-height: 1;
+            }
+            #${PANEL_ID} th {
+                position: sticky;
+                top: 0;
+                z-index: 1;
+                padding: 4px 6px;
+                border-bottom: 1px solid #363940;
+                background: #25282e;
+                color: #e8eaf0;
+                font-weight: bold;
+            }
+            #${PANEL_ID} td {
+                padding: 3px 6px;
+                border-bottom: 1px solid #363940;
+                vertical-align: middle;
+            }
+            #${PANEL_ID} tbody tr,
+            #${PANEL_ID} tbody td {
+                height: 30px;
+            }
+            #${PANEL_ID} td:nth-child(4) {
+                max-width: 100px;
+            }
+            #${PANEL_ID} td:nth-child(5) {
+                max-width: 400px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+        `;
         document.head.appendChild(style);
     }
     function updateRegexPreview() {
@@ -1109,7 +1056,6 @@
         const getKey = (candidate) => candidate.identityKey || normalizeNameIdentity(candidate.phrase);
         const maxCount = Math.max(...candidates.map(getCount));
         const threshold = maxCount * 0.05;
-        // Only candidates above the 5% threshold are initially displayed.
         const eligible = candidates.filter((candidate) => getCount(candidate) > threshold);
         const hidden = candidates.filter((candidate) => getCount(candidate) <= threshold);
         const makeGroup = (candidate) => {
@@ -1157,7 +1103,6 @@
             return 0;
         };
         // Pass 1: Recover hidden bridge phrases.
-        // Example: Manager Su + Su Kang + Manager Su Kang.
         const bridges = hidden
             .filter((candidate) => candidate.normalizedTokens.length >= 3)
             .sort(
@@ -1167,6 +1112,8 @@
                     (a.firstPos ?? 0) - (b.firstPos ?? 0)
             );
         for (const bridge of bridges) {
+            const bridgeKey = getKey(bridge);
+            if (used.has(bridgeKey)) continue;
             const bridgeTokens = bridge.normalizedTokens;
             const prefixes = eligible.filter((candidate) => {
                 const key = getKey(candidate);
@@ -1200,23 +1147,24 @@
             const bridgeGroup = mergeGroups(
                 [makeGroup(bridge), makeGroup(pair.prefix), makeGroup(pair.suffix)],
                 bridge.phrase,
-                getKey(bridge),
+                bridgeKey,
                 [bridgeTokens],
                 bridge
             );
             if (!bridgeGroup) continue;
+            // Mark all three originals as consumed to prevent double counting.
+            used.add(bridgeKey);
             used.add(getKey(pair.prefix));
             used.add(getKey(pair.suffix));
             groups.push(bridgeGroup);
         }
-        // Remove candidates already incorporated into recovered bridges.
+        // Remove originals already included in recovered bridges.
         let activeGroups = groups.filter((group) => {
             if (group.members.size !== 1) return true;
             const key = group.members.keys().next().value;
             return !used.has(key);
         });
         // Pass 2: Merge phrases sharing their final two tokens.
-        // Example: Boss Fred Smith + Mr. Fred Smith.
         const suffixGroups = new Map();
         for (const group of activeGroups) {
             const tokens = group.patterns[0];
@@ -1245,7 +1193,6 @@
             activeGroups.push(merged);
         }
         // Pass 3: Longer phrases consume shorter suffix phrases.
-        // Each group can have only one parent.
         const parents = new Map();
         for (const shorter of activeGroups) {
             const shorterPatterns = shorter.patterns;
@@ -1290,7 +1237,7 @@
                 }
             }
         }
-        // Build fresh display candidates without modifying the originals.
+        // Build fresh display candidates without modifying originals.
         const results = [];
         for (const [root, members] of rootMembers) {
             const memberCandidates = [...members.values()];
@@ -1323,30 +1270,36 @@
         if (!tbody) return;
         let candidates =
             candidateSortMode === "discovery" ? getDiscoveryCandidates(currentCandidates) : [...currentCandidates];
-        if (candidateFilterMode === "count-2-plus") {
+        if (candidateFilterMode === "token-2-plus") {
             candidates = candidates.filter(
                 (cand) => Array.isArray(cand.normalizedTokens) && cand.normalizedTokens.length >= 2
             );
+        } else if (candidateFilterMode === "single-token") {
+            candidates = candidates.filter(
+                (cand) => Array.isArray(cand.normalizedTokens) && cand.normalizedTokens.length === 1
+            );
         }
-        candidates.sort((a, b) => {
-            switch (candidateSortMode) {
-                case "count-asc":
-                    return a.phraseCount - b.phraseCount;
-                case "name-asc":
-                    return (settings.edits[a.identityKey] ?? a.phrase).localeCompare(
-                        settings.edits[b.identityKey] ?? b.phrase
-                    );
-                case "count-desc":
-                default:
-                    return b.phraseCount - a.phraseCount || a.firstPos - b.firstPos;
-            }
-        });
+        if (candidateSortMode !== "discovery") {
+            candidates.sort((a, b) => {
+                switch (candidateSortMode) {
+                    case "count-asc":
+                        return a.phraseCount - b.phraseCount;
+                    case "name-asc":
+                        return (settings.edits[a.identityKey] ?? a.phrase).localeCompare(
+                            settings.edits[b.identityKey] ?? b.phrase
+                        );
+                    case "count-desc":
+                    default:
+                        return b.phraseCount - a.phraseCount || a.firstPos - b.firstPos;
+                }
+            });
+        }
         tbody.innerHTML = "";
         if (!candidates.length) {
             tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
             return;
         }
-        const columns = ["group", "input", "replace", "type", "case"];
+        const columns = ["group", "replace", "with", "type", "case"];
         const addCell = (row, value, title = "", className = "") => {
             const td = document.createElement("td");
             td.textContent = value == null || value === "" ? "—" : String(value);
@@ -1531,14 +1484,14 @@
             <table id="fr-table">
                 <thead>
                     <tr>
-                        <th>P</th>
-                        <th>Ct</th>
-                        <th>Name</th>
-                        <th>Gr</th>
-                        <th>In</th>
-                        <th>Re</th>
-                        <th>Ty</th>
-                        <th>Cs</th>
+<th>P</th>
+<th>Ct</th>
+<th>Name</th>
+<th>Group</th>
+<th>Replace</th>
+<th>With</th>
+<th>Ty</th>
+<th>Cs</th>
                     </tr>
                 </thead>
                 <tbody id="fr-rows"></tbody>
