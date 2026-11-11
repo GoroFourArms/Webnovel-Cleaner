@@ -637,6 +637,41 @@
             const tokens = branch.split(/\s+/).filter(Boolean);
             if (!tokens.length) continue;
             if (template === "Korean") {
+                const pipeIndex = tokens.findIndex((token) => token.includes("|"));
+                // Handle merged prefix alternatives, including multiword prefixes.
+                if (pipeIndex !== -1 && pipeIndex < tokens.length - 1) {
+                    const pipeParts = tokens[pipeIndex].split("|");
+                    const prefixAlternatives = [
+                        [...tokens.slice(0, pipeIndex), pipeParts[0]].join(" "),
+                        ...pipeParts.slice(1)
+                    ].filter(Boolean);
+                    const nameTokens = tokens.slice(pipeIndex + 1);
+                    const koreanTokens = nameTokens.map((token) => buildToken(token, koreanTokenPattern));
+                    const prefixPattern = `(?:${prefixAlternatives
+                        .map((prefix) => prefix.split(/\s+/).map(koreanTokenPattern).join(" ") + " ")
+                        .join("|")})`;
+                    const n = koreanTokens.length;
+                    if (n === 1) {
+                        generated.push(`${prefixPattern}?${koreanTokens[0]}`);
+                        continue;
+                    }
+                    const middleTokens = koreanTokens.slice(0, n - 2);
+                    const secondToLast = koreanTokens[n - 2];
+                    const last = koreanTokens[n - 1];
+                    const extendedPrefixes = prefixAlternatives.map((prefix) => {
+                        const prefixTokens = prefix.split(/\s+/).map(koreanTokenPattern);
+                        return [...prefixTokens, ...middleTokens].join(" ") + " ";
+                    });
+                    const optionalPrefix = `(?:${extendedPrefixes.join("|")})?`;
+                    const optionalSecondToLast = `(?:${secondToLast} )?`;
+                    generated.push(`${optionalPrefix}${optionalSecondToLast}${last}`);
+                    // Shortened prefix + second-to-last-token alternative.
+                    generated.push(`${prefixPattern}${secondToLast}`);
+                    if (tokens.length === 4 && /^(?:Cheol[- ]?jung)$/i.test(cleanToken(tokens[tokens.length - 1]))) {
+                        generated.push("Team Leader Kim");
+                    }
+                    continue;
+                }
                 const koreanTokens = tokens.map((token) => buildToken(token, koreanTokenPattern));
                 const n = koreanTokens.length;
                 if (n === 1) {
@@ -651,11 +686,6 @@
                 const optionalPrefix = prefix ? `(?:${prefix} )?` : "";
                 const optionalSecondToLast = `(?:${koreanTokens[n - 2]} )?`;
                 generated.push(`${optionalPrefix}${optionalSecondToLast}${koreanTokens[n - 1]}`);
-                // Keep the shortened prefix + second-to-last-token form
-                // when Discovery has merged alternative prefixes.
-                if (getAlternatives(tokens[0]).length > 1) {
-                    generated.push(`${koreanTokens[0]} ${koreanTokens[n - 2]}`);
-                }
                 if (n === 4 && /^(?:Cheol[- ]?jung)$/i.test(cleanToken(tokens[n - 1]))) {
                     generated.push("Team Leader Kim");
                 }
@@ -917,37 +947,43 @@
         return data;
     }
     function importFoxReplaceJSON() {
-        if (!foxReplaceFilePicker) {
-            foxReplaceFilePicker = document.createElement("input");
-            foxReplaceFilePicker.type = "file";
-            foxReplaceFilePicker.accept = ".json,application/json";
-            foxReplaceFilePicker.style.cssText = "position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;";
-            foxReplaceFilePicker.addEventListener("change", async () => {
-                const file = foxReplaceFilePicker.files?.[0];
+        const picker = document.createElement("input");
+        picker.type = "file";
+        picker.accept = ".json,application/json";
+        picker.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;";
+        document.body.appendChild(picker);
+        const cleanup = () => picker.remove();
+        picker.addEventListener("change", async () => {
+            const file = picker.files?.[0];
+            try {
                 if (!file) return;
-                try {
-                    const parsed = validateFoxReplaceJSON(JSON.parse(await file.text()));
-                    if (typeof GM_setValue !== "function") {
-                        throw new Error(
-                            "Userscript storage is unavailable. Check that GM_setValue permission is enabled."
-                        );
-                    }
-                    await Promise.resolve(GM_setValue(FOXREPLACE_STORE_KEY, parsed));
-                    foxReplaceDatabase = parsed;
-                    pageMatchedFoxReplaceRules = getPageMatchedFoxReplaceRules();
-                    renderRows();
-                    alert(`FoxReplace imported: ${parsed.groups.length} groups.`);
-                } catch (error) {
-                    alert(`FoxReplace import failed: ${error.message}`);
-                    console.error("[WNC] FoxReplace import failed:", error);
-                } finally {
-                    foxReplaceFilePicker.value = "";
+                const parsed = validateFoxReplaceJSON(JSON.parse(await file.text()));
+                if (typeof GM_setValue !== "function") {
+                    throw new Error("Userscript storage is unavailable. Check GM_setValue permission.");
                 }
-            });
-            document.body.appendChild(foxReplaceFilePicker);
+                await Promise.resolve(GM_setValue(FOXREPLACE_STORE_KEY, parsed));
+                foxReplaceDatabase = parsed;
+                pageMatchedFoxReplaceRules = getPageMatchedFoxReplaceRules();
+                renderRows();
+                alert(`FoxReplace imported: ${parsed.groups.length} groups.`);
+            } catch (error) {
+                alert(`FoxReplace import failed: ${error.message}`);
+                console.error("[WNC] FoxReplace import failed:", error);
+            } finally {
+                cleanup();
+            }
+        });
+        picker.addEventListener("cancel", cleanup, { once: true });
+        try {
+            if (typeof picker.showPicker === "function") {
+                picker.showPicker();
+            } else {
+                picker.click();
+            }
+        } catch (error) {
+            console.warn("[WNC] showPicker failed; trying click:", error);
+            picker.click();
         }
-        foxReplaceFilePicker.value = "";
-        foxReplaceFilePicker.click();
     }
     function foxReplaceURLMatches(pattern, url) {
         const value = String(pattern || "").trim();
@@ -993,7 +1029,7 @@
         (foxReplaceDatabase.groups || []).forEach((group, groupIndex) => {
             if (!group || group.enabled === false) return;
             const urls = Array.isArray(group.urls) ? group.urls : [];
-            if (urls.length && !urls.some((pattern) => foxReplaceURLMatches(pattern, location.href))) return;
+            const siteMatches = !urls.length || urls.some((pattern) => foxReplaceURLMatches(pattern, location.href));
             (group.substitutions || []).forEach((rule, ruleIndex) => {
                 if (!rule || rule.enabled === false || typeof rule.input !== "string" || !rule.input) return;
                 try {
@@ -1010,14 +1046,15 @@
                             ? pageText.includes(output)
                             : pageText.toLocaleLowerCase().includes(output.toLocaleLowerCase())
                         : false;
-                    if (inputMatches || outputMatches)
-                        rules.push({
-                            group,
-                            rule,
-                            groupName: group.name || group.title || `Group ${groupIndex + 1}`,
-                            groupIndex,
-                            ruleIndex
-                        });
+                    if (!inputMatches && !outputMatches) return;
+                    rules.push({
+                        group,
+                        rule,
+                        groupName: group.name || group.title || `Group ${groupIndex + 1}`,
+                        groupIndex,
+                        ruleIndex,
+                        siteMatches
+                    });
                 } catch (error) {
                     console.warn("[WNC] Invalid FoxReplace rule:", groupIndex, ruleIndex, error);
                 }
@@ -1056,6 +1093,7 @@
         const getKey = (candidate) => candidate.identityKey || normalizeNameIdentity(candidate.phrase);
         const maxCount = Math.max(...candidates.map(getCount));
         const threshold = maxCount * 0.05;
+        // PASS 1: LOW-COUNT FILTERING
         const eligible = candidates.filter((candidate) => getCount(candidate) > threshold);
         const hidden = candidates.filter((candidate) => getCount(candidate) <= threshold);
         const makeGroup = (candidate) => {
@@ -1086,11 +1124,7 @@
                 firstPos: Math.min(...groups.map((group) => group.firstPos))
             };
         };
-        const groups = eligible.map(makeGroup);
-        const used = new Set();
         const sameTokens = (a, b) => a.length === b.length && a.every((token, index) => token === b[index]);
-        const isPrefix = (prefix, whole) =>
-            prefix.length < whole.length && prefix.every((token, index) => token === whole[index]);
         const isSuffix = (suffix, whole) =>
             suffix.length < whole.length &&
             suffix.every((token, index) => token === whole[whole.length - suffix.length + index]);
@@ -1102,97 +1136,19 @@
             }
             return 0;
         };
-        // Pass 1: Recover hidden bridge phrases.
-        const bridges = hidden
-            .filter((candidate) => candidate.normalizedTokens.length >= 3)
-            .sort(
-                (a, b) =>
-                    b.normalizedTokens.length - a.normalizedTokens.length ||
-                    getCount(b) - getCount(a) ||
-                    (a.firstPos ?? 0) - (b.firstPos ?? 0)
-            );
-        for (const bridge of bridges) {
-            const bridgeKey = getKey(bridge);
-            if (used.has(bridgeKey)) continue;
-            const bridgeTokens = bridge.normalizedTokens;
-            const prefixes = eligible.filter((candidate) => {
-                const key = getKey(candidate);
-                return !used.has(key) && isPrefix(candidate.normalizedTokens, bridgeTokens);
-            });
-            const suffixes = eligible.filter((candidate) => {
-                const key = getKey(candidate);
-                return !used.has(key) && isSuffix(candidate.normalizedTokens, bridgeTokens);
-            });
-            const pairs = [];
-            for (const prefix of prefixes) {
-                for (const suffix of suffixes) {
-                    if (getKey(prefix) === getKey(suffix)) continue;
-                    const overlap = getOverlap(prefix.normalizedTokens, suffix.normalizedTokens);
-                    if (!overlap) continue;
-                    pairs.push({
-                        prefix,
-                        suffix,
-                        score: getCount(prefix) + getCount(suffix)
-                    });
+        const containsSequence = (whole, sequence) => {
+            if (!sequence.length || sequence.length > whole.length) {
+                return false;
+            }
+            for (let i = 0; i <= whole.length - sequence.length; i++) {
+                if (sequence.every((token, index) => token === whole[i + index])) {
+                    return true;
                 }
             }
-            pairs.sort(
-                (a, b) =>
-                    b.score - a.score ||
-                    (a.prefix.firstPos ?? 0) - (b.prefix.firstPos ?? 0) ||
-                    (a.suffix.firstPos ?? 0) - (b.suffix.firstPos ?? 0)
-            );
-            const pair = pairs[0];
-            if (!pair) continue;
-            const bridgeGroup = mergeGroups(
-                [makeGroup(bridge), makeGroup(pair.prefix), makeGroup(pair.suffix)],
-                bridge.phrase,
-                bridgeKey,
-                [bridgeTokens],
-                bridge
-            );
-            if (!bridgeGroup) continue;
-            // Mark all three originals as consumed to prevent double counting.
-            used.add(bridgeKey);
-            used.add(getKey(pair.prefix));
-            used.add(getKey(pair.suffix));
-            groups.push(bridgeGroup);
-        }
-        // Remove originals already included in recovered bridges.
-        let activeGroups = groups.filter((group) => {
-            if (group.members.size !== 1) return true;
-            const key = group.members.keys().next().value;
-            return !used.has(key);
-        });
-        // Pass 2: Merge phrases sharing their final two tokens.
-        const suffixGroups = new Map();
-        for (const group of activeGroups) {
-            const tokens = group.patterns[0];
-            if (tokens.length < 3) continue;
-            const suffix = tokens.slice(-2).join(" ");
-            if (!suffixGroups.has(suffix)) {
-                suffixGroups.set(suffix, []);
-            }
-            suffixGroups.get(suffix).push(group);
-        }
-        for (const [suffix, matchingGroups] of suffixGroups) {
-            if (matchingGroups.length < 2) continue;
-            const prefixes = matchingGroups.map((group) => group.patterns[0].slice(0, -2).join(" "));
-            if (new Set(prefixes).size !== prefixes.length) continue;
-            const alternativePhrase = prefixes.join("|") + " " + suffix;
-            const patterns = matchingGroups.flatMap((group) => group.patterns);
-            const merged = mergeGroups(
-                matchingGroups,
-                alternativePhrase,
-                normalizeNameIdentity(alternativePhrase),
-                patterns,
-                matchingGroups[0].base
-            );
-            if (!merged) continue;
-            activeGroups = activeGroups.filter((group) => !matchingGroups.includes(group));
-            activeGroups.push(merged);
-        }
-        // Pass 3: Longer phrases consume shorter suffix phrases.
+            return false;
+        };
+        // PASS 2: TOKEN ABSORBING
+        let activeGroups = eligible.map(makeGroup);
         const parents = new Map();
         for (const shorter of activeGroups) {
             const shorterPatterns = shorter.patterns;
@@ -1223,7 +1179,6 @@
             }
             return current;
         };
-        // Pass 4: Collect every original candidate under its final owner.
         const rootMembers = new Map();
         for (const group of activeGroups) {
             const root = findRoot(group);
@@ -1237,10 +1192,118 @@
                 }
             }
         }
-        // Build fresh display candidates without modifying originals.
+        activeGroups = [...rootMembers].map(([root, members]) => ({
+            ...root,
+            members
+        }));
+        // PASS 3: BRIDGE MERGING
+        const bridges = hidden
+            .filter((candidate) => candidate.normalizedTokens.length >= 3)
+            .sort(
+                (a, b) =>
+                    b.normalizedTokens.length - a.normalizedTokens.length ||
+                    getCount(b) - getCount(a) ||
+                    (a.firstPos ?? 0) - (b.firstPos ?? 0)
+            );
+        const usedBridges = new Set();
+        for (const bridge of bridges) {
+            const bridgeKey = getKey(bridge);
+            if (usedBridges.has(bridgeKey)) continue;
+            const bridgeTokens = bridge.normalizedTokens;
+            const pairs = [];
+            for (const prefix of activeGroups) {
+                for (const suffix of activeGroups) {
+                    if (prefix === suffix) continue;
+                    const prefixKeys = new Set(prefix.members.keys());
+                    if ([...suffix.members.keys()].some((key) => prefixKeys.has(key))) {
+                        continue;
+                    }
+                    for (const prefixTokens of prefix.patterns) {
+                        for (const suffixTokens of suffix.patterns) {
+                            const overlap = getOverlap(prefixTokens, suffixTokens);
+                            if (!overlap) continue;
+                            const coreTokens = [...prefixTokens, ...suffixTokens.slice(overlap)];
+                            if (!containsSequence(bridgeTokens, coreTokens)) {
+                                continue;
+                            }
+                            pairs.push({
+                                prefix,
+                                suffix,
+                                coreTokens,
+                                score:
+                                    [...prefix.members.values()].reduce(
+                                        (sum, candidate) => sum + getCount(candidate),
+                                        0
+                                    ) +
+                                    [...suffix.members.values()].reduce(
+                                        (sum, candidate) => sum + getCount(candidate),
+                                        0
+                                    )
+                            });
+                        }
+                    }
+                }
+            }
+            pairs.sort(
+                (a, b) =>
+                    b.score - a.score || a.prefix.firstPos - b.prefix.firstPos || a.suffix.firstPos - b.suffix.firstPos
+            );
+            const pair = pairs[0];
+            if (!pair) continue;
+            const corePhrase = pair.coreTokens.join(" ");
+            const coreKey = normalizeNameIdentity(corePhrase);
+            const bridgeGroup = mergeGroups(
+                [pair.prefix, pair.suffix],
+                corePhrase,
+                coreKey,
+                [pair.coreTokens],
+                pair.prefix.base
+            );
+            if (!bridgeGroup) continue;
+            usedBridges.add(bridgeKey);
+            activeGroups = activeGroups.filter((group) => group !== pair.prefix && group !== pair.suffix);
+            activeGroups.push(bridgeGroup);
+        }
+        // PASS 4: TITLE JOINING
+        const suffixGroups = new Map();
+        for (const group of activeGroups) {
+            for (const tokens of group.patterns) {
+                if (tokens.length < 3) continue;
+                const suffix = tokens.slice(-2).join(" ");
+                if (!suffixGroups.has(suffix)) {
+                    suffixGroups.set(suffix, []);
+                }
+                const entries = suffixGroups.get(suffix);
+                if (!entries.some((entry) => entry.group === group)) {
+                    entries.push({
+                        group,
+                        tokens
+                    });
+                }
+            }
+        }
+        for (const [suffix, entries] of suffixGroups) {
+            if (entries.length < 2) continue;
+            const matchingGroups = entries.map((entry) => entry.group);
+            const prefixes = entries.map((entry) => entry.tokens.slice(0, -2).join(" "));
+            if (new Set(prefixes).size !== prefixes.length) continue;
+            const alternativePhrase = prefixes.join("|") + " " + suffix;
+            const patterns = entries.map((entry) => entry.tokens);
+            const merged = mergeGroups(
+                matchingGroups,
+                alternativePhrase,
+                normalizeNameIdentity(alternativePhrase),
+                patterns,
+                matchingGroups[0].base
+            );
+            if (!merged) continue;
+            activeGroups = activeGroups.filter((group) => !matchingGroups.includes(group));
+            activeGroups.push(merged);
+        }
+        // BUILD FINAL CANDIDATES
         const results = [];
-        for (const [root, members] of rootMembers) {
-            const memberCandidates = [...members.values()];
+        for (const root of activeGroups) {
+            const memberCandidates = [...root.members.values()];
             const count = memberCandidates.reduce((sum, candidate) => sum + getCount(candidate), 0);
             const sourceOccurrences = memberCandidates.flatMap((candidate) => candidate.sourceOccurrences || []);
             const tokens = [...root.patterns[0]];
@@ -1296,10 +1359,10 @@
         }
         tbody.innerHTML = "";
         if (!candidates.length) {
-            tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
             return;
         }
-        const columns = ["group", "replace", "with", "type", "case"];
+        const columns = ["group", "replace", "with", "type", "case", "status"];
         const addCell = (row, value, title = "", className = "") => {
             const td = document.createElement("td");
             td.textContent = value == null || value === "" ? "—" : String(value);
@@ -1367,6 +1430,14 @@
                     addCell(tr, rule.output, rule.output, "fr-rule-text");
                     addCell(tr, type);
                     addCell(tr, rule.caseSensitive ? "Y" : "N");
+                    const statusCell = document.createElement("td");
+                    statusCell.textContent = "●";
+                    statusCell.style.color = match.siteMatches ? "#4caf50" : "#f44336";
+                    statusCell.title = match.siteMatches
+                        ? "Rule matches this page and the site is allowed"
+                        : "Rule matches this page, but the site does not match";
+                    statusCell.style.textAlign = "center";
+                    tr.appendChild(statusCell);
                 } else {
                     columns.forEach(() => addCell(tr, ""));
                 }
@@ -1412,9 +1483,24 @@
             clearTimeout(observerFlushTimer);
             observerFlushTimer = null;
         }
-        // A full debounced rescan is safer than trying to reconcile partial
-        // runs: removals and visibility/class changes can otherwise leave
-        // stale candidates behind when no replacement text run remains.
+        // Schedule a complete rescan after page content changes.
+        const scheduleRescan = () => {
+            if (observerFlushTimer !== null) {
+                clearTimeout(observerFlushTimer);
+            }
+            observerFlushTimer = setTimeout(() => {
+                observerFlushTimer = null;
+                if (!document.getElementById(PANEL_ID) || isScanning) return;
+                runScan();
+            }, 250);
+        };
+        // Register Pagetual events only once.
+        if (!startScanObserver.pagetualListenersAdded) {
+            document.addEventListener("AutoPagerize_DOMNodeInserted", scheduleRescan, true);
+            document.addEventListener("GM_AutoPagerizeNextPageLoaded", scheduleRescan, true);
+            startScanObserver.pagetualListenersAdded = true;
+        }
+        // Also watch ordinary DOM changes from the website.
         observer = new MutationObserver((mutations) => {
             if (!mutations.length) return;
             const relevantMutations = mutations.filter((mutation) => {
@@ -1422,14 +1508,8 @@
                 const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
                 return !element?.closest(`#${PANEL_ID}`);
             });
-            if (!relevantMutations.length || observerFlushTimer !== null) {
-                return;
-            }
-            observerFlushTimer = setTimeout(() => {
-                observerFlushTimer = null;
-                if (!document.getElementById(PANEL_ID) || isScanning) return;
-                runScan();
-            }, 100);
+            if (!relevantMutations.length) return;
+            scheduleRescan();
         });
         observer.observe(document.body, {
             childList: true,
@@ -1492,6 +1572,7 @@
 <th>With</th>
 <th>Ty</th>
 <th>Cs</th>
+<th>St</th>
                     </tr>
                 </thead>
                 <tbody id="fr-rows"></tbody>
