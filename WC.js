@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.4
+// @version      1.0.5
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -83,9 +83,8 @@
         ".advertisement",
         ".ads"
     ].join(",");
-    const WORD_FILTER = new Set(["An", "Do", "Ha", "He", "Ho", "I", "No", "Oh", "So", "You"]);
+    const WORD_FILTER = new Set(["A", "Ah", "An", "Do", "Ha", "He", "Ho", "I", "No", "Oh", "So", "You"]);
     const All_Words = new Set([
-        "A",
         "Actually",
         "Although",
         "Alright",
@@ -112,17 +111,18 @@
         "Had",
         "Has",
         "Have",
+        "Having",
         "Her",
         "Hearing",
         "Here",
         "Him",
         "His",
+        "Hmm",
+        "Huh",
         "How",
         "However",
         "If",
         "In",
-        "I'll",
-        "I'm",
         "Into",
         "Involving",
         "Is",
@@ -136,7 +136,9 @@
         "Must",
         "My",
         "Not",
+        "Now",
         "Of",
+        "Okay",
         "On",
         "Once",
         "One",
@@ -144,13 +146,14 @@
         "Or",
         "Our",
         "Out",
+        "Really",
         "Seeing",
         "Sensing",
         "She",
         "Since",
         "Should",
-        "So",
         "Some",
+        "Still",
         "Take",
         "That",
         "The",
@@ -184,9 +187,9 @@
         "With",
         "Without",
         "Would",
+        "Yeah",
         "Yes",
         "Yet",
-        "You",
         "Your"
     ]);
     const ABBREVIATIONS = new Set([
@@ -214,6 +217,9 @@
     let observer;
     let observerFlushTimer = null;
     let isScanning = false;
+    let foxReplaceDatabase = loadFoxReplaceDatabase();
+    let pageMatchedFoxReplaceRules = [];
+    let foxReplaceFilePicker = null;
     function loadSettings() {
         const defaults = {
             x: 20,
@@ -407,7 +413,7 @@
             .sort((a, b) => b.length - a.length)
             .map((abbr) => abbr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
             .join("|");
-        const tokenPattern = String.raw`(?:(?:${abbreviationPattern})\.(?![A-Za-zÀ-ÖØ-öø-ÿĀ-ž])|(?:${abbreviationPattern})(?![A-Za-zÀ-ÖØ-öø-ÿĀ-ž])|[A-Z](?:\.[A-Z])+\..?|[A-Z]\.|[A-Z]{2,}|[A-ZÀ-ÖØ-ÞĀ-Ž][A-Za-zà-öø-ÿā-ž0-9'’-]*)`;
+        const tokenPattern = String.raw`(?:(?:${abbreviationPattern})\.(?![A-Za-zÀ-ÖØ-öø-ÿĀ-ž])|(?:${abbreviationPattern})(?![A-Za-zÀ-ÖØ-öø-ÿĀ-ž])|[A-Z](?:\.[A-Z]){1,}\.?|[A-Z]\.|[A-Z]{2,}|[A-ZÀ-ÖØ-ÞĀ-Ž][A-Za-zà-öø-ÿā-ž0-9'’-]*)`;
         const regex = new RegExp(`(${tokenPattern}(?: (?:(?:of(?: the)?) )*${tokenPattern})*)`, "g");
         let match;
         while ((match = regex.exec(snapshot)) !== null) {
@@ -415,7 +421,9 @@
             const parts = phrase.split(/\s+/);
             let rejectionReason = null;
             for (let i = 0; i < parts.length - 1; i++) {
-                if (parts[i].endsWith(".") && !ABBREVIATIONS.has(parts[i].slice(0, -1))) {
+                const token = parts[i];
+                const isDottedInitial = /^(?:[A-Z]\.){1,}[A-Z]?\.?$/.test(token);
+                if (token.endsWith(".") && !ABBREVIATIONS.has(token.slice(0, -1)) && !isDottedInitial) {
                     rejectionReason = "non-abbreviation-period-before-final-token";
                     break;
                 }
@@ -479,33 +487,28 @@
         }
         return /^(?:y'all|let's|ma'am|o'clock)$/i.test(token);
     }
-    function filterTokens(tokens) {
-        return tokens.map((record) => {
-            const contractionMatch = isContraction(record.original);
-            const wordFilterMatch = tokens.length === 1 && WORD_FILTER.has(record.original);
-            const allWordsMatch = All_Words.has(record.original);
-            let filterReason = null;
-            if (contractionMatch) {
-                filterReason = "CONTRACTION";
-            } else if (wordFilterMatch) {
-                filterReason = "WORD_FILTER";
-            } else if (allWordsMatch) {
-                filterReason = "All_Words";
-            }
-            return {
-                ...record,
-                filterDecision: filterReason === null ? "keep" : "filter",
-                filterReason
-            };
-        });
-    }
     function meaningfulTokens(phrase, knownTokens) {
         const tokenized = tokenizePhrase(phrase);
         if (!tokenized.length) return [];
         const normalized = normalizeTokens(tokenized, knownTokens);
-        const filtered = filterTokens(normalized);
-        const kept = filtered.filter((record) => record.filterDecision === "keep" && record.normalized);
-        return kept.map((record) => record.normalized);
+        // Pass 1: Remove All_Words and contractions.
+        const remaining = normalized.filter(
+            (record) => !All_Words.has(record.original) && !isContraction(record.original)
+        );
+        if (!remaining.length) return [];
+        // Pass 2: Apply WORD_FILTER rules to the remaining tokens.
+        if (remaining.length === 1 && WORD_FILTER.has(remaining[0].original)) {
+            return [];
+        }
+        if (
+            remaining.length === 2 &&
+            WORD_FILTER.has(remaining[0].original) &&
+            remaining[1].original.toLowerCase() === "i"
+        ) {
+            return [];
+        }
+        // Preserve WORD_FILTER tokens when other tokens remain.
+        return remaining.map((record) => record.normalized);
     }
     function mapOccurrenceToSourceSegments(occurrence, run) {
         const occurrenceStart = occurrence.startPos;
@@ -668,200 +671,197 @@
         const style = document.createElement("style");
         style.id = STYLE_ID;
         style.textContent = `
-            #${PANEL_ID} {
-                width: fit-content;
-                max-width: calc(100vw - 24px);
-                height: min(850px, calc(100vh - 24px));
-                max-height: calc(100vh - 24px);
-                position: fixed;
-                z-index: 2147483647;
-                display: flex;
-                flex-direction: column;
-                background: #1c1e22 !important;
-                color: #e8eaf0 !important;
-                border: 1px solid #45484e;
-                border-radius: 6px;
-                box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
-                font: 14px/1 Arial, sans-serif;
-                color-scheme: dark;
-                overflow: hidden;
-                box-sizing: border-box;
-            }
-            #${PANEL_ID} .fr-candidate-editor {
-                width: 180px;
-                min-width: 80px;
-                max-width: 300px;
-                padding: 3px 5px;
-                background: #101216;
-                color: #fff;
-                border: 1px solid #555;
-                border-radius: 3px;
-                font: inherit;
-                font-size: 11px;
-            }
-            #${PANEL_ID} .fr-regex-preview-row {
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                padding: 4px 8px;
-                background: #1c1e22;
-                border-bottom: 1px solid #45484e;
-                flex-shrink: 0;
-                min-width: 0;
-            }
-            #${PANEL_ID} #fr-regex-preview {
-                flex: 1;
-                min-width: 0;
-                width: 100%;
-                padding: 3px 5px;
-                background: #101216;
-                color: #ce9178;
-                border: 1px solid #555;
-                border-radius: 3px;
-                font: 11px ui-monospace, monospace;
-            }
-            #${PANEL_ID}.fr-minimized .fr-regex-preview-row {
-                 display: none;
-            }
-            #${PANEL_ID}.fr-minimized {
-                width: max-content;
-                height: auto;
-                max-height: none;
-            }
-            #${PANEL_ID}.fr-minimized #fr-template,
-            #${PANEL_ID}.fr-minimized #fr-scan,
-            #${PANEL_ID}.fr-minimized #fr-empty,
-            #${PANEL_ID}.fr-minimized #fr-tablewrap {
-                display: none;
-            }
-            #${PANEL_ID} * {
-                box-sizing: border-box;
-            }
-            #${PANEL_ID} .fr-head {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                padding: 4px 8px;
-                background: #292c32;
-                border-bottom: 1px solid #45484e;
-                cursor: move;
-                user-select: none;
-                flex-shrink: 0;
-                min-height: 34px;
-                overflow: visible;
-                white-space: nowrap;
-            }
-            #${PANEL_ID} .fr-title {
-                font-weight: bold;
-                color: #e8eaf0;
-                margin-right: 4px;
-            }
-            #${PANEL_ID} button,
-            #${PANEL_ID} select {
-                font: inherit;
-                font-size: 11px;
-                line-height: 1;
-                padding: 2px 6px;
-                background: #101216;
-                color: #fff;
-                border: 1px solid #555;
-                border-radius: 3px;
-                cursor: pointer;
-            }
-            #${PANEL_ID} button:hover {
-                background: #363940;
-            }
-            #${PANEL_ID} .fr-tablewrap {
-                overflow-x: auto;
-                overflow-y: auto;
-                flex: 1 1 auto;
-                min-height: 0;
-                min-width: 0;
-                background: #1c1e22;
-                scrollbar-gutter: stable;
-            }
-            #${PANEL_ID} table {
-                border-collapse: collapse;
-                width: max-content;
-                min-width: 0;
-                table-layout: auto;
-            }
-            #${PANEL_ID} th {
-                position: sticky;
-                top: 0;
-                background: #25282e;
-                color: #e8eaf0;
-                border-bottom: 1px solid #363940;
-                padding: 4px 6px;
-                font-weight: bold;
-                text-align: left;
-                z-index: 1;
-                white-space: nowrap;
-            }
-            #${PANEL_ID} td {
-                border-bottom: 1px solid #363940;
-                padding: 3px 6px;
-                text-align: left;
-                vertical-align: middle;
-            }
-            #${PANEL_ID} tbody tr {
-                height: 30px;
-            }
-            #${PANEL_ID} tbody td {
-                height: 30px;
-                padding: 3px 6px;
-                box-sizing: border-box;
-                vertical-align: middle;
-                white-space: nowrap;
-            }
-            #${PANEL_ID} tbody td.fr-rule-text {
-                width: fit-content;
-                max-width: 300px;
-                white-space: normal;
-                overflow-wrap: anywhere;
-                text-overflow: clip;
-                height: auto;
-                vertical-align: top;
-            }
-            #${PANEL_ID} tbody td button {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                height: 22px;
-                min-height: 22px;
-                padding: 2px 6px;
-                line-height: 1;
-                vertical-align: middle;
-            }
-            #${PANEL_ID} td input {
-                display: block;
-                field-sizing: content;
-                min-width: 200px;
-                max-width: 300px;
-                background: #101216;
-                color: #fff;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 3px 5px;
-                font: inherit;
-            }
-            #${PANEL_ID} th,
-            #${PANEL_ID} td {
-                width: fit-content;
-                max-width: 600px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            #${PANEL_ID} .fr-regex {
-                font-family: ui-monospace, monospace;
-                font-size: 11px;
-                color: #ce9178;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                max-width: 600px;
-            }
-        `;
+        #${PANEL_ID} {
+            position: fixed;
+            z-index: 2147483647;
+            display: flex;
+            flex-direction: column;
+            width: fit-content;
+            max-width: calc(100vw - 24px);
+            height: min(850px, calc(100vh - 24px));
+            max-height: calc(100vh - 24px);
+            overflow: hidden;
+            box-sizing: border-box;
+            background: #1c1e22 !important;
+            color: #e8eaf0 !important;
+            border: 1px solid #45484e;
+            border-radius: 6px;
+            box-shadow: 0 5px 24px rgba(0, 0, 0, 0.5);
+            font: 14px/1 Arial, sans-serif;
+            color-scheme: dark;
+        }
+        #${PANEL_ID} *,
+        #${PANEL_ID} *::before,
+        #${PANEL_ID} *::after {
+            box-sizing: border-box;
+        }
+        #${PANEL_ID}.fr-minimized {
+            width: max-content;
+            height: auto;
+            max-height: none;
+        }
+        #${PANEL_ID} .fr-head {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            min-height: 34px;
+            flex-shrink: 0;
+            overflow: visible;
+            white-space: nowrap;
+            background: #292c32;
+            border-bottom: 1px solid #45484e;
+            cursor: move;
+            user-select: none;
+        }
+        #${PANEL_ID} .fr-title {
+            margin-right: 4px;
+            color: #e8eaf0;
+            font-weight: bold;
+        }
+        #${PANEL_ID} button,
+        #${PANEL_ID} select {
+            padding: 2px 6px;
+            border: 1px solid #555;
+            border-radius: 3px;
+            background: #101216;
+            color: #fff;
+            font: 11px/1 Arial, sans-serif;
+            cursor: pointer;
+        }
+        #${PANEL_ID} button:hover {
+            background: #363940;
+        }
+        #${PANEL_ID} .fr-regex-preview-row {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            min-width: 0;
+            padding: 4px 8px;
+            flex-shrink: 0;
+            background: #1c1e22;
+            border-bottom: 1px solid #45484e;
+        }
+        #${PANEL_ID} #fr-regex-preview {
+            flex: 1;
+            min-width: 0;
+            width: 100%;
+            padding: 3px 5px;
+            border: 1px solid #555;
+            border-radius: 3px;
+            background: #101216;
+            color: #ce9178;
+            font: 11px ui-monospace, monospace;
+        }
+        #${PANEL_ID}.fr-minimized .fr-regex-preview-row,
+        #${PANEL_ID}.fr-minimized #fr-template,
+        #${PANEL_ID}.fr-minimized #fr-scan,
+        #${PANEL_ID}.fr-minimized #fr-empty,
+        #${PANEL_ID}.fr-minimized #fr-tablewrap {
+            display: none;
+        }
+        #${PANEL_ID} .fr-tablewrap {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+            overflow: auto;
+            background: #1c1e22;
+            scrollbar-gutter: stable;
+        }
+        #${PANEL_ID} table {
+            width: max-content;
+            min-width: 0;
+            table-layout: auto;
+            border-collapse: collapse;
+            border-spacing: 0;
+            font: 14px/1 Arial, sans-serif;
+        }
+        #${PANEL_ID} th,
+        #${PANEL_ID} td {
+            width: fit-content;
+            max-width: 600px;
+            padding: 0;
+            margin: 0;
+            overflow: hidden;
+            text-align: left;
+            text-overflow: ellipsis;
+            font-size: 14px;
+            line-height: 1;
+        }
+        #${PANEL_ID} th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            padding: 4px 6px;
+            border-bottom: 1px solid #363940;
+            background: #25282e;
+            color: #e8eaf0;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        #${PANEL_ID} td {
+            padding: 3px 6px;
+            border-bottom: 1px solid #363940;
+            vertical-align: middle;
+        }
+        #${PANEL_ID} tbody tr,
+        #${PANEL_ID} tbody td {
+            height: 30px;
+        }
+        #${PANEL_ID} tbody td {
+            white-space: nowrap;
+        }
+        #${PANEL_ID} tbody td.fr-rule-text {
+            width: fit-content;
+            max-width: 300px;
+            height: auto;
+            overflow-wrap: anywhere;
+            white-space: normal;
+            text-overflow: clip;
+            vertical-align: top;
+        }
+        #${PANEL_ID} tbody td button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 22px;
+            min-height: 22px;
+            padding: 2px 6px;
+            line-height: 1;
+            vertical-align: middle;
+        }
+        #${PANEL_ID} td input {
+            display: block;
+            field-sizing: content;
+            min-width: 200px;
+            max-width: 300px;
+            padding: 3px 5px;
+            border: 1px solid #555;
+            border-radius: 3px;
+            background: #101216;
+            color: #fff;
+            font: inherit;
+        }
+        #${PANEL_ID} .fr-candidate-editor {
+            width: 180px;
+            min-width: 80px;
+            max-width: 300px;
+            padding: 3px 5px;
+            border: 1px solid #555;
+            border-radius: 3px;
+            background: #101216;
+            color: #fff;
+            font: 11px/1 Arial, sans-serif;
+        }
+        #${PANEL_ID} .fr-regex {
+            max-width: 600px;
+            overflow: hidden;
+            color: #ce9178;
+            font: 11px ui-monospace, monospace;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+    `;
         document.head.appendChild(style);
     }
     function updateRegexPreview() {
@@ -870,8 +870,6 @@
         if (!editor || !preview) return;
         preview.value = editor.value.trim() ? generateRegex(editor.value.trim(), settings.template) : "";
     }
-    let foxReplaceDatabase = loadFoxReplaceDatabase();
-    let pageMatchedFoxReplaceRules = [];
     function loadFoxReplaceDatabase() {
         try {
             const saved = GM_getValue(FOXREPLACE_STORE_KEY, null);
@@ -934,7 +932,6 @@
         });
         return data;
     }
-    let foxReplaceFilePicker = null;
     function importFoxReplaceJSON() {
         if (!foxReplaceFilePicker) {
             foxReplaceFilePicker = document.createElement("input");
@@ -1395,6 +1392,10 @@
             if (observer) {
                 observer.disconnect();
                 observer = null;
+            }
+            if (observerFlushTimer !== null) {
+                clearTimeout(observerFlushTimer);
+                observerFlushTimer = null;
             }
             panel.remove();
         });
