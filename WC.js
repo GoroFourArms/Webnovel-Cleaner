@@ -209,17 +209,23 @@
         "Sgt"
     ]);
     const TEMPLATES = ["Other", "Korean", "Japanese", "Japanese 2"];
-    let candidateSortMode = "count-desc";
-    let candidateFilterMode = "all";
-    let settings = loadSettings();
-    let currentCandidates = [];
-    let accumulatedOccurrences = [];
-    let observer;
-    let observerFlushTimer = null;
-    let isScanning = false;
-    let foxReplaceDatabase = loadFoxReplaceDatabase();
-    let pageMatchedFoxReplaceRules = [];
-    let foxReplaceFilePicker = null;
+    // Centralized mutable state: algorithms and UI read/write the same explicit state object.
+    const state = {
+        candidateSortMode: "count-desc",
+        candidateFilterMode: "all",
+        settings: loadSettings(),
+        currentCandidates: [],
+        accumulatedOccurrences: [],
+        observer: null,
+        observerFlushTimer: null,
+        isScanning: false,
+        foxReplaceDatabase: loadFoxReplaceDatabase(),
+        pageMatchedFoxReplaceRules: [],
+        foxReplaceFilePicker: null
+    };
+    // ---------------------------------------------------------------------
+    // Storage and persistent settings
+    // ---------------------------------------------------------------------
     function loadSettings() {
         const defaults = {
             x: 20,
@@ -247,9 +253,12 @@
     }
     function saveSettings() {
         try {
-            GM_setValue(STORE_KEY, settings);
+            GM_setValue(STORE_KEY, state.settings);
         } catch {}
     }
+    // ---------------------------------------------------------------------
+    // DOM visibility and text extraction
+    // ---------------------------------------------------------------------
     function isExcluded(element) {
         if (!element || element.nodeType !== Node.ELEMENT_NODE) {
             return false;
@@ -363,6 +372,9 @@
             segments: runs
         };
     }
+    // ---------------------------------------------------------------------
+    // Discovery engine: tokenization, normalization and candidate grouping
+    // ---------------------------------------------------------------------
     function normalizeToken(tokenStr, knownTokens) {
         let token = String(tokenStr || "")
             .trim()
@@ -882,8 +894,10 @@
         const editor = document.getElementById("fr-candidate-editor");
         const preview = document.getElementById("fr-regex-preview");
         if (!editor || !preview) return;
-        preview.value = editor.value.trim() ? generateRegex(editor.value.trim(), settings.template) : "";
+        preview.value = editor.value.trim() ? generateRegex(editor.value.trim(), state.settings.template) : "";
     }
+    // ---------------------------------------------------------------------
+    // FoxReplace database, import, compilation and matching    // ---------------------------------------------------------------------
     function loadFoxReplaceDatabase() {
         try {
             const saved = GM_getValue(FOXREPLACE_STORE_KEY, null);
@@ -962,8 +976,8 @@
                     throw new Error("Userscript storage is unavailable. Check GM_setValue permission.");
                 }
                 await Promise.resolve(GM_setValue(FOXREPLACE_STORE_KEY, parsed));
-                foxReplaceDatabase = parsed;
-                pageMatchedFoxReplaceRules = getPageMatchedFoxReplaceRules();
+                state.foxReplaceDatabase = parsed;
+                state.pageMatchedFoxReplaceRules = getPageMatchedFoxReplaceRules();
                 renderRows();
                 alert(`FoxReplace imported: ${parsed.groups.length} groups.`);
             } catch (error) {
@@ -1026,7 +1040,7 @@
     function getPageMatchedFoxReplaceRules() {
         const pageText = extractVisibleText(document.body).text;
         const rules = [];
-        (foxReplaceDatabase.groups || []).forEach((group, groupIndex) => {
+        (state.foxReplaceDatabase.groups || []).forEach((group, groupIndex) => {
             if (!group || group.enabled === false) return;
             const urls = Array.isArray(group.urls) ? group.urls : [];
             const siteMatches = !urls.length || urls.some((pattern) => foxReplaceURLMatches(pattern, location.href));
@@ -1077,7 +1091,7 @@
         return sensitive ? phrase === text : phrase.toLocaleLowerCase() === text.toLocaleLowerCase();
     }
     function getCandidateFoxReplaceMatches(candidate) {
-        return pageMatchedFoxReplaceRules.filter(
+        return state.pageMatchedFoxReplaceRules.filter(
             ({ rule }) =>
                 candidateMatchesFoxReplaceValue(candidate, rule, rule.input) ||
                 candidateMatchesFoxReplaceValue(candidate, rule, rule.output)
@@ -1180,18 +1194,23 @@
             return current;
         };
         const rootMembers = new Map();
+
         for (const group of activeGroups) {
             const root = findRoot(group);
+
             if (!rootMembers.has(root)) {
                 rootMembers.set(root, new Map());
             }
+
             const members = rootMembers.get(root);
+
             for (const [key, candidate] of group.members) {
                 if (!members.has(key)) {
                     members.set(key, candidate);
                 }
             }
         }
+
         activeGroups = [...rootMembers].map(([root, members]) => ({
             ...root,
             members
@@ -1328,28 +1347,33 @@
             (a, b) => b.phraseCount - a.phraseCount || a.firstPos - b.firstPos || a.phrase.localeCompare(b.phrase)
         );
     }
+    // ---------------------------------------------------------------------
+    // UI rendering and scan orchestration
+    // ---------------------------------------------------------------------
     function renderRows() {
         const tbody = document.getElementById("fr-rows");
         if (!tbody) return;
         let candidates =
-            candidateSortMode === "discovery" ? getDiscoveryCandidates(currentCandidates) : [...currentCandidates];
-        if (candidateFilterMode === "token-2-plus") {
+            state.candidateSortMode === "discovery"
+                ? getDiscoveryCandidates(state.currentCandidates)
+                : [...state.currentCandidates];
+        if (state.candidateFilterMode === "token-2-plus") {
             candidates = candidates.filter(
                 (cand) => Array.isArray(cand.normalizedTokens) && cand.normalizedTokens.length >= 2
             );
-        } else if (candidateFilterMode === "single-token") {
+        } else if (state.candidateFilterMode === "single-token") {
             candidates = candidates.filter(
                 (cand) => Array.isArray(cand.normalizedTokens) && cand.normalizedTokens.length === 1
             );
         }
-        if (candidateSortMode !== "discovery") {
+        if (state.candidateSortMode !== "discovery") {
             candidates.sort((a, b) => {
-                switch (candidateSortMode) {
+                switch (state.candidateSortMode) {
                     case "count-asc":
                         return a.phraseCount - b.phraseCount;
                     case "name-asc":
-                        return (settings.edits[a.identityKey] ?? a.phrase).localeCompare(
-                            settings.edits[b.identityKey] ?? b.phrase
+                        return (state.settings.edits[a.identityKey] ?? a.phrase).localeCompare(
+                            state.settings.edits[b.identityKey] ?? b.phrase
                         );
                     case "count-desc":
                     default:
@@ -1371,7 +1395,7 @@
             row.appendChild(td);
         };
         for (const cand of candidates) {
-            const name = settings.edits[cand.identityKey] ?? cand.phrase;
+            const name = state.settings.edits[cand.identityKey] ?? cand.phrase;
             const matches = getCandidateFoxReplaceMatches(cand);
             const ruleRows = matches.length ? matches : [null];
             ruleRows.forEach((match, ruleRowIndex) => {
@@ -1446,13 +1470,13 @@
         }
     }
     function renderAccumulatedScan() {
-        currentCandidates = processCandidates(accumulatedOccurrences);
-        pageMatchedFoxReplaceRules = getPageMatchedFoxReplaceRules();
+        state.currentCandidates = processCandidates(state.accumulatedOccurrences);
+        state.pageMatchedFoxReplaceRules = getPageMatchedFoxReplaceRules();
         renderRows();
     }
     function runScan() {
-        if (isScanning) return;
-        isScanning = true;
+        if (state.isScanning) return;
+        state.isScanning = true;
         try {
             const extracted = extractVisibleText(document.body);
             const runs = extracted.segments;
@@ -1467,30 +1491,30 @@
                     newOccurrences.push(occurrence);
                 }
             }
-            accumulatedOccurrences = newOccurrences;
+            state.accumulatedOccurrences = newOccurrences;
             renderAccumulatedScan();
             startScanObserver();
         } finally {
-            isScanning = false;
+            state.isScanning = false;
         }
     }
     function startScanObserver() {
-        if (observer) {
-            observer.disconnect();
-            observer = null;
+        if (state.observer) {
+            state.observer.disconnect();
+            state.observer = null;
         }
-        if (observerFlushTimer !== null) {
-            clearTimeout(observerFlushTimer);
-            observerFlushTimer = null;
+        if (state.observerFlushTimer !== null) {
+            clearTimeout(state.observerFlushTimer);
+            state.observerFlushTimer = null;
         }
         // Schedule a complete rescan after page content changes.
         const scheduleRescan = () => {
-            if (observerFlushTimer !== null) {
-                clearTimeout(observerFlushTimer);
+            if (state.observerFlushTimer !== null) {
+                clearTimeout(state.observerFlushTimer);
             }
-            observerFlushTimer = setTimeout(() => {
-                observerFlushTimer = null;
-                if (!document.getElementById(PANEL_ID) || isScanning) return;
+            state.observerFlushTimer = setTimeout(() => {
+                state.observerFlushTimer = null;
+                if (!document.getElementById(PANEL_ID) || state.isScanning) return;
                 runScan();
             }, 250);
         };
@@ -1501,17 +1525,27 @@
             startScanObserver.pagetualListenersAdded = true;
         }
         // Also watch ordinary DOM changes from the website.
-        observer = new MutationObserver((mutations) => {
+        const isWncNode = (node) => {
+            if (!node) return false;
+            const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+            return !!element && (element.id === PANEL_ID || !!element.closest(`#${PANEL_ID}`));
+        };
+        state.observer = new MutationObserver((mutations) => {
             if (!mutations.length) return;
-            const relevantMutations = mutations.filter((mutation) => {
-                const target = mutation.target;
-                const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
-                return !element?.closest(`#${PANEL_ID}`);
+            const hasPageMutation = mutations.some((mutation) => {
+                // Ignore mutations originating inside WNC.
+                if (isWncNode(mutation.target)) return false;
+                // Ignore panel insertion/removal when the body is the mutation target.
+                if (mutation.type === "childList") {
+                    const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+                    if (changedNodes.length && changedNodes.every(isWncNode)) return false;
+                }
+                return true;
             });
-            if (!relevantMutations.length) return;
+            if (!hasPageMutation) return;
             scheduleRescan();
         });
-        observer.observe(document.body, {
+        state.observer.observe(document.body, {
             childList: true,
             subtree: true,
             characterData: true,
@@ -1524,8 +1558,8 @@
         ensureStyle();
         const panel = document.createElement("div");
         panel.id = PANEL_ID;
-        panel.style.left = `${Math.max(0, settings.x)}px`;
-        panel.style.top = `${Math.max(0, settings.y)}px`;
+        panel.style.left = `${Math.max(0, state.settings.x)}px`;
+        panel.style.top = `${Math.max(0, state.settings.y)}px`;
         panel.innerHTML = `
         <div class="fr-head">
             <input
@@ -1540,7 +1574,7 @@
                 <select id="fr-template" title="Template">
                     ${TEMPLATES.map(
                         (t) =>
-                            `<option value="${t}" ${t === settings.template ? "selected" : ""}>${{ Other: "Ot", Korean: "Kr", Japanese: "Jp", "Japanese 2": "J2" }[t] || t.slice(0, 2)}</option>`
+                            `<option value="${t}" ${t === state.settings.template ? "selected" : ""}>${{ Other: "Ot", Korean: "Kr", Japanese: "Jp", "Japanese 2": "J2" }[t] || t.slice(0, 2)}</option>`
                     ).join("")}
                 </select>
             </label>
@@ -1626,25 +1660,25 @@
                 if (!button) return;
                 switch (button.dataset.action) {
                     case "count-desc":
-                        candidateSortMode = "count-desc";
+                        state.candidateSortMode = "count-desc";
                         break;
                     case "count-asc":
-                        candidateSortMode = "count-asc";
+                        state.candidateSortMode = "count-asc";
                         break;
                     case "name-asc":
-                        candidateSortMode = "name-asc";
+                        state.candidateSortMode = "name-asc";
                         break;
                     case "discovery":
-                        candidateSortMode = "discovery";
+                        state.candidateSortMode = "discovery";
                         break;
                     case "token-2-plus":
-                        candidateFilterMode = "token-2-plus";
+                        state.candidateFilterMode = "token-2-plus";
                         break;
                     case "show-all":
-                        candidateFilterMode = "all";
+                        state.candidateFilterMode = "all";
                         break;
                     case "single-token":
-                        candidateFilterMode = "single-token";
+                        state.candidateFilterMode = "single-token";
                         break;
                 }
                 menu.remove();
@@ -1652,12 +1686,12 @@
             });
         });
         panel.querySelector("#fr-empty").addEventListener("click", () => {
-            accumulatedOccurrences = [];
-            currentCandidates = [];
+            state.accumulatedOccurrences = [];
+            state.currentCandidates = [];
             renderRows();
         });
         panel.querySelector("#fr-template").addEventListener("change", (e) => {
-            settings.template = e.target.value;
+            state.settings.template = e.target.value;
             saveSettings();
             renderRows();
             updateRegexPreview();
@@ -1684,13 +1718,13 @@
         });
         panel.querySelector("#fr-close").addEventListener("click", () => {
             saveSettings();
-            if (observer) {
-                observer.disconnect();
-                observer = null;
+            if (state.observer) {
+                state.observer.disconnect();
+                state.observer = null;
             }
-            if (observerFlushTimer !== null) {
-                clearTimeout(observerFlushTimer);
-                observerFlushTimer = null;
+            if (state.observerFlushTimer !== null) {
+                clearTimeout(state.observerFlushTimer);
+                state.observerFlushTimer = null;
             }
             panel.remove();
         });
@@ -1705,8 +1739,8 @@
             if (!isDragging) return;
             isDragging = false;
             activePointerId = null;
-            settings.x = panel.offsetLeft;
-            settings.y = panel.offsetTop;
+            state.settings.x = panel.offsetLeft;
+            state.settings.y = panel.offsetTop;
             saveSettings();
         }
         handle.addEventListener("pointerdown", (e) => {
