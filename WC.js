@@ -208,7 +208,7 @@
         "Lt",
         "Sgt"
     ]);
-    const TEMPLATES = ["Other", "Korean", "Japanese", "Japanese 2"];
+    const TEMPLATES = ["Other", "Korean", "K2", "Japanese", "Japanese 2"];
     // Centralized mutable state: algorithms and UI read/write the same explicit state object.
     const state = {
         candidateSortMode: "count-desc",
@@ -648,6 +648,20 @@
         for (const branch of branches) {
             const tokens = branch.split(/\s+/).filter(Boolean);
             if (!tokens.length) continue;
+            if (template === "K2") {
+                const koreanTokens = tokens.map((token) => buildToken(token, koreanTokenPattern));
+                if (koreanTokens.length === 1) {
+                    generated.push(koreanTokens[0]);
+                    continue;
+                }
+                const title = tokens
+                    .slice(0, -1)
+                    .map((token) => buildToken(token, tokenPattern))
+                    .join(" ");
+                const last = koreanTokens[koreanTokens.length - 1];
+                generated.push(last, `${title} ${koreanTokens[koreanTokens.length - 1]}`);
+                continue;
+            }
             if (template === "Korean") {
                 const pipeIndex = tokens.findIndex((token) => token.includes("|"));
                 // Handle merged prefix alternatives, including multiword prefixes.
@@ -1194,23 +1208,18 @@
             return current;
         };
         const rootMembers = new Map();
-
         for (const group of activeGroups) {
             const root = findRoot(group);
-
             if (!rootMembers.has(root)) {
                 rootMembers.set(root, new Map());
             }
-
             const members = rootMembers.get(root);
-
             for (const [key, candidate] of group.members) {
                 if (!members.has(key)) {
                     members.set(key, candidate);
                 }
             }
         }
-
         activeGroups = [...rootMembers].map(([root, members]) => ({
             ...root,
             members
@@ -1574,7 +1583,7 @@
                 <select id="fr-template" title="Template">
                     ${TEMPLATES.map(
                         (t) =>
-                            `<option value="${t}" ${t === state.settings.template ? "selected" : ""}>${{ Other: "Ot", Korean: "Kr", Japanese: "Jp", "Japanese 2": "J2" }[t] || t.slice(0, 2)}</option>`
+                            `<option value="${t}" ${t === state.settings.template ? "selected" : ""}>${{ Other: "Ot", Korean: "Kr", K2: "K2", Japanese: "Jp", "Japanese 2": "J2" }[t] || t.slice(0, 2)}</option>`
                     ).join("")}
                 </select>
             </label>
