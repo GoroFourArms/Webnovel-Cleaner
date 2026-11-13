@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.6
+// @version      1.0.7
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -223,6 +223,8 @@
         pageMatchedFoxReplaceRules: [],
         foxReplaceFilePicker: null
     };
+    let showSiteMismatches = false;
+    const hiddenSiteMismatchRules = new Set();
     // ---------------------------------------------------------------------
     // Storage and persistent settings
     // ---------------------------------------------------------------------
@@ -649,17 +651,23 @@
             const tokens = branch.split(/\s+/).filter(Boolean);
             if (!tokens.length) continue;
             if (template === "K2") {
-                const koreanTokens = tokens.map((token) => buildToken(token, koreanTokenPattern));
-                if (koreanTokens.length === 1) {
-                    generated.push(koreanTokens[0]);
-                    continue;
+                const pipeIndex = tokens.findIndex((token) => token.includes("|"));
+                if (pipeIndex !== -1) {
+                    const titleParts = [...tokens.slice(0, pipeIndex), ...tokens[pipeIndex].split("|")].filter(Boolean);
+                    const titlePattern = `(?:${titleParts.map((part) => tokenPattern(part)).join("|")})`;
+                    const nameTokens = tokens.slice(pipeIndex + 1);
+                    const namePattern = nameTokens.map((token) => buildToken(token, koreanTokenPattern)).join(" ");
+                    if (namePattern) {
+                        generated.push(
+                            namePattern,
+                            `${titlePattern} ${namePattern.split(" ").slice(0, -1).join(" ")} Kim`
+                        );
+                    } else {
+                        generated.push(titlePattern);
+                    }
+                } else {
+                    generated.push(tokens.map((token) => buildToken(token, koreanTokenPattern)).join(" "));
                 }
-                const title = tokens
-                    .slice(0, -1)
-                    .map((token) => buildToken(token, tokenPattern))
-                    .join(" ");
-                const last = koreanTokens[koreanTokens.length - 1];
-                generated.push(last, `${title} ${koreanTokens[koreanTokens.length - 1]}`);
                 continue;
             }
             if (template === "Korean") {
@@ -893,7 +901,7 @@
                 height: 30px;
             }
             #${PANEL_ID} td:nth-child(4) {
-                max-width: 100px;
+                max-width: 200px;
             }
             #${PANEL_ID} td:nth-child(5) {
                 max-width: 400px;
@@ -1391,6 +1399,14 @@
             });
         }
         tbody.innerHTML = "";
+        const mismatchButton = document.getElementById("fr-site-mismatches");
+        if (mismatchButton) {
+            mismatchButton.textContent = showSiteMismatches ? "⚠ On" : "⚠";
+            mismatchButton.title = showSiteMismatches
+                ? "Hide site-mismatched regex matches"
+                : "Show site-mismatched regex matches";
+            mismatchButton.style.color = showSiteMismatches ? "#f44336" : "";
+        }
         if (!candidates.length) {
             tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
             return;
@@ -1402,11 +1418,18 @@
             if (title) td.title = title;
             if (className) td.className = className;
             row.appendChild(td);
+            return td;
         };
         for (const cand of candidates) {
             const name = state.settings.edits[cand.identityKey] ?? cand.phrase;
             const matches = getCandidateFoxReplaceMatches(cand);
-            const ruleRows = matches.length ? matches : [null];
+            const visibleMatches = matches.filter((match) => {
+                if (match.siteMatches) return true;
+                if (!showSiteMismatches) return false;
+                const key = `${match.groupName}|${match.rule.inputType}|${match.rule.input}|${match.rule.output}|${match.rule.caseSensitive}`;
+                return !hiddenSiteMismatchRules.has(key);
+            });
+            const ruleRows = visibleMatches.length ? visibleMatches : [null];
             ruleRows.forEach((match, ruleRowIndex) => {
                 const tr = document.createElement("tr");
                 if (ruleRowIndex === 0) {
@@ -1459,7 +1482,23 @@
                     const rule = match.rule;
                     const type = rule.inputType === "regexp" ? "Rx" : rule.inputType === "wholewords" ? "Ww" : "Tx";
                     addCell(tr, match.groupName, match.groupName, "fr-rule-text");
-                    addCell(tr, rule.input, rule.input, "fr-rule-text");
+                    const regexCell = addCell(tr, "");
+                    const regexButton = document.createElement("button");
+                    regexButton.type = "button";
+                    regexButton.textContent = rule.input;
+                    regexButton.title = match.siteMatches ? "FoxReplace regex" : "Click to hide this mismatched regex";
+                    regexButton.style.cssText =
+                        "border:0;background:transparent;color:inherit;padding:0;text-align:left;max-width:100%;white-space:normal;overflow-wrap:anywhere;cursor:pointer;";
+                    if (!match.siteMatches) {
+                        regexButton.style.color = "#f44336";
+                        regexButton.addEventListener("click", (event) => {
+                            event.stopPropagation();
+                            const key = `${match.groupName}|${rule.inputType}|${rule.input}|${rule.output}|${rule.caseSensitive}`;
+                            hiddenSiteMismatchRules.add(key);
+                            renderRows();
+                        });
+                    }
+                    regexCell.appendChild(regexButton);
                     addCell(tr, rule.output, rule.output, "fr-rule-text");
                     addCell(tr, type);
                     addCell(tr, rule.caseSensitive ? "Y" : "N");
@@ -1588,6 +1627,7 @@
                 </select>
             </label>
             <button id="fr-scan" title="Scan the page">🔍</button>
+            <button id="fr-site-mismatches" title="Show site-mismatched regex matches">⚠</button>
             <button id="fr-sort-filter" title="Sort and filters">So</button>
             <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
             <button id="fr-minimize" title="Minimize panel">−</button>
@@ -1630,6 +1670,10 @@
             minimizeButton.title = minimized ? "Restore panel" : "Minimize panel";
         });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
+        panel.querySelector("#fr-site-mismatches").addEventListener("click", () => {
+            showSiteMismatches = !showSiteMismatches;
+            renderRows();
+        });
         panel.querySelector("#fr-sort-filter").addEventListener("click", () => {
             const existingMenu = document.getElementById("fr-sort-filter-menu");
             if (existingMenu) {
