@@ -374,9 +374,6 @@
             segments: runs
         };
     }
-    // ---------------------------------------------------------------------
-    // Discovery engine: tokenization, normalization and candidate grouping
-    // ---------------------------------------------------------------------
     function normalizeToken(tokenStr, knownTokens) {
         let token = String(tokenStr || "")
             .trim()
