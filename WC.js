@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.9
+// @version      1.0.10
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -649,27 +649,31 @@
             if (!tokens.length) continue;
             if (template === "K2") {
                 const pipeIndex = tokens.findIndex((token) => token.includes("|"));
+                let titleAlternatives = [];
+                let nameTokens = [];
                 if (pipeIndex !== -1) {
-                    // Keep multiword title alternatives intact (e.g. Team Leader|Actor).
                     const pipeParts = tokens[pipeIndex].split("|");
-                    const titleAlternatives = [
+                    titleAlternatives = [
                         [...tokens.slice(0, pipeIndex), pipeParts[0]].join(" "),
                         ...pipeParts.slice(1)
                     ].filter(Boolean);
+                    nameTokens = tokens.slice(pipeIndex + 1);
+                } else if (tokens.length >= 3) {
+                    titleAlternatives = [tokens[0]];
+                    nameTokens = tokens.slice(1);
+                }
+                if (titleAlternatives.length && nameTokens.length >= 2) {
                     const titlePattern = `(?:${titleAlternatives
                         .map((title) => title.split(/\s+/).map(tokenPattern).join(" "))
                         .join("|")})`;
-                    const nameTokens = tokens.slice(pipeIndex + 1);
-                    if (nameTokens.length) {
-                        const givenName = buildToken(nameTokens[nameTokens.length - 1], koreanTokenPattern);
-                        const surname = nameTokens.length > 1 ? buildToken(nameTokens[0], koreanTokenPattern) : "";
-                        // K2 matches the given-name anchor or the full title + surname form.
-                        generated.push(givenName);
-                        if (surname) generated.push(`${titlePattern} ${surname}`);
-                        else generated.push(`${titlePattern} ${givenName}`);
-                    } else {
-                        generated.push(titlePattern);
-                    }
+                    const surname = buildToken(nameTokens[0], koreanTokenPattern);
+                    const givenName = buildToken(nameTokens[nameTokens.length - 1], koreanTokenPattern);
+                    // K2: optional title + optional surname + required given name,
+                    // plus the title + surname form as a second accepted branch.
+                    generated.push(`(?:${titlePattern} )?(?:${surname} )?${givenName}`);
+                    generated.push(`${titlePattern} ${surname}`);
+                } else if (nameTokens.length === 1) {
+                    generated.push(buildToken(nameTokens[0], koreanTokenPattern));
                 } else {
                     generated.push(tokens.map((token) => buildToken(token, koreanTokenPattern)).join(" "));
                 }
@@ -914,6 +918,13 @@
                 text-overflow: ellipsis;
                 white-space: nowrap;
             }
+            #${PANEL_ID} td.fr-replace-text {
+                width: max-content;
+                max-width: 600px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
         `;
         document.head.appendChild(style);
     }
@@ -1045,16 +1056,16 @@
         return url.toLowerCase().includes(value.toLowerCase());
     }
     function compileFoxReplaceRule(rule) {
-        const input = rule.input;
+        const input = String(rule.input || "");
         const sensitive = rule.caseSensitive === true;
-        if (rule.inputType === "regexp") return new RegExp(input, sensitive ? "g" : "gi");
+        if (rule.inputType === "regexp") return new RegExp(input, sensitive ? "gu" : "giu");
         const escaped = input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (rule.inputType === "wholewords")
-            return new RegExp(
-                `(?<![\\p{L}\\p{N}\\p{M}_])(?:${escaped})(?![\\p{L}\\p{N}\\p{M}_])`,
-                sensitive ? "gu" : "giu"
-            );
-        return new RegExp(escaped, sensitive ? "gu" : "giu");
+        // FoxReplace text and wholewords both require complete token boundaries.
+        // This prevents "Bob" from matching "Bobert" while preserving phrase spaces.
+        return new RegExp(
+            `(?<![\\p{L}\\p{N}\\p{M}_])(?:${escaped})(?![\\p{L}\\p{N}\\p{M}_])`,
+            sensitive ? "gu" : "giu"
+        );
     }
     function getPageMatchedFoxReplaceRules() {
         const pageText = extractVisibleText(document.body).text;
@@ -1075,9 +1086,11 @@
                     const inputMatches = regex.test(pageText);
                     const output = String(rule.output || "");
                     const outputMatches = output
-                        ? rule.caseSensitive === true
-                            ? pageText.includes(output)
-                            : pageText.toLocaleLowerCase().includes(output.toLocaleLowerCase())
+                        ? compileFoxReplaceRule({
+                              inputType: "text",
+                              input: output,
+                              caseSensitive: rule.caseSensitive
+                          }).test(pageText)
                         : false;
                     if (!inputMatches && !outputMatches) return;
                     rules.push({
@@ -1096,34 +1109,24 @@
         return rules;
     }
     function getCandidateFoxReplaceTokenCount(candidate, rule, value, useRulePattern) {
-        const phrase = String(candidate.phrase || "");
-        const text = String(value || "");
+        const phrase = String(candidate.phrase || "").trim();
+        const text = String(value || "").trim();
         if (!phrase || !text) return 0;
-        let regex;
         try {
-            if (useRulePattern) {
-                regex = compileFoxReplaceRule({
-                    inputType: rule.inputType || "text",
-                    input: text,
-                    caseSensitive: rule.caseSensitive
-                });
-            } else {
-                const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-                regex = new RegExp(escaped, rule.caseSensitive ? "gu" : "giu");
+            if (useRulePattern && rule.inputType === "regexp") {
+                const flags = rule.caseSensitive === true ? "u" : "iu";
+                const exactRegex = new RegExp(`^(?:${text})$`, flags);
+                return exactRegex.test(phrase) ? (phrase.match(/[\p{L}\p{N}\p{M}]+/gu) || []).length : 0;
             }
+            const normalize = (value) => value.normalize("NFKC").replace(/[’‘]/g, "'");
+            const left = normalize(phrase);
+            const right = normalize(text);
+            const equal =
+                rule.caseSensitive === true ? left === right : left.toLocaleLowerCase() === right.toLocaleLowerCase();
+            return equal ? (phrase.match(/[\p{L}\p{N}\p{M}]+/gu) || []).length : 0;
         } catch {
             return 0;
         }
-        let maxTokens = 0;
-        let match;
-        while ((match = regex.exec(phrase)) !== null) {
-            const tokenCount = (match[0].match(/[\p{L}\p{N}\p{M}]+/gu) || []).length;
-            maxTokens = Math.max(maxTokens, tokenCount);
-            if (!match[0].length) {
-                regex.lastIndex++;
-            }
-        }
-        return maxTokens;
     }
     function getCandidateFoxReplaceMatches(candidate) {
         return state.pageMatchedFoxReplaceRules
@@ -1141,246 +1144,54 @@
         if (!originalCandidates.length) return [];
         const candidates = originalCandidates.map((candidate) => ({
             ...candidate,
-            normalizedTokens: [...candidate.normalizedTokens]
+            normalizedTokens: [...(candidate.normalizedTokens || [])]
         }));
         const getCount = (candidate) => Number(candidate.phraseCount ?? candidate.occurrences ?? 0);
-        const getKey = (candidate) => candidate.identityKey || normalizeNameIdentity(candidate.phrase);
-        const maxCount = Math.max(...candidates.map(getCount));
-        const threshold = maxCount * 0.05;
-        // PASS 1: LOW-COUNT FILTERING
-        const eligible = candidates.filter((candidate) => getCount(candidate) > threshold);
-        const hidden = candidates.filter((candidate) => getCount(candidate) <= threshold);
-        const makeGroup = (candidate) => {
-            const tokens = [...candidate.normalizedTokens];
-            return {
-                phrase: candidate.phrase,
-                identityKey: getKey(candidate),
-                base: candidate,
-                patterns: [tokens],
-                members: new Map([[getKey(candidate), candidate]]),
-                firstPos: candidate.firstPos ?? 0
-            };
-        };
-        const mergeGroups = (groups, phrase, identityKey, patterns, base) => {
-            const members = new Map();
-            for (const group of groups) {
-                for (const [key, candidate] of group.members) {
-                    if (members.has(key)) return null;
-                    members.set(key, candidate);
-                }
-            }
-            return {
-                phrase,
-                identityKey,
-                base,
-                patterns: patterns.map((tokens) => [...tokens]),
-                members,
-                firstPos: Math.min(...groups.map((group) => group.firstPos))
-            };
-        };
-        const sameTokens = (a, b) => a.length === b.length && a.every((token, index) => token === b[index]);
-        const isSuffix = (suffix, whole) =>
-            suffix.length < whole.length &&
-            suffix.every((token, index) => token === whole[whole.length - suffix.length + index]);
-        const getOverlap = (prefix, suffix) => {
-            for (let size = Math.min(prefix.length, suffix.length); size >= 1; size--) {
-                if (sameTokens(prefix.slice(-size), suffix.slice(0, size))) {
-                    return size;
-                }
-            }
-            return 0;
-        };
-        const containsSequence = (whole, sequence) => {
-            if (!sequence.length || sequence.length > whole.length) {
-                return false;
-            }
-            for (let i = 0; i <= whole.length - sequence.length; i++) {
-                if (sequence.every((token, index) => token === whole[i + index])) {
-                    return true;
-                }
-            }
-            return false;
-        };
-        // PASS 2: TOKEN ABSORBING
-        let activeGroups = eligible.map(makeGroup);
-        const parents = new Map();
-        for (const shorter of activeGroups) {
-            const shorterPatterns = shorter.patterns;
-            const shorterMaxLength = Math.max(...shorterPatterns.map((tokens) => tokens.length));
-            const possibleOwners = activeGroups.filter((longer) => {
-                if (longer === shorter) return false;
-                const longerMinLength = Math.min(...longer.patterns.map((tokens) => tokens.length));
-                if (longerMinLength <= shorterMaxLength) return false;
-                return longer.patterns.every((longerTokens) =>
-                    shorterPatterns.some((shorterTokens) => isSuffix(shorterTokens, longerTokens))
-                );
+        const isSuffix = (shorter, longer) =>
+            shorter.length < longer.length &&
+            shorter.every((token, index) => token === longer[longer.length - shorter.length + index]);
+        const compareRoots = (a, b) =>
+            getCount(b) - getCount(a) || (a.firstPos ?? 0) - (b.firstPos ?? 0) || a.phrase.localeCompare(b.phrase);
+        const parent = new Map();
+        for (const candidate of candidates) {
+            const tokens = candidate.normalizedTokens;
+            const owners = candidates.filter((possibleRoot) => {
+                if (possibleRoot === candidate) return false;
+                return isSuffix(tokens, possibleRoot.normalizedTokens);
             });
-            possibleOwners.sort((a, b) => {
-                const aLength = Math.min(...a.patterns.map((tokens) => tokens.length));
-                const bLength = Math.min(...b.patterns.map((tokens) => tokens.length));
-                return bLength - aLength || getCount(b.base) - getCount(a.base) || a.firstPos - b.firstPos;
-            });
-            if (possibleOwners.length) {
-                parents.set(shorter, possibleOwners[0]);
-            }
+            owners.sort((a, b) => b.normalizedTokens.length - a.normalizedTokens.length || compareRoots(a, b));
+            if (owners.length) parent.set(candidate, owners[0]);
         }
-        const findRoot = (group) => {
-            let current = group;
-            const visited = new Set();
-            while (parents.has(current) && !visited.has(current)) {
-                visited.add(current);
-                current = parents.get(current);
+        const findRoot = (candidate) => {
+            let current = candidate;
+            const seen = new Set();
+            while (parent.has(current) && !seen.has(current)) {
+                seen.add(current);
+                current = parent.get(current);
             }
             return current;
         };
-        const rootMembers = new Map();
-        for (const group of activeGroups) {
-            const root = findRoot(group);
-            if (!rootMembers.has(root)) {
-                rootMembers.set(root, new Map());
-            }
-            const members = rootMembers.get(root);
-            for (const [key, candidate] of group.members) {
-                if (!members.has(key)) {
-                    members.set(key, candidate);
-                }
-            }
+        const childrenByRoot = new Map();
+        const roots = candidates.filter((candidate) => findRoot(candidate) === candidate).sort(compareRoots);
+        for (const candidate of candidates) {
+            if (roots.includes(candidate)) continue;
+            const root = findRoot(candidate);
+            if (!childrenByRoot.has(root)) childrenByRoot.set(root, []);
+            childrenByRoot.get(root).push(candidate);
         }
-        activeGroups = [...rootMembers].map(([root, members]) => ({
-            ...root,
-            members
-        }));
-        // PASS 3: BRIDGE MERGING
-        const bridges = hidden
-            .filter((candidate) => candidate.normalizedTokens.length >= 3)
-            .sort(
+        const ordered = [];
+        for (const root of roots) {
+            ordered.push(root);
+            const children = (childrenByRoot.get(root) || []).sort(
                 (a, b) =>
+                    (a.firstPos ?? 0) - (b.firstPos ?? 0) ||
                     b.normalizedTokens.length - a.normalizedTokens.length ||
                     getCount(b) - getCount(a) ||
-                    (a.firstPos ?? 0) - (b.firstPos ?? 0)
+                    a.phrase.localeCompare(b.phrase)
             );
-        const usedBridges = new Set();
-        for (const bridge of bridges) {
-            const bridgeKey = getKey(bridge);
-            if (usedBridges.has(bridgeKey)) continue;
-            const bridgeTokens = bridge.normalizedTokens;
-            const pairs = [];
-            for (const prefix of activeGroups) {
-                for (const suffix of activeGroups) {
-                    if (prefix === suffix) continue;
-                    const prefixKeys = new Set(prefix.members.keys());
-                    if ([...suffix.members.keys()].some((key) => prefixKeys.has(key))) {
-                        continue;
-                    }
-                    for (const prefixTokens of prefix.patterns) {
-                        for (const suffixTokens of suffix.patterns) {
-                            const overlap = getOverlap(prefixTokens, suffixTokens);
-                            if (!overlap) continue;
-                            const coreTokens = [...prefixTokens, ...suffixTokens.slice(overlap)];
-                            if (!containsSequence(bridgeTokens, coreTokens)) {
-                                continue;
-                            }
-                            pairs.push({
-                                prefix,
-                                suffix,
-                                coreTokens,
-                                score:
-                                    [...prefix.members.values()].reduce(
-                                        (sum, candidate) => sum + getCount(candidate),
-                                        0
-                                    ) +
-                                    [...suffix.members.values()].reduce(
-                                        (sum, candidate) => sum + getCount(candidate),
-                                        0
-                                    )
-                            });
-                        }
-                    }
-                }
-            }
-            pairs.sort(
-                (a, b) =>
-                    b.score - a.score || a.prefix.firstPos - b.prefix.firstPos || a.suffix.firstPos - b.suffix.firstPos
-            );
-            const pair = pairs[0];
-            if (!pair) continue;
-            const corePhrase = pair.coreTokens.join(" ");
-            const coreKey = normalizeNameIdentity(corePhrase);
-            const bridgeGroup = mergeGroups(
-                [pair.prefix, pair.suffix],
-                corePhrase,
-                coreKey,
-                [pair.coreTokens],
-                pair.prefix.base
-            );
-            if (!bridgeGroup) continue;
-            usedBridges.add(bridgeKey);
-            activeGroups = activeGroups.filter((group) => group !== pair.prefix && group !== pair.suffix);
-            activeGroups.push(bridgeGroup);
+            ordered.push(...children);
         }
-        // PASS 4: TITLE JOINING
-        const suffixGroups = new Map();
-        for (const group of activeGroups) {
-            for (const tokens of group.patterns) {
-                if (tokens.length < 3) continue;
-                const suffix = tokens.slice(-2).join(" ");
-                if (!suffixGroups.has(suffix)) {
-                    suffixGroups.set(suffix, []);
-                }
-                const entries = suffixGroups.get(suffix);
-                if (!entries.some((entry) => entry.group === group)) {
-                    entries.push({
-                        group,
-                        tokens
-                    });
-                }
-            }
-        }
-        for (const [suffix, entries] of suffixGroups) {
-            if (entries.length < 2) continue;
-            const matchingGroups = entries.map((entry) => entry.group);
-            const prefixes = entries.map((entry) => entry.tokens.slice(0, -2).join(" "));
-            if (new Set(prefixes).size !== prefixes.length) continue;
-            const alternativePhrase = prefixes.join("|") + " " + suffix;
-            const patterns = entries.map((entry) => entry.tokens);
-            const merged = mergeGroups(
-                matchingGroups,
-                alternativePhrase,
-                normalizeNameIdentity(alternativePhrase),
-                patterns,
-                matchingGroups[0].base
-            );
-            if (!merged) continue;
-            activeGroups = activeGroups.filter((group) => !matchingGroups.includes(group));
-            activeGroups.push(merged);
-        }
-        // BUILD FINAL CANDIDATES
-        const results = [];
-        for (const root of activeGroups) {
-            const memberCandidates = [...root.members.values()];
-            const count = memberCandidates.reduce((sum, candidate) => sum + getCount(candidate), 0);
-            const sourceOccurrences = memberCandidates.flatMap((candidate) => candidate.sourceOccurrences || []);
-            const tokens = [...root.patterns[0]];
-            const firstPos = Math.min(...memberCandidates.map((candidate) => candidate.firstPos ?? 0));
-            results.push({
-                ...root.base,
-                identity: root.identityKey,
-                identityKey: root.identityKey,
-                phrase: root.phrase,
-                normalizedTokens: tokens,
-                distinctTokens: new Set(tokens),
-                sourceOccurrences,
-                occurrences: count,
-                phraseCount: count,
-                maxTokenCount: count,
-                sortedTokenCounts: [count],
-                tokenCountsStr: String(count),
-                firstPos
-            });
-        }
-        return results.sort(
-            (a, b) => b.phraseCount - a.phraseCount || a.firstPos - b.firstPos || a.phrase.localeCompare(b.phrase)
-        );
+        return ordered;
     }
     // ---------------------------------------------------------------------
     // UI rendering and scan orchestration
@@ -1409,6 +1220,10 @@
                     case "name-asc":
                         return (state.settings.edits[a.identityKey] ?? a.phrase).localeCompare(
                             state.settings.edits[b.identityKey] ?? b.phrase
+                        );
+                    case "name-desc":
+                        return (state.settings.edits[b.identityKey] ?? b.phrase).localeCompare(
+                            state.settings.edits[a.identityKey] ?? a.phrase
                         );
                     case "count-desc":
                     default:
@@ -1524,13 +1339,13 @@
                     const rule = match.rule;
                     const type = rule.inputType === "regexp" ? "Rx" : rule.inputType === "wholewords" ? "Ww" : "Tx";
                     addCell(tr, match.groupName, match.groupName, "fr-rule-text");
-                    const regexCell = addCell(tr, "");
+                    const regexCell = addCell(tr, "", "", "fr-replace-text");
                     const regexButton = document.createElement("button");
                     regexButton.type = "button";
                     regexButton.textContent = rule.input;
                     regexButton.title = match.siteMatches ? "FoxReplace regex" : "Click to hide this mismatched regex";
                     regexButton.style.cssText =
-                        "border:0;background:transparent;color:inherit;padding:0;text-align:left;max-width:100%;white-space:normal;overflow-wrap:anywhere;cursor:pointer;";
+                        "display:block;border:0;background:transparent;color:inherit;padding:0;text-align:left;width:max-content;max-width:600px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;";
                     if (!match.siteMatches) {
                         regexButton.style.color = "#f44336";
                         regexButton.addEventListener("click", (event) => {
@@ -1745,7 +1560,8 @@
             <strong style="font-size:12px;">Sort</strong>
             <button type="button" data-action="discovery">Disc</button>
             <button type="button" data-action="count-desc">Count</button>
-            <button type="button" data-action="name-asc">Name</button>
+            <button type="button" data-action="name-asc">Name A–Z</button>
+            <button type="button" data-action="name-desc">Name Z–A</button>
             <hr style="width:100%;border:0;border-top:1px solid #555;">
             <strong style="font-size:12px;">Filters</strong>
             <button type="button" data-action="token-2-plus">2+</button>
@@ -1765,6 +1581,9 @@
                         break;
                     case "name-asc":
                         state.candidateSortMode = "name-asc";
+                        break;
+                    case "name-desc":
+                        state.candidateSortMode = "name-desc";
                         break;
                     case "discovery":
                         state.candidateSortMode = "discovery";
