@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.10
+// @version      1.0.11
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -935,7 +935,8 @@
         preview.value = editor.value.trim() ? generateRegex(editor.value.trim(), state.settings.template) : "";
     }
     // ---------------------------------------------------------------------
-    // FoxReplace database, import, compilation and matching    // ---------------------------------------------------------------------
+    // FoxReplace database, import, compilation and matching
+    // ---------------------------------------------------------------------
     function loadFoxReplaceDatabase() {
         try {
             const saved = GM_getValue(FOXREPLACE_STORE_KEY, null);
@@ -1147,51 +1148,81 @@
             normalizedTokens: [...(candidate.normalizedTokens || [])]
         }));
         const getCount = (candidate) => Number(candidate.phraseCount ?? candidate.occurrences ?? 0);
-        const isSuffix = (shorter, longer) =>
-            shorter.length < longer.length &&
-            shorter.every((token, index) => token === longer[longer.length - shorter.length + index]);
         const compareRoots = (a, b) =>
-            getCount(b) - getCount(a) || (a.firstPos ?? 0) - (b.firstPos ?? 0) || a.phrase.localeCompare(b.phrase);
-        const parent = new Map();
-        for (const candidate of candidates) {
-            const tokens = candidate.normalizedTokens;
-            const owners = candidates.filter((possibleRoot) => {
-                if (possibleRoot === candidate) return false;
-                return isSuffix(tokens, possibleRoot.normalizedTokens);
-            });
-            owners.sort((a, b) => b.normalizedTokens.length - a.normalizedTokens.length || compareRoots(a, b));
-            if (owners.length) parent.set(candidate, owners[0]);
-        }
-        const findRoot = (candidate) => {
-            let current = candidate;
-            const seen = new Set();
-            while (parent.has(current) && !seen.has(current)) {
-                seen.add(current);
-                current = parent.get(current);
-            }
-            return current;
-        };
-        const childrenByRoot = new Map();
-        const roots = candidates.filter((candidate) => findRoot(candidate) === candidate).sort(compareRoots);
-        for (const candidate of candidates) {
-            if (roots.includes(candidate)) continue;
-            const root = findRoot(candidate);
-            if (!childrenByRoot.has(root)) childrenByRoot.set(root, []);
-            childrenByRoot.get(root).push(candidate);
-        }
-        const ordered = [];
-        for (const root of roots) {
-            ordered.push(root);
-            const children = (childrenByRoot.get(root) || []).sort(
-                (a, b) =>
-                    (a.firstPos ?? 0) - (b.firstPos ?? 0) ||
-                    b.normalizedTokens.length - a.normalizedTokens.length ||
-                    getCount(b) - getCount(a) ||
-                    a.phrase.localeCompare(b.phrase)
+            getCount(b) - getCount(a) ||
+            (a.firstPos ?? 0) - (b.firstPos ?? 0) ||
+            String(a.phrase || "").localeCompare(String(b.phrase || ""));
+        const isSuffix = (shorter, longer) => {
+            if (shorter.length >= longer.length) return false;
+            const offset = longer.length - shorter.length;
+            return shorter.every(
+                (token, index) =>
+                    String(token).toLocaleLowerCase() === String(longer[offset + index]).toLocaleLowerCase()
             );
-            ordered.push(...children);
+        };
+
+        // Build related-candidate groups from suffix relationships. The most
+        // frequent candidate in each group is always its visible root.
+        const parents = candidates.map((_, index) => index);
+        const find = (index) => {
+            let root = index;
+            while (parents[root] !== root) root = parents[root];
+            while (parents[index] !== index) {
+                const next = parents[index];
+                parents[index] = root;
+                index = next;
+            }
+            return root;
+        };
+        const unite = (a, b) => {
+            const rootA = find(a);
+            const rootB = find(b);
+            if (rootA !== rootB) parents[rootB] = rootA;
+        };
+        for (let i = 0; i < candidates.length; i++) {
+            for (let j = i + 1; j < candidates.length; j++) {
+                const a = candidates[i].normalizedTokens;
+                const b = candidates[j].normalizedTokens;
+                if (isSuffix(a, b) || isSuffix(b, a)) unite(i, j);
+            }
         }
-        return ordered;
+
+        const groupsByRoot = new Map();
+        candidates.forEach((candidate, index) => {
+            const root = find(index);
+            if (!groupsByRoot.has(root)) groupsByRoot.set(root, []);
+            groupsByRoot.get(root).push(candidate);
+        });
+        const groups = [...groupsByRoot.values()].map((members) => {
+            members.sort(compareRoots);
+            const root = members[0];
+            const discovered = members
+                .slice(1)
+                .sort(
+                    (a, b) =>
+                        (a.firstPos ?? 0) - (b.firstPos ?? 0) ||
+                        getCount(b) - getCount(a) ||
+                        b.normalizedTokens.length - a.normalizedTokens.length ||
+                        String(a.phrase || "").localeCompare(String(b.phrase || ""))
+                );
+            return [root, ...discovered];
+        });
+        groups.sort((a, b) => compareRoots(a[0], b[0]));
+        return groups.flat();
+    }
+    function compareRightToLeftAlphabetical(a, b) {
+        const reverseName = (value) =>
+            Array.from(
+                String(value ?? "")
+                    .normalize("NFKC")
+                    .trim()
+            )
+                .reverse()
+                .join("");
+        return reverseName(a).localeCompare(reverseName(b), undefined, {
+            sensitivity: "base",
+            numeric: true
+        });
     }
     // ---------------------------------------------------------------------
     // UI rendering and scan orchestration
@@ -1217,13 +1248,10 @@
                 switch (state.candidateSortMode) {
                     case "count-asc":
                         return a.phraseCount - b.phraseCount;
-                    case "name-asc":
-                        return (state.settings.edits[a.identityKey] ?? a.phrase).localeCompare(
+                    case "name-rtl":
+                        return compareRightToLeftAlphabetical(
+                            state.settings.edits[a.identityKey] ?? a.phrase,
                             state.settings.edits[b.identityKey] ?? b.phrase
-                        );
-                    case "name-desc":
-                        return (state.settings.edits[b.identityKey] ?? b.phrase).localeCompare(
-                            state.settings.edits[a.identityKey] ?? a.phrase
                         );
                     case "count-desc":
                     default:
@@ -1560,8 +1588,7 @@
             <strong style="font-size:12px;">Sort</strong>
             <button type="button" data-action="discovery">Disc</button>
             <button type="button" data-action="count-desc">Count</button>
-            <button type="button" data-action="name-asc">Name A–Z</button>
-            <button type="button" data-action="name-desc">Name Z–A</button>
+            <button type="button" data-action="name-rtl">Name R→L</button>
             <hr style="width:100%;border:0;border-top:1px solid #555;">
             <strong style="font-size:12px;">Filters</strong>
             <button type="button" data-action="token-2-plus">2+</button>
@@ -1579,11 +1606,8 @@
                     case "count-asc":
                         state.candidateSortMode = "count-asc";
                         break;
-                    case "name-asc":
-                        state.candidateSortMode = "name-asc";
-                        break;
-                    case "name-desc":
-                        state.candidateSortMode = "name-desc";
+                    case "name-rtl":
+                        state.candidateSortMode = "name-rtl";
                         break;
                     case "discovery":
                         state.candidateSortMode = "discovery";
