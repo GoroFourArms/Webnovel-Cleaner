@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.11
+// @version      1.0.12
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1160,7 +1160,6 @@
                     String(token).toLocaleLowerCase() === String(longer[offset + index]).toLocaleLowerCase()
             );
         };
-
         // Build related-candidate groups from suffix relationships. The most
         // frequent candidate in each group is always its visible root.
         const parents = candidates.map((_, index) => index);
@@ -1186,7 +1185,6 @@
                 if (isSuffix(a, b) || isSuffix(b, a)) unite(i, j);
             }
         }
-
         const groupsByRoot = new Map();
         candidates.forEach((candidate, index) => {
             const root = find(index);
@@ -1512,6 +1510,7 @@
                 </select>
             </label>
             <button id="fr-scan" title="Scan the page">🔍</button>
+            <button id="fr-import-json" type="button" title="Import FoxReplace JSON">JSON</button>
             <button id="fr-site-mismatches" title="Show site-mismatched regex matches">⚠</button>
             <button id="fr-sort-filter" title="Sort and filters">So</button>
             <button id="fr-empty" title="Clear accumulated scan data">🗑</button>
@@ -1555,6 +1554,8 @@
             minimizeButton.title = minimized ? "Restore panel" : "Minimize panel";
         });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
+        // File pickers require a trusted page click; userscript menu callbacks may lack activation.
+        panel.querySelector("#fr-import-json").addEventListener("click", importFoxReplaceJSON);
         panel.querySelector("#fr-site-mismatches").addEventListener("click", () => {
             const modes = ["most", "site", "all"];
             const currentIndex = modes.indexOf(foxReplaceDisplayMode);
@@ -1713,7 +1714,6 @@
         window.addEventListener("blur", stopDragging);
     }
     if (typeof GM_registerMenuCommand === "function") {
-        GM_registerMenuCommand("Open", createPanel);
-        GM_registerMenuCommand("WNC → Import FoxReplace JSON", importFoxReplaceJSON);
+        GM_registerMenuCommand("WNC → Open panel", createPanel);
     }
 })();
