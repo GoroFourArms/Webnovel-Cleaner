@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Webnovel Cleaner
 // @namespace    CPS
-// @version      1.0.7
+// @version      1.0.9
 // @description  CPS scanner with FoxReplace rule matching.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -223,8 +223,8 @@
         pageMatchedFoxReplaceRules: [],
         foxReplaceFilePicker: null
     };
-    let showSiteMismatches = false;
     const hiddenSiteMismatchRules = new Set();
+    let foxReplaceDisplayMode = "most";
     // ---------------------------------------------------------------------
     // Storage and persistent settings
     // ---------------------------------------------------------------------
@@ -650,15 +650,23 @@
             if (template === "K2") {
                 const pipeIndex = tokens.findIndex((token) => token.includes("|"));
                 if (pipeIndex !== -1) {
-                    const titleParts = [...tokens.slice(0, pipeIndex), ...tokens[pipeIndex].split("|")].filter(Boolean);
-                    const titlePattern = `(?:${titleParts.map((part) => tokenPattern(part)).join("|")})`;
+                    // Keep multiword title alternatives intact (e.g. Team Leader|Actor).
+                    const pipeParts = tokens[pipeIndex].split("|");
+                    const titleAlternatives = [
+                        [...tokens.slice(0, pipeIndex), pipeParts[0]].join(" "),
+                        ...pipeParts.slice(1)
+                    ].filter(Boolean);
+                    const titlePattern = `(?:${titleAlternatives
+                        .map((title) => title.split(/\s+/).map(tokenPattern).join(" "))
+                        .join("|")})`;
                     const nameTokens = tokens.slice(pipeIndex + 1);
-                    const namePattern = nameTokens.map((token) => buildToken(token, koreanTokenPattern)).join(" ");
-                    if (namePattern) {
-                        generated.push(
-                            namePattern,
-                            `${titlePattern} ${namePattern.split(" ").slice(0, -1).join(" ")} Kim`
-                        );
+                    if (nameTokens.length) {
+                        const givenName = buildToken(nameTokens[nameTokens.length - 1], koreanTokenPattern);
+                        const surname = nameTokens.length > 1 ? buildToken(nameTokens[0], koreanTokenPattern) : "";
+                        // K2 matches the given-name anchor or the full title + surname form.
+                        generated.push(givenName);
+                        if (surname) generated.push(`${titlePattern} ${surname}`);
+                        else generated.push(`${titlePattern} ${givenName}`);
                     } else {
                         generated.push(titlePattern);
                     }
@@ -1007,16 +1015,8 @@
             }
         });
         picker.addEventListener("cancel", cleanup, { once: true });
-        try {
-            if (typeof picker.showPicker === "function") {
-                picker.showPicker();
-            } else {
-                picker.click();
-            }
-        } catch (error) {
-            console.warn("[WNC] showPicker failed; trying click:", error);
-            picker.click();
-        }
+        // Keep the picker opening synchronous with the import button click.
+        picker.click();
     }
     function foxReplaceURLMatches(pattern, url) {
         const value = String(pattern || "").trim();
@@ -1095,26 +1095,47 @@
         });
         return rules;
     }
-    function candidateMatchesFoxReplaceValue(candidate, rule, value) {
-        const text = String(value || "");
-        if (!text) return false;
+    function getCandidateFoxReplaceTokenCount(candidate, rule, value, useRulePattern) {
         const phrase = String(candidate.phrase || "");
-        const sensitive = rule.caseSensitive === true;
-        if (rule.inputType === "regexp" && value === rule.input) {
-            try {
-                return new RegExp(text, sensitive ? "u" : "iu").test(phrase);
-            } catch {
-                return false;
+        const text = String(value || "");
+        if (!phrase || !text) return 0;
+        let regex;
+        try {
+            if (useRulePattern) {
+                regex = compileFoxReplaceRule({
+                    inputType: rule.inputType || "text",
+                    input: text,
+                    caseSensitive: rule.caseSensitive
+                });
+            } else {
+                const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                regex = new RegExp(escaped, rule.caseSensitive ? "gu" : "giu");
+            }
+        } catch {
+            return 0;
+        }
+        let maxTokens = 0;
+        let match;
+        while ((match = regex.exec(phrase)) !== null) {
+            const tokenCount = (match[0].match(/[\p{L}\p{N}\p{M}]+/gu) || []).length;
+            maxTokens = Math.max(maxTokens, tokenCount);
+            if (!match[0].length) {
+                regex.lastIndex++;
             }
         }
-        return sensitive ? phrase === text : phrase.toLocaleLowerCase() === text.toLocaleLowerCase();
+        return maxTokens;
     }
     function getCandidateFoxReplaceMatches(candidate) {
-        return state.pageMatchedFoxReplaceRules.filter(
-            ({ rule }) =>
-                candidateMatchesFoxReplaceValue(candidate, rule, rule.input) ||
-                candidateMatchesFoxReplaceValue(candidate, rule, rule.output)
-        );
+        return state.pageMatchedFoxReplaceRules
+            .map((match) => {
+                const inputTokens = getCandidateFoxReplaceTokenCount(candidate, match.rule, match.rule.input, true);
+                const outputTokens = getCandidateFoxReplaceTokenCount(candidate, match.rule, match.rule.output, false);
+                return {
+                    ...match,
+                    tokenMatchCount: Math.max(inputTokens, outputTokens)
+                };
+            })
+            .filter((match) => match.tokenMatchCount > 0);
     }
     function getDiscoveryCandidates(originalCandidates) {
         if (!originalCandidates.length) return [];
@@ -1398,11 +1419,15 @@
         tbody.innerHTML = "";
         const mismatchButton = document.getElementById("fr-site-mismatches");
         if (mismatchButton) {
-            mismatchButton.textContent = showSiteMismatches ? "⚠ On" : "⚠";
-            mismatchButton.title = showSiteMismatches
-                ? "Hide site-mismatched regex matches"
-                : "Show site-mismatched regex matches";
-            mismatchButton.style.color = showSiteMismatches ? "#f44336" : "";
+            const modeLabels = { most: "⚠ M", site: "⚠ S", all: "⚠ A" };
+            const modeDescriptions = {
+                most: "Most specific matching rule",
+                site: "Show only rules allowed on this site",
+                all: "Show all matching rules, including site mismatches"
+            };
+            mismatchButton.textContent = modeLabels[foxReplaceDisplayMode] || modeLabels.most;
+            mismatchButton.title = `${modeDescriptions[foxReplaceDisplayMode] || modeDescriptions.most} (click to change mode)`;
+            mismatchButton.style.color = foxReplaceDisplayMode === "all" ? "#f44336" : "";
         }
         if (!candidates.length) {
             tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#888;padding:15px;">No candidates found.</td></tr>`;
@@ -1420,12 +1445,32 @@
         for (const cand of candidates) {
             const name = state.settings.edits[cand.identityKey] ?? cand.phrase;
             const matches = getCandidateFoxReplaceMatches(cand);
-            const visibleMatches = matches.filter((match) => {
-                if (match.siteMatches) return true;
-                if (!showSiteMismatches) return false;
-                const key = `${match.groupName}|${match.rule.inputType}|${match.rule.input}|${match.rule.output}|${match.rule.caseSensitive}`;
-                return !hiddenSiteMismatchRules.has(key);
-            });
+            const visibleMatches = (() => {
+                if (foxReplaceDisplayMode === "site") {
+                    return matches.filter((match) => match.siteMatches);
+                }
+                if (foxReplaceDisplayMode === "all") {
+                    return matches.filter((match) => {
+                        if (match.siteMatches) return true;
+                        const key = `${match.groupName}|${match.rule.inputType}|${match.rule.input}|${match.rule.output}|${match.rule.caseSensitive}`;
+                        return !hiddenSiteMismatchRules.has(key);
+                    });
+                }
+                const mostSpecific = [...matches]
+                    .filter((match) => {
+                        if (match.siteMatches) return true;
+                        const key = `${match.groupName}|${match.rule.inputType}|${match.rule.input}|${match.rule.output}|${match.rule.caseSensitive}`;
+                        return !hiddenSiteMismatchRules.has(key);
+                    })
+                    .sort(
+                        (a, b) =>
+                            b.tokenMatchCount - a.tokenMatchCount ||
+                            Number(b.siteMatches) - Number(a.siteMatches) ||
+                            a.groupIndex - b.groupIndex ||
+                            a.ruleIndex - b.ruleIndex
+                    )[0];
+                return mostSpecific ? [mostSpecific] : [];
+            })();
             const ruleRows = visibleMatches.length ? visibleMatches : [null];
             ruleRows.forEach((match, ruleRowIndex) => {
                 const tr = document.createElement("tr");
@@ -1668,7 +1713,10 @@
         });
         panel.querySelector("#fr-scan").addEventListener("click", runScan);
         panel.querySelector("#fr-site-mismatches").addEventListener("click", () => {
-            showSiteMismatches = !showSiteMismatches;
+            const modes = ["most", "site", "all"];
+            const currentIndex = modes.indexOf(foxReplaceDisplayMode);
+            foxReplaceDisplayMode = modes[(currentIndex + 1) % modes.length];
+            hiddenSiteMismatchRules.clear();
             renderRows();
         });
         panel.querySelector("#fr-sort-filter").addEventListener("click", () => {
